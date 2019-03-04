@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+# Use this script to bisect a regression using the prebuilt zircon kernel images. The arguments to
+# this script are passed to 'git bisect start'
+
+set -e
+
+readonly DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# During the bisect git will change the working tree including the bisect script, so make a copy of
+# it in a temporary location first.
+readonly TEMP_DIR="$(mktemp -d)"
+trap "rm -rf ${TEMP_DIR}" EXIT
+cp "${DIR}/bisect-helper-arm64" "${TEMP_DIR}"
+git bisect start $@
+git bisect run "${TEMP_DIR}/bisect-helper-arm64" "${DIR}"

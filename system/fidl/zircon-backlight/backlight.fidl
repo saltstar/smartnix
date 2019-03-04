@@ -1,0 +1,18 @@
+
+library zircon.backlight;
+
+struct State {
+    bool on;
+    // The unitless brightness value on a linear scale where 0 is the minimum
+    // brightness and 255 is the maximum brightness.
+    uint8 brightness;
+};
+
+[Layout = "Simple"]
+interface Device {
+    // Gets the current backlight brightness
+    1: GetState() -> (State state);
+
+    // Sets the current backlight brightness
+    2: SetState(State state);
+};

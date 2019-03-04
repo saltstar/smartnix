@@ -1,0 +1,56 @@
+
+LOCAL_DIR := $(GET_LOCAL_DIR)
+
+MODULE := $(LOCAL_DIR)
+
+MODULE_TYPE := userlib
+
+MODULE_PACKAGE := static
+
+MODULE_COMPILEFLAGS += -fvisibility=hidden
+
+MODULE_SRCS := \
+    $(LOCAL_DIR)/pdev.cpp \
+
+MODULE_STATIC_LIBS := \
+    system/ulib/ddk \
+    system/ulib/sync \
+    system/ulib/zx \
+    system/ulib/zxcpp \
+    system/ulib/fbl \
+
+include make/module.mk
+
+#
+# ddktl-test
+#
+
+MODULE := $(LOCAL_DIR).test
+
+MODULE_NAME := ddktl-test
+
+MODULE_TYPE := drivertest
+
+TEST_DIR := $(LOCAL_DIR)/test
+
+MODULE_SRCS := \
+    $(TEST_DIR)/ddktl-test.cpp \
+    $(TEST_DIR)/ddktl-test-binding.c \
+    $(TEST_DIR)/device-tests.cpp \
+    $(TEST_DIR)/ethernet-tests.cpp \
+
+MODULE_STATIC_LIBS := \
+    system/ulib/ddk \
+    system/ulib/ddktl \
+    system/ulib/zx \
+    system/ulib/zxcpp \
+    system/ulib/fbl \
+
+MODULE_LIBS := \
+    system/ulib/unittest \
+    system/ulib/fdio \
+    system/ulib/driver \
+    system/ulib/zircon \
+    system/ulib/c \
+
+include make/module.mk

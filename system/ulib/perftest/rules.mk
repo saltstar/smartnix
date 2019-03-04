@@ -1,0 +1,29 @@
+
+LOCAL_DIR := $(GET_LOCAL_DIR)
+
+MODULE := $(LOCAL_DIR)
+
+MODULE_TYPE := userlib
+
+MODULE_COMPILEFLAGS += -fvisibility=hidden
+
+MODULE_SRCS += \
+    $(LOCAL_DIR)/results.cpp \
+    $(LOCAL_DIR)/runner.cpp \
+
+MODULE_LIBS := \
+    system/ulib/async \
+    system/ulib/async-loop \
+    system/ulib/async-loop.cpp \
+    system/ulib/c \
+    system/ulib/fbl \
+    system/ulib/trace \
+    system/ulib/trace-engine \
+    system/ulib/trace-provider \
+    system/ulib/unittest \
+    system/ulib/zircon \
+    system/ulib/zx \
+
+MODULE_PACKAGE := src
+
+include make/module.mk

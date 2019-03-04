@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+for netruncmd in ./build-*/tools/netruncmd ;
+do
+	$netruncmd zircon $*
+	break
+done

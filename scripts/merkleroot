@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+
+for merkleroot in ./build-*/tools/merkleroot ;
+do
+	$merkleroot $*
+	break
+done

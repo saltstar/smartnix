@@ -1,0 +1,7 @@
+
+library banjo.examples.librarya;
+
+struct Point {
+    float32 x;
+    float32 y;
+};

@@ -1,0 +1,26 @@
+*.a
+*.so
+*.o
+*.dSYM
+*.csv
+*.out
+*.png
+*.jpg
+*.pyc
+*.opts
+*.bin
+.fuse*
+tags
+
+prebuilt
+build-x64
+build-arm64
+docs
+ 
+# OS Generated #
+.DS_Store*
+ehthumbs.db
+Icon?
+Thumbs.db
+*.swp
+

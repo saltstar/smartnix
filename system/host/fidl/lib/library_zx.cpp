@@ -1,0 +1,25 @@
+
+#include "fidl/library_zx.h"
+
+namespace fidl {
+namespace LibraryZX {
+
+const char kFilename[] = "zx.fidl";
+
+const char kData[] = R"FIDL(
+[Internal]
+library zx;
+
+using status = int32;
+using time = int64;
+using duration = int64;
+using koid = uint64;
+using vaddr = uint64;
+using paddr = uint64;
+using paddr32 = uint32;
+using gpaddr = uint64;
+using off = uint64;
+)FIDL";
+
+} // namespace LibraryZX
+} // namespace fidl

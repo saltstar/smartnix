@@ -1,0 +1,33 @@
+
+LOCAL_DIR := $(GET_LOCAL_DIR)
+LOCAL_INC := $(LOCAL_DIR)/include/lib/async-testutils
+
+MODULE := $(LOCAL_DIR)
+MODULE_NAME := async-testutils
+
+MODULE_TYPE := userlib
+
+MODULE_COMPILEFLAGS += -fvisibility=hidden
+
+MODULE_SRCS += \
+        $(LOCAL_DIR)/dispatcher_stub.cpp \
+        $(LOCAL_DIR)/test_loop.cpp \
+        $(LOCAL_DIR)/test_loop_dispatcher.cpp
+
+MODULE_STATIC_LIBS := \
+        system/ulib/async.cpp \
+        system/ulib/async \
+        system/ulib/fbl \
+        system/ulib/zx \
+        system/ulib/zircon-internal \
+        system/ulib/zxcpp \
+
+MODULE_LIBS := \
+        system/ulib/async.default \
+        system/ulib/c \
+        system/ulib/zircon \
+        system/ulib/fdio \
+
+MODULE_PACKAGE := src
+
+include make/module.mk

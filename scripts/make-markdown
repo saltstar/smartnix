@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+for h2md in ./build-*/tools/h2md ;
+do
+    echo $h2md
+    break;
+done
+
+find system/ -name \*.h -or -name \*.c -or -name \*.cpp | xargs grep '//@doc(' -l | xargs $h2md -v

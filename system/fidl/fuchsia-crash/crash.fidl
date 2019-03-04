@@ -1,0 +1,28 @@
+
+library fuchsia.crash;
+
+using fuchsia.mem;
+
+// Analyzes crashed processes.
+[Discoverable, Layout = "Simple"]
+interface Analyzer {
+    // Requests that the crash analyzer handles the exception thrown by the
+    // given |thread| in |process|.
+    // This method is responsible for resuming or stopping the thread once the
+    // analyze is done.
+    //
+    // The behavior of this method varies depending on the implementation, but
+    // a typical implementation might print a crash dump to the system log or
+    // upload a crash report to a server.
+    //
+    // |exception_port| is the port on which the exception was delivered and can
+    // be passed to zx_task_resume_from_exception().
+    1: HandleException(handle<process> process, handle<thread> thread, handle<port> exception_port) -> ();
+
+    // Requests that the crash analyzer process the crash log.
+    //
+    // The behavior of this method varies depending on the implementation, but
+    // a typical implementation might print the crash log to the system log or
+    // upload a crash report to a server with the log as attachment.
+    2: ProcessCrashlog(fuchsia.mem.Buffer crashlog) -> ();
+};

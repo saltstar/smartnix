@@ -1,0 +1,18 @@
+
+library banjo.examples.tables;
+
+struct A {
+    B? foo;
+};
+
+struct B {
+    A? bar;
+};
+
+struct C {
+    handle baz;
+};
+
+struct D {
+    C qux;
+};

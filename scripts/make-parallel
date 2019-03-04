@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+MAKE=make
+
+case `uname` in
+Linux)
+    N=`cat /proc/cpuinfo | grep processor | wc -l`
+    PARALLEL=-j`expr $N + $N`
+    ;;
+Darwin)
+    PARALLEL=-j`sysctl -n hw.ncpu`
+    ;;
+FreeBSD)
+    PARALLEL=-j`sysctl -n hw.ncpu`
+    MAKE=gmake
+    ;;
+*)
+    PARALLEL=-j8
+    ;;
+esac
+
+exec $MAKE $PARALLEL "$@"

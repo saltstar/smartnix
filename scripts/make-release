@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# make a release build
+#
+# release builds are regular builds with DEBUG=0 and the -release suffix added to the build dir
+DEBUG=0 $DIR/make-parallel "$@"

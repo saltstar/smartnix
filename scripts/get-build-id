@@ -1,0 +1,18 @@
+#! /bin/sh
+
+set -e
+
+# Alas this isn't posix.
+#set -o pipefail
+
+if [ $# -ne 1 ]
+then
+    echo "Usage: get-build-id file" >&2
+    echo "Uses \$READELF or readelf if unset."
+    exit 1
+fi
+
+READELF=${READELF:-readelf}
+FILE="$1"
+
+LC_ALL=C $READELF -n $FILE | grep -a 'Build ID:' | sed 's/.*: //g'

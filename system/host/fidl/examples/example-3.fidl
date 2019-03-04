@@ -1,0 +1,10 @@
+
+library fidl.examples.example3;
+
+struct Point {
+    // Abscissa
+    int64 x;
+
+    // Ordinate
+    int64 y;
+};

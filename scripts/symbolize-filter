@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+ZIRCON_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PREBUILT_DIR="${ZIRCON_ROOT}/prebuilt/downloads"
+
+if [[ -z "$LLVM_SYMBOLIZER" ]]; then
+  LLVM_SYMBOLIZER="${PREBUILT_DIR}/clang/bin/llvm-symbolizer"
+fi
+
+readonly SYMBOLIZE="${PREBUILT_DIR}/symbolize"
+
+case $# in
+0)
+  build_id_file="${ZIRCON_ROOT}/build-x64/ids.txt"
+  ;;
+1)
+  build_id_file="$1"
+  ;;
+*)
+  echo >&2 "Usage: $0 [/path/to/ids.txt]"
+  exit 1
+  ;;
+esac
+
+exec "$SYMBOLIZE" -llvm-symbolizer "$LLVM_SYMBOLIZER" -ids "$build_id_file"

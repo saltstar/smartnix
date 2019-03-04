@@ -1,0 +1,10 @@
+
+ifeq ($(MODULE_USERTEST_GROUP),)
+    MODULE_USERTEST_GROUP := sys
+endif
+
+MODULE_INSTALL_PATH := test/$(MODULE_USERTEST_GROUP)
+
+include make/module-userapp.mk
+
+MODULE_USERTEST_GROUP :=
