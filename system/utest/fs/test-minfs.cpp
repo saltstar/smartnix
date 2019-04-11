@@ -23,17 +23,27 @@
 #include <unittest/unittest.h>
 #include <zircon/device/vfs.h>
 
+#include <utility>
+
 #include "filesystems.h"
 #include "misc.h"
 
 namespace {
+
+// Using twice as many blocks and slices of half-size, we have just as much space, but we require
+// resizing to fill our filesystem.
+const test_disk_t kGrowableTestDisk = {
+    .block_count = TEST_BLOCK_COUNT_DEFAULT * 2,
+    .block_size = TEST_BLOCK_SIZE_DEFAULT,
+    .slice_size = TEST_FVM_SLICE_SIZE_DEFAULT / 2,
+};
 
 bool QueryInfo(fuchsia_io_FilesystemInfo* info) {
     BEGIN_HELPER;
     fbl::unique_fd fd(open(kMountPath, O_RDONLY | O_DIRECTORY));
     ASSERT_TRUE(fd);
     zx_status_t status;
-    fzl::FdioCaller caller(fbl::move(fd));
+    fzl::FdioCaller caller(std::move(fd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminQueryFilesystem(caller.borrow_channel(), &status, info),
               ZX_OK);
     ASSERT_EQ(status, ZX_OK);
@@ -119,7 +129,7 @@ bool ToggleMetrics(bool enabled) {
     BEGIN_HELPER;
     fbl::unique_fd fd(open(kMountPath, O_RDONLY | O_DIRECTORY));
     ASSERT_TRUE(fd);
-    fzl::FdioCaller caller(fbl::move(fd));
+    fzl::FdioCaller caller(std::move(fd));
     zx_status_t status;
     ASSERT_EQ(fuchsia_minfs_MinfsToggleMetrics(caller.borrow_channel(), enabled, &status), ZX_OK);
     ASSERT_EQ(status, ZX_OK);
@@ -131,7 +141,7 @@ bool GetMetricsUnavailable() {
     fbl::unique_fd fd(open(kMountPath, O_RDONLY | O_DIRECTORY));
     ASSERT_TRUE(fd);
     zx_status_t status;
-    fzl::FdioCaller caller(fbl::move(fd));
+    fzl::FdioCaller caller(std::move(fd));
     fuchsia_minfs_Metrics metrics;
     ASSERT_EQ(fuchsia_minfs_MinfsGetMetrics(caller.borrow_channel(), &status, &metrics),
               ZX_OK);
@@ -144,7 +154,7 @@ bool GetMetrics(fuchsia_minfs_Metrics* metrics) {
     fbl::unique_fd fd(open(kMountPath, O_RDONLY | O_DIRECTORY));
     ASSERT_TRUE(fd);
     zx_status_t status;
-    fzl::FdioCaller caller(fbl::move(fd));
+    fzl::FdioCaller caller(std::move(fd));
     ASSERT_EQ(fuchsia_minfs_MinfsGetMetrics(caller.borrow_channel(), &status, metrics),
               ZX_OK);
     ASSERT_EQ(status, ZX_OK);
@@ -184,11 +194,13 @@ bool TestMetrics() {
     END_TEST;
 }
 
-bool GetUsedBlocks(uint32_t* used_blocks) {
+bool GetFreeBlocks(uint32_t* out_free_blocks) {
     BEGIN_HELPER;
     fuchsia_io_FilesystemInfo info;
     ASSERT_TRUE(QueryInfo(&info));
-    *used_blocks = static_cast<uint32_t>((info.total_bytes - info.used_bytes) / info.block_size);
+    uint64_t total_bytes = info.total_bytes + info.free_shared_pool_bytes;
+    uint64_t used_bytes = info.used_bytes;
+    *out_free_blocks = static_cast<uint32_t>((total_bytes - used_bytes) / info.block_size);
     END_HELPER;
 }
 
@@ -201,7 +213,7 @@ bool FillPartition(int fd, uint32_t max_remaining_blocks, uint32_t* actual_remai
     uint32_t free_blocks;
 
     while (true) {
-        ASSERT_TRUE(GetUsedBlocks(&free_blocks));
+        ASSERT_TRUE(GetFreeBlocks(&free_blocks));
         if (free_blocks <= max_remaining_blocks) {
             break;
         }
@@ -288,7 +300,7 @@ bool TestFullOperations() {
     }
 
     // Make sure we now have only 1 block remaining.
-    ASSERT_TRUE(GetUsedBlocks(&free_blocks));
+    ASSERT_TRUE(GetFreeBlocks(&free_blocks));
     ASSERT_EQ(free_blocks, 1);
 
     // We should now have exactly 1 free block remaining. Attempt to write into the indirect
@@ -322,7 +334,7 @@ bool TestFullOperations() {
     ASSERT_TRUE(sml_fd);
 
     // Make sure we now have at least kMinfsDirect + 1 blocks remaining.
-    ASSERT_TRUE(GetUsedBlocks(&free_blocks));
+    ASSERT_TRUE(GetFreeBlocks(&free_blocks));
     ASSERT_GE(free_blocks, minfs::kMinfsDirect + 1);
 
     // We have some room now, so create a new directory.
@@ -359,7 +371,7 @@ bool TestFullOperations() {
     }
 
     // Ensure that there is now exactly one block remaining.
-    ASSERT_TRUE(GetUsedBlocks(&actual_blocks));
+    ASSERT_TRUE(GetFreeBlocks(&actual_blocks));
     ASSERT_EQ(free_blocks, actual_blocks);
 
     // Now, attempt to add one more file to the directory we created. Since it will need to
@@ -407,7 +419,7 @@ bool TestFullOperations() {
     }
 
     // Ensure that there is now exactly one block remaining.
-    ASSERT_TRUE(GetUsedBlocks(&actual_blocks));
+    ASSERT_TRUE(GetFreeBlocks(&actual_blocks));
     ASSERT_EQ(free_blocks, actual_blocks);
 
     // Now, attempt to rename one of our original files under the new directory.
@@ -438,7 +450,7 @@ bool TestUnlinkFail(void) {
     }
 
     uint32_t original_blocks;
-    ASSERT_TRUE(GetUsedBlocks(&original_blocks));
+    ASSERT_TRUE(GetFreeBlocks(&original_blocks));
 
     uint32_t fd_count = 100;
     fbl::unique_fd fds[fd_count];
@@ -471,12 +483,12 @@ bool TestUnlinkFail(void) {
 
     // Check that the number of Minfs free blocks has decreased.
     uint32_t current_blocks;
-    ASSERT_TRUE(GetUsedBlocks(&current_blocks));
+    ASSERT_TRUE(GetFreeBlocks(&current_blocks));
     ASSERT_LT(current_blocks, original_blocks);
 
     // Put the ramdisk to sleep and close all the fds. This will cause file purge to fail,
     // and all unlinked files will be left intact (on disk).
-    ASSERT_EQ(sleep_ramdisk(ramdisk_path, 0), 0);
+    ASSERT_EQ(ramdisk_sleep_after(test_ramdisk, 0), 0);
 
     for (unsigned i = first_fd + 1; i < last_fd; i++) {
         if (i != mid_fd) {
@@ -489,19 +501,100 @@ bool TestUnlinkFail(void) {
 
     // Writeback should have failed.
     // However, the in-memory state has been updated correctly.
-    ASSERT_TRUE(GetUsedBlocks(&current_blocks));
+    ASSERT_TRUE(GetFreeBlocks(&current_blocks));
     ASSERT_EQ(current_blocks, original_blocks);
 
     // Remount Minfs, which should cause leftover unlinked files to be removed.
-    ASSERT_EQ(wake_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_wake(test_ramdisk), 0);
     ASSERT_TRUE(check_remount());
 
     // Check that the block count has been reverted to the value before any files were added.
-    ASSERT_TRUE(GetUsedBlocks(&current_blocks));
+    ASSERT_TRUE(GetFreeBlocks(&current_blocks));
     ASSERT_EQ(current_blocks, original_blocks);
 
     END_TEST;
 }
+
+bool GetAllocatedBlocks(uint64_t* out_allocated_blocks) {
+    BEGIN_HELPER;
+    fuchsia_io_FilesystemInfo info;
+    ASSERT_TRUE(QueryInfo(&info));
+    *out_allocated_blocks = static_cast<uint64_t>(info.used_bytes) / info.block_size;
+    END_HELPER;
+}
+
+bool GetAllocations(zx::vmo* out_vmo, uint64_t* out_count) {
+    BEGIN_HELPER;
+    fbl::unique_fd fd(open(kMountPath, O_RDONLY | O_DIRECTORY));
+    ASSERT_TRUE(fd);
+    zx_status_t status;
+    fzl::FdioCaller caller(std::move(fd));
+    zx_handle_t vmo_handle;
+    ASSERT_EQ(fuchsia_minfs_MinfsGetAllocatedRegions(caller.borrow_channel(), &status, &vmo_handle,
+              out_count), ZX_OK);
+    ASSERT_EQ(status, ZX_OK);
+    out_vmo->reset(vmo_handle);
+    END_HELPER;
+}
+
+// Verifies that the information returned by GetAllocatedRegions FIDL call is correct by
+// checking it against the block devices metrics.
+bool TestGetAllocatedRegions() {
+    BEGIN_TEST;
+
+    constexpr char kFirstPath[] = "some_file";
+    constexpr char kSecondPath[] = "another_file";
+    fbl::unique_fd mnt_fd(open(kMountPath, O_RDONLY));
+    ASSERT_TRUE(mnt_fd);
+
+    fbl::unique_fd first_fd(openat(mnt_fd.get(), kFirstPath, O_CREAT | O_RDWR));
+    ASSERT_TRUE(first_fd);
+    fbl::unique_fd second_fd(openat(mnt_fd.get(), kSecondPath, O_CREAT | O_RDWR));
+    ASSERT_TRUE(second_fd);
+
+    char data[minfs::kMinfsBlockSize];
+    memset(data, 0xb0b, sizeof(data));
+    // Interleave writes
+    ASSERT_EQ(write(first_fd.get(), data, sizeof(data)), sizeof(data));
+    ASSERT_EQ(fsync(first_fd.get()), 0);
+    ASSERT_EQ(write(second_fd.get(), data, sizeof(data)), sizeof(data));
+    ASSERT_EQ(fsync(second_fd.get()), 0);
+    ASSERT_EQ(write(first_fd.get(), data, sizeof(data)), sizeof(data));
+    ASSERT_EQ(fsync(first_fd.get()), 0);
+
+    // Ensure that the number of bytes reported via GetAllocatedRegions and QueryInfo is the same
+    zx::vmo vmo;
+    uint64_t count;
+    uint64_t actual_blocks;
+    uint64_t total_blocks = 0;
+    ASSERT_TRUE(GetAllocations(&vmo, &count));
+    ASSERT_TRUE(GetAllocatedBlocks(&actual_blocks));
+    fbl::Array<fuchsia_minfs_BlockRegion> buffer(new fuchsia_minfs_BlockRegion[count], count);
+    ASSERT_EQ(vmo.read(buffer.get(), 0, sizeof(fuchsia_minfs_BlockRegion) * count), ZX_OK);
+    for (size_t i = 0; i < count; i ++) {
+        total_blocks += buffer[i].length;
+    }
+    ASSERT_EQ(total_blocks, actual_blocks);
+
+    // Delete second_fd. This allows us test that the FIDL call will still match the metrics
+    // from QueryInfo after deletes and with fragmentation.
+    ASSERT_EQ(unlinkat(mnt_fd.get(), kSecondPath, 0), 0);
+    ASSERT_EQ(close(second_fd.release()), 0);
+    ASSERT_EQ(fsync(mnt_fd.get()), 0);
+    total_blocks = 0;
+
+    ASSERT_TRUE(GetAllocations(&vmo, &count));
+    ASSERT_TRUE(GetAllocatedBlocks(&actual_blocks));
+    buffer.reset(new fuchsia_minfs_BlockRegion[count], count);
+    ASSERT_EQ(vmo.read(buffer.get(), 0, sizeof(fuchsia_minfs_BlockRegion) * count), ZX_OK);
+    for (size_t i = 0; i < count; i ++) {
+        total_blocks += buffer[i].length;
+    }
+    ASSERT_EQ(total_blocks, actual_blocks);
+
+    END_TEST;
+}
+
 }  // namespace
 
 #define RUN_MINFS_TESTS_NORMAL(name, CASE_TESTS) \
@@ -513,6 +606,7 @@ bool TestUnlinkFail(void) {
 RUN_MINFS_TESTS_NORMAL(FsMinfsTests,
     RUN_TEST_LARGE(TestFullOperations)
     RUN_TEST_MEDIUM(TestUnlinkFail)
+    RUN_TEST_MEDIUM(TestGetAllocatedRegions)
 )
 
 RUN_MINFS_TESTS_FVM(FsMinfsFvmTests,
@@ -520,3 +614,8 @@ RUN_MINFS_TESTS_FVM(FsMinfsFvmTests,
     RUN_TEST_MEDIUM(TestMetrics)
     RUN_TEST_MEDIUM(TestUnlinkFail)
 )
+
+// Running with an isolated FVM to avoid interactions with the other integration tests.
+FS_TEST_CASE(FsMinfsFullFvmTests, kGrowableTestDisk,
+    RUN_TEST_LARGE(TestFullOperations),
+FS_TEST_FVM, minfs, 1)

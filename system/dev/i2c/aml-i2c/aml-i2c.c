@@ -12,9 +12,9 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/i2c-impl.h>
-#include <ddk/protocol/platform-bus.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/i2cimpl.h>
+#include <ddk/protocol/platform/bus.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddk/protocol/platform-device-lib.h>
 #include <hw/reg.h>
 
@@ -254,7 +254,7 @@ static zx_status_t aml_i2c_dev_init(aml_i2c_t* i2c, unsigned index) {
 
     zx_status_t status;
 
-    status = pdev_map_mmio_buffer2(&i2c->pdev, index, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&i2c->pdev, index, ZX_CACHE_POLICY_UNCACHED_DEVICE,
                                   &device->regs_iobuff);
     if (status != ZX_OK) {
         zxlogf(ERROR, "aml_i2c_dev_init: pdev_map_mmio_buffer failed %d\n", status);

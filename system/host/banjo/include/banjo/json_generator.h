@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_BANJO_INCLUDE_BANJO_JSON_GENERATOR_H_
 #define ZIRCON_SYSTEM_HOST_BANJO_INCLUDE_BANJO_JSON_GENERATOR_H_
@@ -77,7 +80,6 @@ private:
     void Generate(const raw::Attribute& value);
     void Generate(const raw::AttributeList& value);
 
-    void Generate(const flat::Ordinal& value);
     void Generate(const flat::Name& value);
     void Generate(const flat::Type& value);
     void Generate(const flat::Constant& value);

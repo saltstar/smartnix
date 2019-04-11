@@ -4,20 +4,20 @@
 
 #pragma once
 
+#include <atomic>
 #include <ddk/device.h>
 #include <ddk/driver.h>
+#include <ddk/protocol/intelhda/dsp.h>
 #include <ddk/protocol/pci.h>
-#include <ddk/protocol/intel-hda-dsp.h>
-#include <zircon/thread_annotations.h>
-#include <zircon/types.h>
-#include <fbl/atomic.h>
 #include <fbl/intrusive_single_list.h>
 #include <fbl/recycler.h>
 #include <fbl/unique_ptr.h>
 #include <lib/fzl/pinned-vmo.h>
 #include <lib/fzl/vmo-mapper.h>
-#include <threads.h>
 #include <lib/zx/interrupt.h>
+#include <threads.h>
+#include <zircon/thread_annotations.h>
+#include <zircon/types.h>
 
 #include <dispatcher-pool/dispatcher-execution-domain.h>
 #include <dispatcher-pool/dispatcher-interrupt.h>
@@ -65,8 +65,7 @@ public:
     static void        DriverRelease(void* ctx);
 
 private:
-    using StateStorage = uint32_t;
-    enum class State : StateStorage {
+    enum class State : uint32_t {
         STARTING,
         OPERATING,
         SHUTTING_DOWN,
@@ -94,9 +93,8 @@ private:
     void RootDeviceRelease();
 
     // State control
-    // TODO(johngro) : extend fbl::atomic to support enum classes as well.
-    void  SetState(State state) { state_.store(static_cast<StateStorage>(state)); }
-    State GetState()            { return static_cast<State>(state_.load()); }
+    void  SetState(State state) { state_.store(state); }
+    State GetState()            { return state_.load(); }
 
     // Codec lifetime maanagement
     fbl::RefPtr<IntelHDACodec> GetCodec(uint id);
@@ -135,7 +133,7 @@ private:
     fbl::RefPtr<dispatcher::ExecutionDomain> default_domain_;
 
     // State machine and IRQ related events.
-    fbl::atomic<StateStorage>            state_;
+    std::atomic<State>                   state_;
     fbl::RefPtr<dispatcher::Interrupt>   irq_;
     fbl::RefPtr<dispatcher::WakeupEvent> irq_wakeup_event_;
 
@@ -202,7 +200,7 @@ private:
 
     fbl::RefPtr<IntelHDADSP> dsp_;
 
-    static fbl::atomic_uint32_t device_id_gen_;
+    static std::atomic_uint32_t device_id_gen_;
     static zx_protocol_device_t  CONTROLLER_DEVICE_THUNKS;
 };
 

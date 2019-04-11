@@ -1,10 +1,11 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <zircon/assert.h>
 #include <zircon/compiler.h>
-
-#include <fbl/type_support.h>
 
 #include <lockdep/common.h>
 #include <lockdep/lock_class.h>
@@ -35,13 +36,13 @@ struct IsNestable {
 
 // Enable if the given T is nestable and uses same type as LockType.
 template <typename T, typename LockType>
-using EnableIfNestable = typename fbl::enable_if<
+using EnableIfNestable = typename std::enable_if<
     fbl::is_same<GetLockType<T>, LockType>::value &&
     IsNestable<GetLockType<T>>::Value>::type;
 
 // Enable if the given T is not nestable and uses same type as LockType.
 template <typename T, typename LockType>
-using EnableIfNotNestable = typename fbl::enable_if<
+using EnableIfNotNestable = typename std::enable_if<
     fbl::is_same<GetLockType<T>, LockType>::value &&
     !IsNestable<GetLockType<T>>::Value>::type;
 
@@ -122,18 +123,18 @@ public:
     //  DoTaskAndReleaseLock(guard.take());
     //
     Guard&& take() __TA_RELEASE() {
-        return fbl::move(*this);
+        return std::move(*this);
     }
 
     // Adopts the lock state and validator state. This constructor uses a type
     // tag argument to avoid automatic move constructor semantics.
     //
     // Example:
-    //  Guard<fbl::Mutex> guard{AdoptLock, fbl::move(rvalue_arugment)};
+    //  Guard<fbl::Mutex> guard{AdoptLock, std::move(rvalue_arugment)};
     //
     Guard(AdoptLockTag, Guard&& other) __TA_ACQUIRE(other.lock_)
-        : validator_{fbl::move(other.validator_)}, lock_{other.lock_},
-          state_{fbl::move(other.state_)} { other.lock_ = nullptr; }
+        : validator_{std::move(other.validator_)}, lock_{other.lock_},
+          state_{std::move(other.state_)} { other.lock_ = nullptr; }
 
     // Temporarily releases and un-tracks the guarded lock before executing the
     // given callable Op and then re-acquires and tracks the lock. This permits

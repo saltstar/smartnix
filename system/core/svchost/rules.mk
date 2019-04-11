@@ -1,3 +1,6 @@
+# Copyright 2018 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -8,13 +11,17 @@ MODULE_GROUP := core
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/svchost.cpp \
+    $(LOCAL_DIR)/sysmem.cpp \
+    $(LOCAL_DIR)/crashsvc.cpp
 
 MODULE_FIDL_LIBS := \
     system/fidl/fuchsia-crash \
     system/fidl/fuchsia-io \
     system/fidl/fuchsia-logger \
     system/fidl/fuchsia-mem \
+    system/fidl/fuchsia-net \
     system/fidl/fuchsia-process \
+    system/fidl/fuchsia-profile \
     system/fidl/fuchsia-sysmem \
 
 MODULE_STATIC_LIBS := \
@@ -24,8 +31,8 @@ MODULE_STATIC_LIBS := \
     system/ulib/svc \
     system/ulib/process-launcher \
     system/ulib/sysmem \
+    system/ulib/sysmem-connector \
     system/ulib/fs \
-    system/core/crashanalyzer \
     system/ulib/async \
     system/ulib/async.cpp \
     system/ulib/async-loop.cpp \
@@ -33,7 +40,9 @@ MODULE_STATIC_LIBS := \
     system/ulib/trace \
     system/ulib/fbl \
     system/ulib/fidl \
+    system/ulib/fidl-async \
     system/ulib/pretty \
+    system/ulib/profile \
     system/ulib/zxcpp \
     system/ulib/zx
 

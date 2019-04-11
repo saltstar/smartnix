@@ -1,10 +1,15 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <fbl/intrusive_double_list.h>
 #include <fbl/vector.h>
 #include <zircon/device/audio.h>
-#include <zircon/hw/usb-audio.h>
+#include <zircon/hw/usb/audio.h>
+
+#include <utility>
 
 #include "usb-audio.h"
 #include "usb-audio-descriptors.h"
@@ -122,7 +127,7 @@ class UsbAudioStreamInterface :
                const usb_interface_descriptor_t* interface_hdr,
                const usb_audio_as_header_desc* class_hdr)
             : parent_(parent),
-              desc_list_(fbl::move(desc_list)),
+              desc_list_(std::move(desc_list)),
               interface_hdr_(interface_hdr),
               class_hdr_(class_hdr) {}
 
@@ -189,7 +194,7 @@ class UsbAudioStreamInterface :
                             uint8_t iid)
         : parent_(*parent),
           iid_(iid),
-          desc_list_(fbl::move(desc_list)) {
+          desc_list_(std::move(desc_list)) {
         ZX_DEBUG_ASSERT(parent != nullptr);
     }
     ~UsbAudioStreamInterface() = default;

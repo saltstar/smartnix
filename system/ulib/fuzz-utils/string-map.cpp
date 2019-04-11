@@ -1,9 +1,14 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/alloc_checker.h>
 #include <fbl/intrusive_wavl_tree.h>
 #include <fbl/string.h>
 #include <fbl/unique_ptr.h>
 #include <fuzz-utils/string-map.h>
+
+#include <utility>
 
 namespace fuzzing {
 
@@ -67,7 +72,7 @@ void StringMap::set(const char* key, const char* val) {
     ZX_ASSERT(ac.check());
     element->val.Set(val, &ac);
     ZX_ASSERT(ac.check());
-    elements_.insert_or_replace(fbl::move(element));
+    elements_.insert_or_replace(std::move(element));
     iterator_ = elements_.end();
 }
 

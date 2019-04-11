@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include <kernel/deadline.h>
 #include <kernel/spinlock.h>
 #include <list.h>
 #include <sys/types.h>
@@ -15,12 +16,6 @@ struct timer;
 typedef void (*timer_callback)(struct timer*, zx_time_t now, void* arg);
 
 #define TIMER_MAGIC (0x74696D72) //'timr'
-
-enum slack_mode {
-    TIMER_SLACK_CENTER, // slack is centered around deadline
-    TIMER_SLACK_LATE,   // slack interval is [deadline, deadline + slack)
-    TIMER_SLACK_EARLY,  // slack interval is (deadline - slack, deadline]
-};
 
 typedef struct timer {
     int magic;
@@ -65,24 +60,13 @@ void timer_init(timer_t*);
 // deadline passes. The function will be called one time.
 //
 // timer: the timer to use
-// deadline: absolute time, in ns, after which the timer is executed
-// mode: type of slack to apply, either symmetrical or one-sided to early or late
-// slack: delta time in nanoseconds from |deadline| after or before it is
-//        acceptable to execute the timer. Must be >= 0.
+// deadline: specifies when the timer should be executed
 // callback: the function to call when the timer expires
 // arg: the argument to pass to the callback
 //
 // The timer function is declared as:
 //   void callback(timer_t *, zx_time_t now, void *arg) { ... }
-//
-// The |slack| parameter defines an interval depending on the |mode| in which
-// is acceptable to fire the timer:
-//
-// - TIMER_SLACK_CENTER: |deadline - slack| to |deadline + slack|
-// - TIMER_SLACK_LATE: |deadline| to |deadline + slack|
-// - TIMER_SLACK_EARLY: |deadline - slack| to |deadline|
-void timer_set(timer_t* timer, zx_time_t deadline,
-               enum slack_mode mode, zx_duration_t slack, timer_callback callback, void* arg);
+void timer_set(timer_t* timer, const Deadline& deadline, timer_callback callback, void* arg);
 
 //
 // Cancel a pending timer
@@ -93,10 +77,10 @@ void timer_set(timer_t* timer, zx_time_t deadline,
 //
 bool timer_cancel(timer_t*);
 
-// Equivalent to timer_set with a slack of 0
+// Equivalent to timer_set with no slack
 static inline void timer_set_oneshot(
     timer_t* timer, zx_time_t deadline, timer_callback callback, void* arg) {
-    return timer_set(timer, deadline, TIMER_SLACK_CENTER, 0ull, callback, arg);
+    return timer_set(timer, Deadline::no_slack(deadline), callback, arg);
 }
 
 // Preemption Timers

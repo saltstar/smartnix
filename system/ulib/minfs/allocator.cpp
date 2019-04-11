@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <limits>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,6 +10,8 @@
 
 #include <minfs/allocator.h>
 #include <minfs/block-txn.h>
+
+#include <utility>
 
 namespace minfs {
 namespace {
@@ -47,7 +50,7 @@ AllocatorFvmMetadata::~AllocatorFvmMetadata() = default;
 
 uint32_t AllocatorFvmMetadata::UnitsPerSlices(uint32_t slices, uint32_t unit_size) const {
     uint64_t units = (slice_size_ * slices) / unit_size;
-    ZX_DEBUG_ASSERT(units <= fbl::numeric_limits<uint32_t>::max());
+    ZX_DEBUG_ASSERT(units <= std::numeric_limits<uint32_t>::max());
     return static_cast<uint32_t>(units);
 }
 
@@ -67,7 +70,7 @@ AllocatorMetadata::AllocatorMetadata(blk_t data_start_block,
                                      AllocatorFvmMetadata fvm,
                                      uint32_t* pool_used, uint32_t* pool_total) :
     data_start_block_(data_start_block), metadata_start_block_(metadata_start_block),
-    using_fvm_(using_fvm), fvm_(fbl::move(fvm)),
+    using_fvm_(using_fvm), fvm_(std::move(fvm)),
     pool_used_(pool_used), pool_total_(pool_total) {}
 AllocatorMetadata::AllocatorMetadata(AllocatorMetadata&&) = default;
 AllocatorMetadata& AllocatorMetadata::operator=(AllocatorMetadata&&) = default;
@@ -75,16 +78,16 @@ AllocatorMetadata::~AllocatorMetadata() = default;
 
 Allocator::Allocator(Bcache* bc, SuperblockManager* sb, size_t unit_size, GrowHandler grow_cb,
                      AllocatorMetadata metadata) :
-    bc_(bc), sb_(sb), unit_size_(unit_size), grow_cb_(fbl::move(grow_cb)),
-    metadata_(fbl::move(metadata)), reserved_(0), hint_(0) {}
+    bc_(bc), sb_(sb), unit_size_(unit_size), grow_cb_(std::move(grow_cb)),
+    metadata_(std::move(metadata)), reserved_(0), hint_(0) {}
 Allocator::~Allocator() = default;
 
 zx_status_t Allocator::Create(Bcache* bc, SuperblockManager* sb, fs::ReadTxn* txn, size_t unit_size,
                               GrowHandler grow_cb, AllocatorMetadata metadata,
                               fbl::unique_ptr<Allocator>* out) {
     auto allocator = fbl::unique_ptr<Allocator>(new Allocator(bc, sb, unit_size,
-                                                              fbl::move(grow_cb),
-                                                              fbl::move(metadata)));
+                                                              std::move(grow_cb),
+                                                              std::move(metadata)));
     blk_t pool_blocks = BitmapBlocksForSize(allocator->metadata_.PoolTotal());
 
     zx_status_t status;
@@ -99,12 +102,12 @@ zx_status_t Allocator::Create(Bcache* bc, SuperblockManager* sb, fs::ReadTxn* tx
     if ((status = bc->AttachVmo(allocator->map_.StorageUnsafe()->GetVmo(), &map_vmoid)) != ZX_OK) {
         return status;
     }
-    auto data = map_vmoid;
+    vmoid_t data = map_vmoid;
 #else
-    auto data = allocator->map_.StorageUnsafe()->GetData();
+    const void* data = allocator->map_.StorageUnsafe()->GetData();
 #endif
     txn->Enqueue(data, 0, allocator->metadata_.MetadataStartBlock(), pool_blocks);
-    *out = fbl::move(allocator);
+    *out = std::move(allocator);
     return ZX_OK;
 }
 
@@ -185,7 +188,9 @@ zx_status_t Allocator::Extend(WriteTxn* txn) {
 
     if (bitmap_blocks_new > bitmap_blocks) {
         // TODO(smklein): Grow the bitmap another slice.
-        fprintf(stderr, "Minfs allocator needs to increase bitmap size\n");
+        // TODO(planders): Once we start growing the [block] bitmap,
+        //                 we will need to start growing the journal as well.
+        FS_TRACE_ERROR("Minfs allocator needs to increase bitmap size\n");
         return ZX_ERR_NO_SPACE;
     }
 
@@ -196,13 +201,13 @@ zx_status_t Allocator::Extend(WriteTxn* txn) {
 
     zx_status_t status;
     if ((status = bc_->FVMExtend(&request)) != ZX_OK) {
-        fprintf(stderr, "minfs::Allocator::Extend failed to grow (on disk): %d\n", status);
+        FS_TRACE_ERROR("minfs::Allocator::Extend failed to grow (on disk): %d\n", status);
         return status;
     }
 
     if (grow_cb_) {
         if ((status = grow_cb_(pool_size)) != ZX_OK) {
-            fprintf(stderr, "minfs::Allocator grow callback failure: %d\n", status);
+            FS_TRACE_ERROR("minfs::Allocator grow callback failure: %d\n", status);
             return status;
         }
     }
@@ -211,7 +216,7 @@ zx_status_t Allocator::Extend(WriteTxn* txn) {
     ZX_DEBUG_ASSERT(pool_size >= map_.size());
     size_t old_pool_size = map_.size();
     if ((status = map_.Grow(fbl::round_up(pool_size, kMinfsBlockBits))) != ZX_OK) {
-        fprintf(stderr, "minfs::Allocator failed to Grow (in memory): %d\n", status);
+        FS_TRACE_ERROR("minfs::Allocator failed to Grow (in memory): %d\n", status);
         return ZX_ERR_NO_SPACE;
     }
     // Grow before shrinking to ensure the underlying storage is a multiple
@@ -236,11 +241,26 @@ void Allocator::Persist(WriteTxn* txn, size_t index, size_t count) {
     blk_t blk_count = BitmapBlocksForSize(count);
 
 #ifdef __Fuchsia__
-    auto data = map_.StorageUnsafe()->GetVmo();
+    zx_handle_t data = map_.StorageUnsafe()->GetVmo().get();
 #else
-    auto data = map_.StorageUnsafe()->GetData();
+    const void* data = map_.StorageUnsafe()->GetData();
 #endif
     txn->Enqueue(data, rel_block, abs_block, blk_count);
 }
+
+#ifdef __Fuchsia__
+fbl::Vector<BlockRegion> Allocator::GetAllocatedRegions() const {
+    fbl::Vector<BlockRegion> out_regions;
+    uint64_t offset = 0;
+    uint64_t end = 0;
+    while (!map_.Scan(end, map_.size(), false, &offset)) {
+        if (map_.Scan(offset, map_.size(), true, &end)) {
+            end = map_.size();
+        }
+        out_regions.push_back({offset, end - offset});
+    }
+    return out_regions;
+}
+#endif
 
 } // namespace minfs

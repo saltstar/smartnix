@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <stdlib.h>
 #include <string.h>
@@ -16,12 +19,14 @@
 #include <fs/watcher.h>
 #include <lib/zx/channel.h>
 
+#include <utility>
+
 namespace fs {
 
 WatcherContainer::WatcherContainer() = default;
 WatcherContainer::~WatcherContainer() = default;
 
-WatcherContainer::VnodeWatcher::VnodeWatcher(zx::channel h, uint32_t mask) : h(fbl::move(h)),
+WatcherContainer::VnodeWatcher::VnodeWatcher(zx::channel h, uint32_t mask) : h(std::move(h)),
     mask(mask & ~(fuchsia_io_WATCH_MASK_EXISTING | fuchsia_io_WATCH_MASK_IDLE)) {}
 
 WatcherContainer::VnodeWatcher::~VnodeWatcher() {}
@@ -81,7 +86,7 @@ zx_status_t WatcherContainer::WatchDir(Vfs* vfs, Vnode* vn, uint32_t mask, uint3
     }
 
     fbl::AllocChecker ac;
-    fbl::unique_ptr<VnodeWatcher> watcher(new (&ac) VnodeWatcher(fbl::move(channel), mask));
+    fbl::unique_ptr<VnodeWatcher> watcher(new (&ac) VnodeWatcher(std::move(channel), mask));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
@@ -126,7 +131,7 @@ zx_status_t WatcherContainer::WatchDir(Vfs* vfs, Vnode* vn, uint32_t mask, uint3
     }
 
     fbl::AutoLock lock(&lock_);
-    watch_list_.push_back(fbl::move(watcher));
+    watch_list_.push_back(std::move(watcher));
     return ZX_OK;
 }
 

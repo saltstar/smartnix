@@ -1,8 +1,12 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <audio-proto-utils/format-utils.h>
 #include <ddk/debug.h>
-#include <fbl/limits.h>
 #include <lib/simple-audio-stream/simple-audio-stream.h>
+#include <limits>
+#include <utility>
 #include <zircon/device/audio.h>
 
 namespace audio {
@@ -10,7 +14,6 @@ namespace audio {
 void SimpleAudioStream::Shutdown() {
     if (domain_ != nullptr) {
         domain_->Deactivate();
-
     }
 
     {
@@ -18,6 +21,10 @@ void SimpleAudioStream::Shutdown() {
         // assert that we are holding the domain token (assuming that users of
         // Shutdown behave in a single threaded fashion)
         OBTAIN_EXECUTION_DOMAIN_TOKEN(t, domain_);
+
+        // Channels-to-notify should already be empty. Explicitly clear it, to be safe.
+        plug_notify_channels_.clear();
+
         ShutdownHook();
     }
 }
@@ -36,6 +43,8 @@ zx_status_t SimpleAudioStream::CreateInternal() {
             zxlogf(ERROR, "Init failure in %s (res %d)\n", __PRETTY_FUNCTION__, res);
             return res;
         }
+        // If no subclass has set this, we need to do so here.
+        if (plug_time_ == 0) { plug_time_ = zx_clock_get(ZX_CLOCK_MONOTONIC); }
     }
 
     domain_ = dispatcher::ExecutionDomain::Create();
@@ -74,6 +83,50 @@ zx_status_t SimpleAudioStream::PublishInternal() {
     }
 
     return res;
+}
+
+// Called by a child subclass during Init, to establish the properties of this plug.
+// Caller must include only flags defined for audio_stream_cmd_plug_detect_resp_t.
+void SimpleAudioStream::SetInitialPlugState(audio_pd_notify_flags_t initial_state) {
+    audio_pd_notify_flags_t known_flags = AUDIO_PDNF_HARDWIRED | AUDIO_PDNF_CAN_NOTIFY |
+                                          AUDIO_PDNF_PLUGGED;
+    ZX_DEBUG_ASSERT((initial_state & known_flags) == initial_state);
+
+    pd_flags_ = initial_state;
+    plug_time_ = zx_clock_get(ZX_CLOCK_MONOTONIC);
+}
+
+// Called by a child subclass when a dynamic plug state change occurs.
+// Special behavior if this isn't actually a change, or if we should not be able to unplug.
+zx_status_t SimpleAudioStream::SetPlugState(bool plugged) {
+    if (plugged == ((pd_flags_ & AUDIO_PDNF_PLUGGED) != 0)) { return ZX_OK; }
+
+    ZX_DEBUG_ASSERT(((pd_flags_ & AUDIO_PDNF_HARDWIRED) == 0) || plugged);
+
+    if (plugged) { pd_flags_ |=  AUDIO_PDNF_PLUGGED; }
+    else         { pd_flags_ &= ~AUDIO_PDNF_PLUGGED; }
+    plug_time_ = zx_clock_get(ZX_CLOCK_MONOTONIC);
+
+    if (pd_flags_ & AUDIO_PDNF_CAN_NOTIFY) { return NotifyPlugDetect(); }
+
+    return ZX_OK;
+}
+
+// Asynchronously notify of plug state changes.
+zx_status_t SimpleAudioStream::NotifyPlugDetect() {
+    audio_proto::PlugDetectNotify notif;
+
+    notif.hdr.transaction_id = AUDIO_INVALID_TRANSACTION_ID;
+    notif.hdr.cmd = AUDIO_STREAM_PLUG_DETECT_NOTIFY;
+
+    notif.flags = pd_flags_;
+    notif.plug_state_time = plug_time_;
+
+    for (auto& channel : plug_notify_channels_) {
+        // Any error also triggers ChannelClosedHandler; no need to handle it here.
+        (void) channel.Write(&notif, sizeof(notif));
+    }
+    return ZX_OK;
 }
 
 zx_status_t SimpleAudioStream::NotifyPosition(const audio_proto::RingBufPositionNotify& notif) {
@@ -121,7 +174,7 @@ zx_status_t SimpleAudioStream::DdkIoctl(uint32_t op, const void* in_buf, size_t 
     // connection (The connection which is allowed to do things like change
     // formats).
     bool privileged = (stream_channel_ == nullptr);
-    auto channel = dispatcher::Channel::Create();
+    auto channel = dispatcher::Channel::Create<AudioStreamChannel>();
     if (channel == nullptr)
         return ZX_ERR_NO_MEMORY;
 
@@ -131,21 +184,18 @@ zx_status_t SimpleAudioStream::DdkIoctl(uint32_t op, const void* in_buf, size_t 
             return stream->ProcessStreamChannel(channel, privileged);
         });
 
-    dispatcher::Channel::ChannelClosedHandler chandler;
-    if (privileged) {
-        chandler = dispatcher::Channel::ChannelClosedHandler(
-            [stream = fbl::WrapRefPtr(this)](const dispatcher::Channel* channel)->void {
-                OBTAIN_EXECUTION_DOMAIN_TOKEN(t, stream->domain_);
-                fbl::AutoLock channel_lock(&stream->channel_lock_);
-                stream->DeactivateStreamChannel(channel);
-            });
-    }
+    dispatcher::Channel::ChannelClosedHandler chandler = dispatcher::Channel::ChannelClosedHandler(
+        [stream = fbl::WrapRefPtr(this)](const dispatcher::Channel* channel)->void {
+            OBTAIN_EXECUTION_DOMAIN_TOKEN(t, stream->domain_);
+            fbl::AutoLock channel_lock(&stream->channel_lock_);
+            stream->DeactivateStreamChannel(channel);
+        });
 
     zx::channel client_endpoint;
     zx_status_t res = channel->Activate(&client_endpoint,
                                         domain_,
-                                        fbl::move(phandler),
-                                        fbl::move(chandler));
+                                        std::move(phandler),
+                                        std::move(chandler));
     if (res == ZX_OK) {
         if (privileged) {
             ZX_DEBUG_ASSERT(stream_channel_ == nullptr);
@@ -255,6 +305,12 @@ void SimpleAudioStream::DeactivateStreamChannel(const dispatcher::Channel* chann
     if (stream_channel_.get() == channel) {
         stream_channel_ = nullptr;
     }
+
+    auto audio_stream_channel =
+        static_cast<AudioStreamChannel*>(const_cast<dispatcher::Channel*>(channel));
+    if (audio_stream_channel->InContainer()) {
+        plug_notify_channels_.erase(*audio_stream_channel);
+    }
 }
 
 void SimpleAudioStream::DeactivateRingBufferChannel(const dispatcher::Channel* channel) {
@@ -275,7 +331,7 @@ zx_status_t SimpleAudioStream::OnGetStreamFormats(dispatcher::Channel* channel,
     uint16_t formats_sent = 0;
     audio_proto::StreamGetFmtsResp resp = { };
 
-    if (supported_formats_.size() > fbl::numeric_limits<uint16_t>::max()) {
+    if (supported_formats_.size() > std::numeric_limits<uint16_t>::max()) {
         zxlogf(ERROR,
                 "Too many formats (%zu) to send during AUDIO_STREAM_CMD_GET_FORMATS request!\n",
                supported_formats_.size());
@@ -389,8 +445,8 @@ zx_status_t SimpleAudioStream::OnSetStreamFormat(dispatcher::Channel* channel,
 
             resp.result = rb_channel_->Activate(&client_rb_channel,
                                                 domain_,
-                                                fbl::move(phandler),
-                                                fbl::move(chandler));
+                                                std::move(phandler),
+                                                std::move(chandler));
             if (resp.result != ZX_OK) {
                 rb_channel_.reset();
             }
@@ -400,7 +456,7 @@ zx_status_t SimpleAudioStream::OnSetStreamFormat(dispatcher::Channel* channel,
 finished:
     if (resp.result == ZX_OK) {
         resp.external_delay_nsec = external_delay_nsec_;
-        return channel->Write(&resp, sizeof(resp), fbl::move(client_rb_channel));
+        return channel->Write(&resp, sizeof(resp), std::move(client_rb_channel));
     } else {
         return channel->Write(&resp, sizeof(resp));
     }
@@ -447,16 +503,40 @@ finished:
     return (req.hdr.cmd & AUDIO_FLAG_NO_ACK) ? ZX_OK : channel->Write(&resp, sizeof(resp));
 }
 
+// Called when receiving a AUDIO_STREAM_CMD_PLUG_DETECT message from a client.
 zx_status_t SimpleAudioStream::OnPlugDetect(dispatcher::Channel* channel,
                                             const audio_proto::PlugDetectReq& req) {
+    // It should never be the case that both bits are set -- but if so, DISABLE notifications.
+    bool disable = ((req.flags & AUDIO_PDF_DISABLE_NOTIFICATIONS) != 0);
+    bool enable = ((req.flags & AUDIO_PDF_ENABLE_NOTIFICATIONS) != 0) && !disable;
 
-    if (req.hdr.cmd & AUDIO_FLAG_NO_ACK)
-        return ZX_OK;
+    auto audio_stream_channel = static_cast<AudioStreamChannel*>(channel);
+    {
+        fbl::AutoLock channel_lock(&channel_lock_);
+        if (enable) {
+            if (plug_notify_channels_.is_empty()) {
+                EnableAsyncNotification(true);
+            }
+            if (!audio_stream_channel->InContainer()) {
+                plug_notify_channels_.push_back(fbl::WrapRefPtr(audio_stream_channel));
+            }
+        } else if (disable) {
+            if (audio_stream_channel->InContainer()) {
+                plug_notify_channels_.erase(*audio_stream_channel);
+            }
+            if (plug_notify_channels_.is_empty()) {
+                EnableAsyncNotification(false);
+            }
+        }
+    }
+
+    if (req.hdr.cmd & AUDIO_FLAG_NO_ACK) { return ZX_OK; }
 
     audio_proto::PlugDetectResp resp = { };
     resp.hdr = req.hdr;
-    resp.flags = static_cast<audio_pd_notify_flags_t>(AUDIO_PDNF_HARDWIRED |
-                                                      AUDIO_PDNF_PLUGGED);
+    resp.flags = pd_flags_;
+    resp.plug_state_time = plug_time_;
+
     return channel->Write(&resp, sizeof(resp));
 }
 
@@ -519,7 +599,7 @@ zx_status_t SimpleAudioStream::OnGetBuffer(dispatcher::Channel* channel,
         zx::vmo buffer;
         resp.result = GetBuffer(req, &resp.num_ring_buffer_frames, &buffer);
         if (resp.result == ZX_OK) {
-            zx_status_t res = channel->Write(&resp, sizeof(resp), fbl::move(buffer));
+            zx_status_t res = channel->Write(&resp, sizeof(resp), std::move(buffer));
             if (res == ZX_OK) {
                 expected_notifications_per_ring_.store(req.notifications_per_ring);
                 rb_fetched_ = true;

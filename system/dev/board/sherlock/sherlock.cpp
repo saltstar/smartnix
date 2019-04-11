@@ -16,7 +16,7 @@
 #include <ddk/driver.h>
 #include <ddk/platform-defs.h>
 #include <ddk/protocol/gpio.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/device.h>
 #include <fbl/algorithm.h>
 #include <fbl/unique_ptr.h>
 
@@ -58,6 +58,11 @@ zx_status_t Sherlock::Create(zx_device_t* parent) {
 
 int Sherlock::Thread() {
     // Load protocol implementation drivers first.
+    if (SysmemInit() != ZX_OK) {
+        zxlogf(ERROR, "SysmemInit() failed\n");
+        return -1;
+    }
+
     if (GpioInit() != ZX_OK) {
         zxlogf(ERROR, "GpioInit() failed\n");
         return -1;
@@ -70,37 +75,61 @@ int Sherlock::Thread() {
 
     if (I2cInit() != ZX_OK) {
         zxlogf(ERROR, "I2cInit() failed\n");
-        return -1;
     }
 
     if (CanvasInit() != ZX_OK) {
         zxlogf(ERROR, "CanvasInit() failed\n");
-        return -1;
+    }
+
+    if (DisplayInit() != ZX_OK) {
+        zxlogf(ERROR, "DisplayInit()failed\n");
     }
 
     // Then the platform device drivers.
     if (UsbInit() != ZX_OK) {
         zxlogf(ERROR, "UsbInit() failed\n");
-        return -1;
     }
 
     if (EmmcInit() != ZX_OK) {
         zxlogf(ERROR, "EmmcInit() failed\n");
-        return -1;
+    }
+
+    // The BMC43458 chip requires this hardware clock for bluetooth and wifi.
+    // Called here to avoid a dep. between sdio and bluetooth init order.
+    if (BCM43458LpoClockInit() != ZX_OK) {
+        zxlogf(ERROR, "Bcm43458LpoClockInit() failed\n");
+    }
+
+    if (SdioInit() != ZX_OK) {
+        zxlogf(ERROR, "SdioInit() failed\n");
+    }
+
+    if (BluetoothInit() != ZX_OK) {
+        zxlogf(ERROR, "BluetoothInit() failed\n");
     }
 
     if (CameraInit() != ZX_OK) {
         zxlogf(ERROR, "CameraInit() failed\n");
-        return -1;
     }
 
     if (VideoInit() != ZX_OK) {
         zxlogf(ERROR, "VideoInit() failed\n");
-        return -1;
     }
 
     if (MaliInit() != ZX_OK) {
         zxlogf(ERROR, "MaliInit() failed\n");
+    }
+
+    if (BacklightInit() != ZX_OK) {
+        zxlogf(ERROR, "BacklightInit() failed\n");
+    }
+
+    if (ButtonsInit() != ZX_OK) {
+        zxlogf(ERROR, "ButtonsInit() failed\n");
+    }
+
+    if (AudioInit() != ZX_OK) {
+        zxlogf(ERROR, "AudioInit() failed\n");
         return -1;
     }
     return 0;

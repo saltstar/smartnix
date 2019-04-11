@@ -1,11 +1,13 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <unistd.h>
 
 #include <fbl/alloc_checker.h>
 #include <fbl/unique_ptr.h>
-#include <fvm/fvm-lz4.h>
-
-#include "fvm/container.h"
+#include <fvm/sparse-reader.h>
+#include <fvm-host/container.h>
 
 #define DEFAULT_SLICE_SIZE (8lu * (1 << 20))
 
@@ -19,8 +21,13 @@ int usage(void) {
     fprintf(stderr, " extend : Extends an FVM container to the specified size (length is"
                     " required)\n");
     fprintf(stderr, " sparse : Creates a sparse file. One or more input paths are required.\n");
+    fprintf(stderr, " pave : Creates an FVM container from a sparse file.\n");
     fprintf(stderr, " verify : Report basic information about sparse/fvm files and run fsck on"
-                    " contained partitions\n");
+                    " contained partitions.\n");
+    fprintf(stderr, " size : Prints the minimum size required in order to pave a sparse file."
+                    " If the --disk flag is provided, instead checks that the paved sparse file"
+                    " will fit within a disk of this size. On success, no information is"
+                    " outputted\n");
     fprintf(stderr, " decompress : Decompresses a compressed sparse file. --sparse input path is"
                     " required.\n");
     fprintf(stderr, "Flags (neither or both of offset/length must be specified):\n");
@@ -28,6 +35,7 @@ int usage(void) {
     fprintf(stderr, " --offset [bytes] - offset at which container begins (fvm only)\n");
     fprintf(stderr, " --length [bytes] - length of container within file (fvm only)\n");
     fprintf(stderr, " --compress - specify that file should be compressed (sparse only)\n");
+    fprintf(stderr, " --disk [bytes] - Size of target disk (valid for size command only)\n");
     fprintf(stderr, "Input options:\n");
     fprintf(stderr, " --blob [path] - Add path as blob type (must be blobfs)\n");
     fprintf(stderr, " --data [path] - Add path as encrypted data type (must be minfs)\n");
@@ -114,6 +122,7 @@ int main(int argc, char** argv) {
     size_t length = 0;
     size_t offset = 0;
     size_t slice_size = DEFAULT_SLICE_SIZE;
+    size_t disk_size = 0;
     bool should_unlink = true;
     uint32_t flags = 0;
     while (i < argc) {
@@ -142,6 +151,10 @@ int main(int argc, char** argv) {
                 flags |= fvm::kSparseFlagLz4;
             } else {
                 fprintf(stderr, "Invalid compression type\n");
+                return -1;
+            }
+        } else if (!strcmp(argv[i], "--disk")) {
+            if (parse_size(argv[++i], &disk_size) < 0) {
                 return -1;
             }
         } else {
@@ -184,12 +197,8 @@ int main(int argc, char** argv) {
             return -1;
         }
     } else if (!strcmp(command, "add")) {
-        fbl::AllocChecker ac;
-        fbl::unique_ptr<FvmContainer> fvmContainer(new (&ac) FvmContainer(path, slice_size, offset,
-                                                                          length));
-        if (!ac.check()) {
-            return ZX_ERR_NO_MEMORY;
-        }
+        fbl::unique_ptr<FvmContainer> fvmContainer(new FvmContainer(path, slice_size, offset,
+                                                                    length));
 
         if (add_partitions(fvmContainer.get(), argc - i, argv + i) < 0) {
             return -1;
@@ -211,12 +220,8 @@ int main(int argc, char** argv) {
             usage();
         }
 
-        fbl::AllocChecker ac;
-        fbl::unique_ptr<FvmContainer> fvmContainer(new (&ac) FvmContainer(path, slice_size, offset,
-                                                                          disk_size));
-        if (!ac.check()) {
-            return ZX_ERR_NO_MEMORY;
-        }
+        fbl::unique_ptr<FvmContainer> fvmContainer(new FvmContainer(path, slice_size, offset,
+                                                                    disk_size));
 
         if (fvmContainer->Extend(length) != ZX_OK) {
             return -1;
@@ -262,12 +267,36 @@ int main(int argc, char** argv) {
             return -1;
         }
 
-        if (fvm::decompress_sparse(input_path, path) != ZX_OK) {
+        SparseContainer compressedContainer(input_path, slice_size, flags);
+        if (compressedContainer.Decompress(path) != ZX_OK) {
             return -1;
         }
 
-        fbl::unique_ptr<SparseContainer> sparseData(new SparseContainer(path, slice_size, flags));
-        if (sparseData->Verify() != ZX_OK) {
+        SparseContainer sparseContainer(path, slice_size, flags);
+        if (sparseContainer.Verify() != ZX_OK) {
+            return -1;
+        }
+    } else if (!strcmp(command, "size")) {
+        SparseContainer sparseContainer(path, slice_size, flags);
+
+        if (disk_size == 0) {
+            printf("%" PRIu64 "\n", sparseContainer.CalculateDiskSize());
+        } else if (sparseContainer.CheckDiskSize(disk_size) != ZX_OK) {
+            fprintf(stderr, "Sparse container will not fit in target disk size\n");
+            return -1;
+        }
+    } else if (!strcmp(command, "pave")) {
+        char* input_type = argv[i];
+        char* input_path = argv[i + 1];
+
+        if (strcmp(input_type, "--sparse")) {
+            fprintf(stderr, "pave command only accepts --sparse input option\n");
+            usage();
+            return -1;
+        }
+
+        SparseContainer sparseData(input_path, slice_size, flags);
+        if (sparseData.Pave(path, offset, length) != ZX_OK) {
             return -1;
         }
     } else {

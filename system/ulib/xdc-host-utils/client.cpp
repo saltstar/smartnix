@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <errno.h>
 #include <stdint.h>
@@ -10,6 +13,8 @@
 
 #include <xdc-host-utils/client.h>
 #include <xdc-host-utils/conn.h>
+
+#include <utility>
 
 namespace xdc {
 
@@ -47,7 +52,7 @@ zx_status_t GetStream(uint32_t stream_id, fbl::unique_fd* out_fd) {
         fprintf(stderr, "Stream id %u was already taken, exiting\n", stream_id);
         return ZX_ERR_ALREADY_BOUND;
     }
-    *out_fd = fbl::move(fd);
+    *out_fd = std::move(fd);
     return ZX_OK;
 }
 

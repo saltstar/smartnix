@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Intel architecture-specified performance monitor registers.
 // This has the benefit of providing the data in a usage-independent way.

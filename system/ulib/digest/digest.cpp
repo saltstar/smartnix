@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <digest/digest.h>
 
@@ -14,6 +17,8 @@
 // See note in //zircon/third_party/ulib/uboringssl/rules.mk
 #define BORINGSSL_NO_CXX
 #include <openssl/sha.h>
+
+#include <utility>
 
 namespace digest {
 
@@ -36,7 +41,7 @@ Digest::~Digest() {
 
 Digest::Digest(Digest&& o) {
     ZX_DEBUG_ASSERT(o.ref_count_ == 0);
-    ctx_ = fbl::move(o.ctx_);
+    ctx_ = std::move(o.ctx_);
     memcpy(bytes_, o.bytes_, kLength);
     memset(o.bytes_, 0, kLength);
 }

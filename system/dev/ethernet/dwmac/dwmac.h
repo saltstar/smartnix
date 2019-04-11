@@ -4,22 +4,21 @@
 
 #pragma once
 
+#include <atomic>
 #include <ddk/device.h>
-#include <ddk/protocol/ethernet_board.h>
-#include <ddk/protocol/ethernet_mac.h>
-#include <ddk/protocol/gpio.h>
-#include <ddk/protocol/i2c.h>
-#include <ddk/protocol/platform-device.h>
 #include <ddk/protocol/test.h>
 #include <ddktl/device.h>
 #include <ddktl/mmio.h>
+#include <ddktl/pdev.h>
 #include <ddktl/protocol/ethernet.h>
+#include <ddktl/protocol/ethernet/board.h>
+#include <ddktl/protocol/ethernet/mac.h>
 #include <fbl/mutex.h>
-#include <fbl/optional.h>
 #include <fbl/unique_ptr.h>
 #include <lib/sync/completion.h>
 #include <lib/zx/interrupt.h>
 #include <lib/zx/vmo.h>
+#include <optional>
 #include <threads.h>
 #include <zircon/compiler.h>
 #include <zircon/types.h>
@@ -84,7 +83,8 @@ typedef volatile struct dw_dmadescr {
 namespace eth {
 
 class DWMacDevice : public ddk::Device<DWMacDevice, ddk::Unbindable>,
-                    public ddk::EthmacProtocol<DWMacDevice> {
+                    public ddk::EthmacProtocol<DWMacDevice, ddk::base_protocol>,
+                    public ddk::EthMacProtocol<DWMacDevice> {
 public:
     DWMacDevice(zx_device_t* device);
 
@@ -93,12 +93,19 @@ public:
     void DdkRelease();
     void DdkUnbind();
 
+    // ZX_PROTOCOL_ETHMAC ops.
     zx_status_t EthmacQuery(uint32_t options, ethmac_info_t* info);
     void EthmacStop() __TA_EXCLUDES(lock_);
-    zx_status_t EthmacStart(fbl::unique_ptr<ddk::EthmacIfcProxy> proxy) __TA_EXCLUDES(lock_);
+    zx_status_t EthmacStart(const ethmac_ifc_t* ifc) __TA_EXCLUDES(lock_);
     zx_status_t EthmacQueueTx(uint32_t options, ethmac_netbuf_t* netbuf) __TA_EXCLUDES(lock_);
-    zx_status_t EthmacSetParam(uint32_t param, int32_t value, void* data);
-    zx_handle_t EthmacGetBti();
+    zx_status_t EthmacSetParam(uint32_t param, int32_t value, const void* data, size_t data_size);
+    void EthmacGetBti(zx::bti* bti);
+
+    // ZX_PROTOCOL_ETH_MAC ops.
+    zx_status_t EthMacMdioWrite(uint32_t reg, uint32_t val);
+    zx_status_t EthMacMdioRead(uint32_t reg, uint32_t* val);
+    zx_status_t EthMacRegisterCallbacks(const eth_mac_callbacks_t* callbacks);
+
 
 private:
 
@@ -118,11 +125,6 @@ private:
     int WorkerThread();
 
     zx_status_t GetMAC(zx_device_t* dev);
-
-    // ZX_PROTOCOL_ETH_MAC ops.
-    zx_status_t MDIOWrite(uint32_t reg, uint32_t val);
-    zx_status_t MDIORead(uint32_t reg, uint32_t* val);
-    zx_status_t RegisterCallbacks(eth_mac_callbacks_t* callbacks);
 
     //Number each of tx/rx transaction descriptors
     static constexpr uint32_t kNumDesc = 32;
@@ -146,22 +148,22 @@ private:
     // ethermac fields
     uint32_t features_ = 0;
     uint32_t mtu_ = 0;
-    uint8_t mac_[6] = {};
+    uint8_t mac_[MAC_ARRAY_LENGTH] = {};
     uint16_t mii_addr_ = 0;
 
     zx::bti bti_;
     zx::interrupt dma_irq_;
 
-    pdev_protocol_t pdev_;
-    eth_board_protocol_t eth_board_;
+    ddk::PDev pdev_;
+    ddk::EthBoardProtocolClient eth_board_;
 
-    fbl::optional<ddk::MmioBuffer> dwmac_regs_iobuff_;
+    std::optional<ddk::MmioBuffer> dwmac_regs_iobuff_;
 
     dw_mac_regs_t* dwmac_regs_ = nullptr;
     dw_dma_regs_t* dwdma_regs_ = nullptr;
 
     fbl::Mutex lock_;
-    fbl::unique_ptr<ddk::EthmacIfcProxy> ethmac_proxy_ __TA_GUARDED(lock_);
+    ddk::EthmacIfcClient ethmac_client_ __TA_GUARDED(lock_);
 
     // Only accessed from Thread, so not locked.
     bool online_ = false;
@@ -172,13 +174,13 @@ private:
     uint32_t rx_packet_ = 0;
     uint32_t loop_count_ = 0;
 
-    fbl::atomic<bool> running_;
+    std::atomic<bool> running_;
 
     thrd_t thread_;
     thrd_t worker_thread_;
 
     // PHY callbacks.
-    eth_mac_callbacks_t cb_;
+    eth_mac_callbacks_t cbs_;
 
     // Callbacks registered signal.
     sync_completion_t cb_registered_signal_;

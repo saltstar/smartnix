@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_FORMATTER_H_
 #define ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_FORMATTER_H_
@@ -112,6 +115,7 @@ public:
         OnBlankLineRespectingNode();
         ScopedBool before(blank_space_before_colon_, false);
         ScopedBool mem(is_member_decl_);
+        ScopedBool has_ordinal(has_ordinal_, element->ordinal != nullptr);
         TreeVisitor::OnInterfaceMethod(element);
     }
 
@@ -145,9 +149,22 @@ public:
     }
 
     virtual void OnUnionMember(std::unique_ptr<UnionMember> const& element) override {
-        ScopedBool mem(is_member_decl_);
         OnBlankLineRespectingNode();
+        ScopedBool mem(is_member_decl_);
         TreeVisitor::OnUnionMember(element);
+    }
+
+    virtual void OnXUnionDeclaration(std::unique_ptr<XUnionDeclaration> const& element) override {
+        OnBlankLineRequiringNode();
+        TreeVisitor::OnXUnionDeclaration(element);
+    }
+
+    virtual void OnXUnionMember(std::unique_ptr<XUnionMember> const& element) override {
+        OnBlankLineRespectingNode();
+        ScopedBool mem(is_member_decl_);
+        ScopedBool before_colon(blank_space_before_colon_, false);
+        ScopedBool after_colon(blank_space_after_colon_, true);
+        TreeVisitor::OnXUnionMember(element);
     }
 
     virtual void OnType(std::unique_ptr<Type> const& element) override {
@@ -369,6 +386,9 @@ private:
 
     bool is_member_decl_ = false;
 
+    // Does the current member have an explicit ordinal?
+    bool has_ordinal_ = false;
+
     // str is a gap plus the next meaningful token.
     void TrackInterfaceMethodAlignment(const std::string& str);
 
@@ -388,6 +408,44 @@ private:
             formatted_output_ += total_string;
             last_source_location_ = ws_location;
         }
+    }
+};
+
+class OrdinalRemovalVisitor : public fidl::raw::DeclarationOrderTreeVisitor {
+public:
+    OrdinalRemovalVisitor() {}
+    virtual void OnInterfaceMethod(
+        std::unique_ptr<fidl::raw::InterfaceMethod> const& element) override {
+        if (element->ordinal != nullptr) {
+            const char* start = element->ordinal->start_.data().data();
+            const char* end = element->ordinal->end_.data().data() +
+                              element->ordinal->end_.data().size();
+            for (char* ptr = const_cast<char*>(start); ptr < end; ptr++) {
+                // Don't erase comments in the middle of ordinals;
+                if (strncmp("//", ptr, 2) == 0) {
+                    while (*ptr != '\n' && ptr < end) {
+                        ptr++;
+                    }
+                    continue;
+                }
+                *ptr = ' ';
+            }
+
+            // Incorporate the whitespace that came before the ordinal into the
+            // whitespace before the identifier.
+            element->identifier->start_.set_previous_end(
+                element->ordinal->start_.previous_end());
+            element->identifier->end_.set_previous_end(
+                element->ordinal->start_.previous_end());
+
+            // If there are no attributes, the identifier is now the start of
+            // the method.
+            if (element->attributes == nullptr)
+                element->start_ = element->identifier->start_;
+
+            element->ordinal.reset(nullptr);
+        }
+        DeclarationOrderTreeVisitor::OnInterfaceMethod(element);
     }
 };
 

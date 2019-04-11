@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "fidl/json_generator.h"
 
@@ -112,6 +115,32 @@ void JSONGenerator::GenerateArray(Iterator begin, Iterator end) {
     }
 
     if (begin != end)
+        EmitNewlineAndIndent(&json_file_, --indent_level_);
+
+    EmitArrayEnd(&json_file_);
+}
+
+// Temporarily specializing for structs to avoid printing anonymous
+// declarations.
+template <>
+void JSONGenerator::GenerateArray(
+    std::vector<std::unique_ptr<flat::Struct>>::const_iterator begin,
+    std::vector<std::unique_ptr<flat::Struct>>::const_iterator end) {
+    EmitArrayBegin(&json_file_);
+
+    bool is_first = true;
+    for (std::vector<std::unique_ptr<flat::Struct>>::const_iterator it = begin; it != end; ++it) {
+        if ((*it)->anonymous)
+            continue;
+        if (is_first) {
+            EmitNewlineAndIndent(&json_file_, ++indent_level_);
+            is_first = false;
+        } else {
+            EmitArraySeparator(&json_file_, indent_level_);
+        }
+        Generate(*it);
+    }
+    if (!is_first)
         EmitNewlineAndIndent(&json_file_, --indent_level_);
 
     EmitArrayEnd(&json_file_);
@@ -236,17 +265,25 @@ void JSONGenerator::Generate(const raw::Literal& value) {
 
 void JSONGenerator::Generate(const flat::Constant& value) {
     GenerateObject([&]() {
-        GenerateObjectMember("kind", NameFlatConstantKind(value.kind), Position::kFirst);
-
         switch (value.kind) {
         case flat::Constant::Kind::kIdentifier: {
+            GenerateObjectMember("kind", NameFlatConstantKind(value.kind), Position::kFirst);
             auto type = static_cast<const flat::IdentifierConstant*>(&value);
             GenerateObjectMember("identifier", type->name);
             break;
         }
         case flat::Constant::Kind::kLiteral: {
+            GenerateObjectMember("kind", NameFlatConstantKind(value.kind), Position::kFirst);
             auto type = static_cast<const flat::LiteralConstant*>(&value);
             GenerateObjectMember("literal", type->literal);
+            break;
+        }
+        case flat::Constant::Kind::kSynthesized: {
+            // TODO(pascallouis): We should explore exposing these in the JSON IR, such that the
+            // implicit bounds are made explicit by fidlc, rather than sprinkled throughout all
+            // backends.
+            //
+            // For now, do not emit synthesized constants
             break;
         }
         }
@@ -261,21 +298,24 @@ void JSONGenerator::Generate(const flat::Type& value) {
         case flat::Type::Kind::kArray: {
             auto type = static_cast<const flat::ArrayType*>(&value);
             GenerateObjectMember("element_type", type->element_type);
-            GenerateObjectMember("element_count", type->element_count.Value());
+            auto element_count = static_cast<const flat::Size&>(type->element_count->Value());
+            GenerateObjectMember("element_count", element_count.value);
             break;
         }
         case flat::Type::Kind::kVector: {
             auto type = static_cast<const flat::VectorType*>(&value);
             GenerateObjectMember("element_type", type->element_type);
-            if (type->element_count.Value() < flat::Size::Max().Value())
-                GenerateObjectMember("maybe_element_count", type->element_count.Value());
+            auto element_count = static_cast<const flat::Size&>(type->element_count->Value());
+            if (element_count < flat::Size::Max())
+                GenerateObjectMember("maybe_element_count", element_count.value);
             GenerateObjectMember("nullable", type->nullability);
             break;
         }
         case flat::Type::Kind::kString: {
             auto type = static_cast<const flat::StringType*>(&value);
-            if (type->max_size.Value() < flat::Size::Max().Value())
-                GenerateObjectMember("maybe_element_count", type->max_size.Value());
+            auto max_size = static_cast<const flat::Size&>(type->max_size->Value());
+            if (max_size < flat::Size::Max())
+                GenerateObjectMember("maybe_element_count", max_size.value);
             GenerateObjectMember("nullable", type->nullability);
             break;
         }
@@ -375,43 +415,36 @@ void JSONGenerator::Generate(const flat::Interface::Method* method) {
     const auto& value = *method;
     GenerateObject([&]() {
         GenerateObjectMember("ordinal", value.ordinal, Position::kFirst);
+        GenerateObjectMember("generated_ordinal", value.generated_ordinal);
         GenerateObjectMember("name", value.name);
         GenerateObjectMember("has_request", value.maybe_request != nullptr);
         if (value.attributes)
             GenerateObjectMember("maybe_attributes", value.attributes);
         if (value.maybe_request != nullptr) {
-            GenerateObjectMember("maybe_request", value.maybe_request->parameters);
-            GenerateObjectMember("maybe_request_size", value.maybe_request->typeshape.Size());
-            GenerateObjectMember("maybe_request_alignment",
-                                 value.maybe_request->typeshape.Alignment());
+            GenerateRequest("maybe_request", *value.maybe_request);
         }
         GenerateObjectMember("has_response", value.maybe_response != nullptr);
         if (value.maybe_response != nullptr) {
-            GenerateObjectMember("maybe_response", value.maybe_response->parameters);
-            GenerateObjectMember("maybe_response_size", value.maybe_response->typeshape.Size());
-            GenerateObjectMember("maybe_response_alignment",
-                                 value.maybe_response->typeshape.Alignment());
+            GenerateRequest("maybe_response", *value.maybe_response);
         }
     });
 }
 
-void JSONGenerator::Generate(const flat::Interface::Method::Parameter& value) {
-    GenerateObject([&]() {
-        GenerateObjectMember("type", value.type, Position::kFirst);
-        GenerateObjectMember("name", value.name);
-        GenerateObjectMember("size", value.fieldshape.Size());
-        GenerateObjectMember("alignment", value.fieldshape.Alignment());
-        GenerateObjectMember("offset", value.fieldshape.Offset());
-    });
+void JSONGenerator::GenerateRequest(const std::string& prefix, const flat::Struct& value) {
+    GenerateObjectMember(prefix, value.members);
+    GenerateObjectMember(prefix + "_size", value.typeshape.Size());
+    GenerateObjectMember(prefix + "_alignment", value.typeshape.Alignment());
 }
 
 void JSONGenerator::Generate(const flat::Struct& value) {
     GenerateObject([&]() {
         GenerateObjectMember("name", value.name, Position::kFirst);
+        GenerateObjectMember("anonymous", value.anonymous);
         if (value.attributes)
             GenerateObjectMember("maybe_attributes", value.attributes);
         GenerateObjectMember("members", value.members);
         GenerateObjectMember("size", value.typeshape.Size());
+        GenerateObjectMember("max_out_of_line", value.typeshape.MaxOutOfLine());
         GenerateObjectMember("alignment", value.typeshape.Alignment());
         GenerateObjectMember("max_handles", value.typeshape.MaxHandles());
     });
@@ -426,6 +459,7 @@ void JSONGenerator::Generate(const flat::Struct::Member& value) {
         if (value.maybe_default_value)
             GenerateObjectMember("maybe_default_value", value.maybe_default_value);
         GenerateObjectMember("size", value.fieldshape.Size());
+        GenerateObjectMember("max_out_of_line", value.fieldshape.MaxOutOfLine());
         GenerateObjectMember("alignment", value.fieldshape.Alignment());
         GenerateObjectMember("offset", value.fieldshape.Offset());
         GenerateObjectMember("max_handles", value.fieldshape.MaxHandles());
@@ -439,6 +473,7 @@ void JSONGenerator::Generate(const flat::Table& value) {
             GenerateObjectMember("maybe_attributes", value.attributes);
         GenerateObjectMember("members", value.members);
         GenerateObjectMember("size", value.typeshape.Size());
+        GenerateObjectMember("max_out_of_line", value.typeshape.MaxOutOfLine());
         GenerateObjectMember("alignment", value.typeshape.Alignment());
         GenerateObjectMember("max_handles", value.typeshape.MaxHandles());
     });
@@ -456,6 +491,7 @@ void JSONGenerator::Generate(const flat::Table::Member& value) {
             if (value.maybe_used->maybe_default_value)
                 GenerateObjectMember("maybe_default_value", value.maybe_used->maybe_default_value);
             GenerateObjectMember("size", value.maybe_used->typeshape.Size());
+            GenerateObjectMember("max_out_of_line", value.maybe_used->typeshape.MaxOutOfLine());
             GenerateObjectMember("alignment", value.maybe_used->typeshape.Alignment());
             GenerateObjectMember("max_handles", value.maybe_used->typeshape.MaxHandles());
         } else {
@@ -471,6 +507,7 @@ void JSONGenerator::Generate(const flat::Union& value) {
             GenerateObjectMember("maybe_attributes", value.attributes);
         GenerateObjectMember("members", value.members);
         GenerateObjectMember("size", value.typeshape.Size());
+        GenerateObjectMember("max_out_of_line", value.typeshape.MaxOutOfLine());
         GenerateObjectMember("alignment", value.typeshape.Alignment());
         GenerateObjectMember("max_handles", value.typeshape.MaxHandles());
     });
@@ -483,6 +520,34 @@ void JSONGenerator::Generate(const flat::Union::Member& value) {
         if (value.attributes)
             GenerateObjectMember("maybe_attributes", value.attributes);
         GenerateObjectMember("size", value.fieldshape.Size());
+        GenerateObjectMember("max_out_of_line", value.fieldshape.MaxOutOfLine());
+        GenerateObjectMember("alignment", value.fieldshape.Alignment());
+        GenerateObjectMember("offset", value.fieldshape.Offset());
+    });
+}
+
+void JSONGenerator::Generate(const flat::XUnion& value) {
+    GenerateObject([&]() {
+        GenerateObjectMember("name", value.name, Position::kFirst);
+        if (value.attributes)
+            GenerateObjectMember("maybe_attributes", value.attributes);
+        GenerateObjectMember("members", value.members);
+        GenerateObjectMember("size", value.typeshape.Size());
+        GenerateObjectMember("max_out_of_line", value.typeshape.MaxOutOfLine());
+        GenerateObjectMember("alignment", value.typeshape.Alignment());
+        GenerateObjectMember("max_handles", value.typeshape.MaxHandles());
+    });
+}
+
+void JSONGenerator::Generate(const flat::XUnion::Member& value) {
+    GenerateObject([&]() {
+        GenerateObjectMember("ordinal", value.ordinal, Position::kFirst);
+        GenerateObjectMember("type", value.type);
+        GenerateObjectMember("name", value.name);
+        if (value.attributes)
+            GenerateObjectMember("maybe_attributes", value.attributes);
+        GenerateObjectMember("size", value.fieldshape.Size());
+        GenerateObjectMember("max_out_of_line", value.fieldshape.MaxOutOfLine());
         GenerateObjectMember("alignment", value.fieldshape.Alignment());
         GenerateObjectMember("offset", value.fieldshape.Offset());
     });
@@ -519,14 +584,20 @@ void JSONGenerator::GenerateDeclarationsMember(const flat::Library* library, Pos
         for (const auto& decl : library->interface_declarations_)
             GenerateDeclarationsEntry(count++, decl->name, "interface");
 
-        for (const auto& decl : library->struct_declarations_)
+        for (const auto& decl : library->struct_declarations_) {
+            if (decl->anonymous)
+                continue;
             GenerateDeclarationsEntry(count++, decl->name, "struct");
+        }
 
         for (const auto& decl : library->table_declarations_)
             GenerateDeclarationsEntry(count++, decl->name, "table");
 
         for (const auto& decl : library->union_declarations_)
             GenerateDeclarationsEntry(count++, decl->name, "union");
+
+        for (const auto& decl : library->xunion_declarations_)
+            GenerateDeclarationsEntry(count++, decl->name, "xunion");
     });
 }
 
@@ -554,12 +625,18 @@ std::ostringstream JSONGenerator::Produce() {
         GenerateObjectMember("struct_declarations", library_->struct_declarations_);
         GenerateObjectMember("table_declarations", library_->table_declarations_);
         GenerateObjectMember("union_declarations", library_->union_declarations_);
+        GenerateObjectMember("xunion_declarations", library_->xunion_declarations_);
 
         // The library's declaration_order_ contains all the declarations for all
         // transitive dependencies. The backend only needs the declaration order
         // for this specific library.
         std::vector<std::string> declaration_order;
         for (flat::Decl* decl : library_->declaration_order_) {
+            if (decl->kind == flat::Decl::Kind::kStruct) {
+                auto struct_decl = static_cast<flat::Struct*>(decl);
+                if (struct_decl->anonymous)
+                    continue;
+            }
             if (decl->name.library() == library_)
                 declaration_order.push_back(NameName(decl->name, ".", "/"));
         }

@@ -7,16 +7,17 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include <fbl/type_support.h>
 #include <lib/fzl/time.h>
 #include <lib/zx/bti.h>
 #include <lib/zx/channel.h>
 #include <lib/zx/event.h>
 #include <lib/zx/eventpair.h>
 #include <lib/zx/handle.h>
+#include <lib/zx/iommu.h>
 #include <lib/zx/job.h>
 #include <lib/zx/port.h>
 #include <lib/zx/process.h>
+#include <lib/zx/profile.h>
 #include <lib/zx/socket.h>
 #include <lib/zx/suspend_token.h>
 #include <lib/zx/thread.h>
@@ -26,6 +27,8 @@
 #include <zircon/syscalls.h>
 #include <zircon/syscalls/object.h>
 #include <zircon/syscalls/port.h>
+
+#include <utility>
 
 static zx_status_t validate_handle(zx_handle_t handle) {
     return zx_object_get_info(handle, ZX_INFO_HANDLE_VALID,
@@ -58,7 +61,7 @@ static bool handle_move_test() {
     zx::event event;
     // Check move semantics.
     ASSERT_EQ(zx::event::create(0u, &event), ZX_OK);
-    zx::handle handle(fbl::move(event));
+    zx::handle handle(std::move(event));
     ASSERT_EQ(event.release(), ZX_HANDLE_INVALID);
     ASSERT_EQ(validate_handle(handle.get()), ZX_OK);
     END_TEST;
@@ -124,6 +127,13 @@ static bool bti_compilation_test() {
 static bool pmt_compilation_test() {
     BEGIN_TEST;
     zx::pmt pmt;
+    // TODO(teisenbe): test more.
+    END_TEST;
+}
+
+static bool iommu_compilation_test() {
+    BEGIN_TEST;
+    zx::iommu iommu;
     // TODO(teisenbe): test more.
     END_TEST;
 }
@@ -624,6 +634,7 @@ RUN_TEST(event_test)
 RUN_TEST(event_duplicate_test)
 RUN_TEST(bti_compilation_test)
 RUN_TEST(pmt_compilation_test)
+RUN_TEST(iommu_compilation_test)
 RUN_TEST(channel_test)
 RUN_TEST(channel_rw_test)
 RUN_TEST(channel_rw_etc_test)

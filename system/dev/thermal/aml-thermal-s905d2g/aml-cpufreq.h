@@ -5,14 +5,14 @@
 #pragma once
 
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-device.h>
-#include <ddk/protocol/platform-device-lib.h>
 #include <ddktl/mmio.h>
+#include <ddktl/pdev.h>
 #include <ddktl/protocol/clk.h>
-#include <fbl/optional.h>
 #include <hwreg/mmio.h>
-#include <soc/aml-s905d2/s905d2-hiu.h>
 #include <lib/zx/bti.h>
+#include <soc/aml-s905d2/s905d2-hiu.h>
+
+#include <optional>
 
 namespace thermal {
 // This class handles the dynamic changing of
@@ -32,14 +32,13 @@ private:
     zx_status_t ConfigureSysPLL(uint32_t new_rate);
     zx_status_t ConfigureFixedPLL(uint32_t new_rate);
 
-    pdev_protocol_t pdev_;
+    ddk::PDev pdev_;
     // Initialize platform stuff.
     zx_status_t InitPdev(zx_device_t* parent);
     // Protocols.
-    clk_protocol_t clk_protocol_;
-    fbl::optional<ddk::ClkProtocolProxy> clk_;
+    ddk::ClkProtocolClient clk_;
     // MMIOS.
-    fbl::optional<ddk::MmioBuffer> hiu_mmio_;
+    std::optional<ddk::MmioBuffer> hiu_mmio_;
     // BTI handle.
     zx::bti bti_;
     // HIU Handle.

@@ -15,17 +15,13 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 
 #include <zircon/assert.h>
 #include <zircon/process.h>
 #include <zircon/syscalls.h>
 
 #include "machina.h"
-
-typedef struct {
-    pbus_protocol_t pbus;
-} machina_board_t;
 
 static zx_status_t machina_pci_init(void) {
     zx_status_t status;
@@ -113,7 +109,7 @@ static zx_status_t machina_board_bind(void* ctx, zx_device_t* parent) {
 
     zx_status_t status = machina_pci_init();
     if (status != ZX_OK) {
-        goto fail;
+        zxlogf(ERROR, "machina_pci_init failed: %d\n", status);
     }
 
     device_add_args_t args = {
@@ -125,6 +121,12 @@ static zx_status_t machina_board_bind(void* ctx, zx_device_t* parent) {
 
     status = device_add(parent, &args, NULL);
     if (status != ZX_OK) {
+        goto fail;
+    }
+
+    status = machina_sysmem_init(bus);
+    if (status != ZX_OK) {
+        zxlogf(ERROR, "machina_board_bind machina_sysmem_init failed: %d\n", status);
         goto fail;
     }
 

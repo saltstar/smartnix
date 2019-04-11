@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef LIB_ZXIO_OPS_H_
 #define LIB_ZXIO_OPS_H_
@@ -14,6 +17,17 @@ __BEGIN_CDECLS
 typedef struct zxio {
     uint64_t reserved[4];
 } zxio_t;
+
+// Storage for the |zxio_ops_t| implementation.
+typedef struct zxio_private {
+    uint64_t reserved[6];
+} zxio_private_t;
+
+// The storage backing a |zxio_t|.
+typedef struct zxio_storage {
+    zxio_t io;
+    zxio_private_t reserved;
+} zxio_storage_t;
 
 // A table of operations for a zxio_t.
 //

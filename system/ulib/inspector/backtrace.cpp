@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // N.B. The offline symbolizer (scripts/symbolize) reads our output,
 // don't break it.
@@ -28,6 +31,8 @@ namespace inspector {
 
 // Keep open debug info for this many files.
 constexpr size_t kDebugInfoCacheNumWays = 2;
+
+constexpr unsigned int kBacktraceFrameLimit = 50;
 
 // Error callback for libbacktrace.
 
@@ -342,7 +347,7 @@ void inspector_print_backtrace_impl(FILE* f,
 
     uint32_t n = 1;
     btprint(f, &di_cache, n++, pc, sp, use_new_format);
-    while ((sp >= 0x1000000) && (n < 50)) {
+    while ((sp >= 0x1000000) && (n < kBacktraceFrameLimit)) {
         if (libunwind_ok) {
             int ret = unw_step(&cursor);
             if (ret < 0) {
@@ -368,8 +373,13 @@ void inspector_print_backtrace_impl(FILE* f,
         }
         btprint(f, &di_cache, n++, pc, sp, use_new_format);
     }
+
     if (!use_new_format) {
         fprintf(f, "bt#%02d: end\n", n);
+    }
+
+    if (n >= kBacktraceFrameLimit) {
+        fprintf(f, "warning: backtrace frame limit exceeded; backtrace may be truncated\n");
     }
 
     unw_destroy_addr_space(remote_as);

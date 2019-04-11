@@ -23,13 +23,11 @@ zx_status_t AmlThermal::Create(zx_device_t* device) {
     zxlogf(INFO, "aml_thermal: driver begin...\n");
     zx_status_t status;
 
-    pdev_protocol_t pdev_proto;
-    status = device_get_protocol(device, ZX_PROTOCOL_PDEV, &pdev_proto);
-    if (status != ZX_OK) {
-        THERMAL_ERROR("could not get platform device protocol: %d\n", status);
-        return status;
+    ddk::PDevProtocolClient pdev(device);
+    if (!pdev.is_valid()) {
+        THERMAL_ERROR("could not get platform device protocol\n");
+        return ZX_ERR_NO_RESOURCES;
     }
-    ddk::PDevProtocolProxy pdev(&pdev_proto);
 
     size_t actual;
     gpio_protocol_t fan0_gpio_proto;
@@ -55,7 +53,7 @@ zx_status_t AmlThermal::Create(zx_device_t* device) {
         return status;
     }
 
-    ddk::ScpiProtocolProxy scpi(&scpi_proto);
+    ddk::ScpiProtocolClient scpi(&scpi_proto);
     uint32_t sensor_id;
     status = scpi.GetSensor("aml_thermal", &sensor_id);
     if (status != ZX_OK) {
@@ -70,7 +68,7 @@ zx_status_t AmlThermal::Create(zx_device_t* device) {
         return status;
     }
 
-    auto thermal = fbl::make_unique<AmlThermal>(device, pdev_proto, fan0_gpio_proto,
+    auto thermal = fbl::make_unique<AmlThermal>(device, pdev, fan0_gpio_proto,
                                                 fan1_gpio_proto, scpi_proto, sensor_id, port);
 
     status = thermal->DdkAdd("vim-thermal", DEVICE_ADD_INVISIBLE);
@@ -223,9 +221,11 @@ zx_status_t AmlThermal::DdkIoctl(uint32_t op, const void* in_buf, size_t in_len,
 }
 
 void AmlThermal::DdkRelease() {
-    const auto status = thrd_join(worker_, nullptr);
-    if (status != ZX_OK) {
-        THERMAL_ERROR("worker thread failed: %d\n", status);
+    if (worker_) {
+        const auto status = thrd_join(worker_, nullptr);
+        if (status != thrd_success) {
+            THERMAL_ERROR("worker thread failed: %d\n", status);
+        }
     }
 }
 

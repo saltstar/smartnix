@@ -1,3 +1,6 @@
+# Copyright 2016 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -18,6 +21,8 @@ MODULE_STATIC_LIBS := \
     system/ulib/fbl \
     system/ulib/fvm \
     system/ulib/fs \
+    system/ulib/devmgr-integration-test \
+    system/ulib/devmgr-launcher \
     system/ulib/digest \
     system/ulib/ddk \
     system/ulib/gpt \
@@ -34,7 +39,9 @@ MODULE_LIBS := \
 
 MODULE_FIDL_LIBS := \
     system/fidl/fuchsia-io \
-    system/fidl/zircon-nand \
+    system/fidl/fuchsia-mem \
+    system/fidl/fuchsia-hardware-nand \
+    system/fidl/fuchsia-hardware-ramdisk \
 
 MODULE_EXPORT := so
 MODULE_SO_NAME := fs-management

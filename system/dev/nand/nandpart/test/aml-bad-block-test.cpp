@@ -17,21 +17,23 @@
 #include <unittest/unittest.h>
 #include <zircon/types.h>
 
+#include <utility>
+
 namespace nand {
 namespace {
 
-// It is conveniant for mapping for nand page size to be same as DRAM page size.
+// It is convenient for mapping for nand page size to be same as DRAM page size.
 constexpr uint32_t kPageSize = ZX_PAGE_SIZE;
 constexpr uint32_t kPagesPerBlock = 16;
 constexpr uint32_t kNumBlocks = 100;
 constexpr uint32_t kOobSize = 8;
-constexpr zircon_nand_Info kNandInfo = {
+constexpr fuchsia_hardware_nand_Info kNandInfo = {
     .page_size = kPageSize,
     .pages_per_block = kPagesPerBlock,
     .num_blocks = kNumBlocks,
     .ecc_bits = 2,
     .oob_size = kOobSize,
-    .nand_class = zircon_nand_Class_BBS,
+    .nand_class = fuchsia_hardware_nand_Class_BBS,
     .partition_guid = {},
 };
 
@@ -53,7 +55,7 @@ public:
 
     TableNode(NandPage id, fbl::Vector<uint32_t> bad_blocks, bool valid = true,
               uint16_t generation = count_++)
-        : id_(id), valid_(valid), generation_(generation), bad_blocks_(fbl::move(bad_blocks)) {}
+        : id_(id), valid_(valid), generation_(generation), bad_blocks_(std::move(bad_blocks)) {}
 
     TableNode(const TableNode&) = delete;
     TableNode& operator=(const TableNode&) = delete;
@@ -75,12 +77,13 @@ struct Context {
     TableEntries& table_entries;
 };
 
-void MockQuery(void* ctx, zircon_nand_Info* info_out, size_t* nand_op_size_out) {
+void MockQuery(void* ctx, fuchsia_hardware_nand_Info* info_out, size_t* nand_op_size_out) {
     memcpy(info_out, &kNandInfo, sizeof(kNandInfo));
-    *nand_op_size_out = sizeof(nand_op_t);
+    *nand_op_size_out = sizeof(nand_operation_t);
 }
 
-void MockQueue(void* ctx, nand_op_t* op) {
+void MockQueue(void* ctx, nand_operation_t* op, nand_queue_callback completion_cb,
+               void* cookie) {
     auto* context = static_cast<Context*>(ctx);
 
     switch (op->command) {
@@ -93,7 +96,7 @@ void MockQueue(void* ctx, nand_op_t* op) {
             op->erase.first_block + op->erase.num_blocks >= kNumBlocks) {
 
             unittest_printf("Trying to write to a page that is out of range!\n");
-            op->completion_cb(op, ZX_ERR_OUT_OF_RANGE);
+            completion_cb(cookie, ZX_ERR_OUT_OF_RANGE, op);
             return;
         }
         const NandPage start_page = op->erase.first_block * kPagesPerBlock;
@@ -101,11 +104,11 @@ void MockQueue(void* ctx, nand_op_t* op) {
         for (NandPage page = start_page; page < end_page; page++) {
             context->table_entries.erase(page);
         }
-        op->completion_cb(op, ZX_OK);
+        completion_cb(cookie, ZX_OK, op);
         return;
     }
     default:
-        op->completion_cb(op, ZX_ERR_NOT_SUPPORTED);
+        completion_cb(cookie, ZX_ERR_NOT_SUPPORTED, op);
         return;
     }
 
@@ -119,7 +122,7 @@ void MockQueue(void* ctx, nand_op_t* op) {
                                                     &data_buf);
     __UNUSED auto unused = data_vmo.release();
     if (status != ZX_OK) {
-        op->completion_cb(op, status);
+        completion_cb(cookie, status, op);
         return;
     }
     auto data_unmapper = fbl::MakeAutoCall([&]() {
@@ -132,7 +135,7 @@ void MockQueue(void* ctx, nand_op_t* op) {
                                         ZX_VM_PERM_READ | ZX_VM_PERM_WRITE, &oob_buf);
     __UNUSED auto __ = oob_vmo.release();
     if (status != ZX_OK) {
-        op->completion_cb(op, status);
+        completion_cb(cookie, status, op);
         return;
     }
     auto oob_unmapper = fbl::MakeAutoCall([&]() {
@@ -147,7 +150,7 @@ void MockQueue(void* ctx, nand_op_t* op) {
             auto it = context->table_entries.find(op->rw.offset_nand + i);
             if (it != context->table_entries.end()) {
                 if (!it->valid_) {
-                    op->completion_cb(op, ZX_ERR_IO);
+                    completion_cb(cookie, ZX_ERR_IO, op);
                     return;
                 }
                 memset(data + (i * kPageSize), 0, kPageSize);
@@ -162,7 +165,7 @@ void MockQueue(void* ctx, nand_op_t* op) {
                 memset(oob + i, 0xFF, sizeof(*oob));
             }
         }
-        op->completion_cb(op, ZX_OK);
+        completion_cb(cookie, ZX_OK, op);
         break;
 
     case NAND_OP_WRITE:
@@ -173,18 +176,18 @@ void MockQueue(void* ctx, nand_op_t* op) {
                     bad_blocks.push_back(block);
                 }
             }
-            auto node = fbl::make_unique<TableNode>(op->rw.offset_nand + i, fbl::move(bad_blocks),
+            auto node = fbl::make_unique<TableNode>(op->rw.offset_nand + i, std::move(bad_blocks),
                                                     true, oob->generation);
-            if (!context->table_entries.insert_or_find(fbl::move(node))) {
+            if (!context->table_entries.insert_or_find(std::move(node))) {
                 unittest_printf("Trying to write to a page that isn't erased!\n");
                 status = ZX_ERR_INTERNAL;
                 break;
             }
         }
-        op->completion_cb(op, status);
+        completion_cb(cookie, status, op);
         break;
     default:
-        op->completion_cb(op, ZX_ERR_NOT_SUPPORTED);
+        completion_cb(cookie, ZX_ERR_NOT_SUPPORTED, op);
         break;
     }
 }
@@ -239,7 +242,7 @@ bool GetBadBlockListWithEntriesTest() {
     TableEntries table_entries;
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(0));
     fbl::Vector<uint32_t> bad_blocks_v = {4, 8};
-    table_entries.insert_or_replace(fbl::make_unique<TableNode>(1, fbl::move(bad_blocks_v)));
+    table_entries.insert_or_replace(fbl::make_unique<TableNode>(1, std::move(bad_blocks_v)));
     Context context = {
         .table_entries = table_entries,
     };
@@ -273,13 +276,13 @@ bool FindBadBlockSecondBlockTest() {
     TableNode::ResetCount();
     TableEntries table_entries;
     fbl::Vector<uint32_t> bad_blocks_1 = {4, 6};
-    table_entries.insert_or_replace(fbl::make_unique<TableNode>(0, fbl::move(bad_blocks_1)));
+    table_entries.insert_or_replace(fbl::make_unique<TableNode>(0, std::move(bad_blocks_1)));
     fbl::Vector<uint32_t> bad_blocks_2 = {4, 6, 8};
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(kPagesPerBlock * 3,
-                                                                fbl::move(bad_blocks_2)));
+                                                                std::move(bad_blocks_2)));
     fbl::Vector<uint32_t> bad_blocks_3 = {4, 6, 8, 9};
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(kPagesPerBlock,
-                                                                fbl::move(bad_blocks_3)));
+                                                                std::move(bad_blocks_3)));
     Context context = {
         .table_entries = table_entries,
     };
@@ -302,13 +305,13 @@ bool FindBadBlockLastBlockTest() {
     TableEntries table_entries;
     fbl::Vector<uint32_t> bad_blocks_1 = {4, 6};
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(kPagesPerBlock * 2,
-                                                                fbl::move(bad_blocks_1)));
+                                                                std::move(bad_blocks_1)));
     fbl::Vector<uint32_t> bad_blocks_2 = {4, 6, 8};
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(kPagesPerBlock,
-                                                                fbl::move(bad_blocks_2)));
+                                                                std::move(bad_blocks_2)));
     fbl::Vector<uint32_t> bad_blocks_3 = {4, 6, 8, 9};
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(kPagesPerBlock * 3,
-                                                                fbl::move(bad_blocks_3)));
+                                                                std::move(bad_blocks_3)));
     Context context = {
         .table_entries = table_entries,
     };
@@ -361,13 +364,13 @@ bool FindBadBlockLastPageInvalidTest() {
     TableEntries table_entries;
     fbl::Vector<uint32_t> bad_blocks_1 = {4, 6};
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(kPagesPerBlock * 2,
-                                                                fbl::move(bad_blocks_1)));
+                                                                std::move(bad_blocks_1)));
     fbl::Vector<uint32_t> bad_blocks_2 = {4, 6, 8};
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(kPagesPerBlock * 3,
-                                                                fbl::move(bad_blocks_2)));
+                                                                std::move(bad_blocks_2)));
     fbl::Vector<uint32_t> bad_blocks_3 = {4, 6, 8, 9};
     table_entries.insert_or_replace(fbl::make_unique<TableNode>(kPagesPerBlock * 3 + 1,
-                                                                fbl::move(bad_blocks_3), false));
+                                                                std::move(bad_blocks_3), false));
     Context context = {
         .table_entries = table_entries,
     };

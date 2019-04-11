@@ -58,7 +58,7 @@ static void uart_write(uint8_t reg, uint8_t val) {
     }
 }
 
-static void uart_irq_handler(void *arg) {
+static interrupt_eoi uart_irq_handler(void *arg) {
     spin_lock(&uart_spinlock);
 
     // see why we have gotten an irq
@@ -93,6 +93,7 @@ static void uart_irq_handler(void *arg) {
     }
 
     spin_unlock(&uart_spinlock);
+    return IRQ_EOI_DEACTIVATE;
 }
 
 static void platform_drain_debug_uart_rx(void) {
@@ -102,10 +103,12 @@ static void platform_drain_debug_uart_rx(void) {
     }
 }
 
+static constexpr TimerSlack kSlack{ZX_MSEC(1), TIMER_SLACK_CENTER};
+
 // for devices where the uart rx interrupt doesn't seem to work
 static void uart_rx_poll(timer_t* t, zx_time_t now, void* arg) {
-    zx_time_t deadline = zx_time_add_duration(now, ZX_MSEC(10));
-    timer_set(t, deadline, TIMER_SLACK_CENTER, ZX_MSEC(1), uart_rx_poll, NULL);
+    const Deadline deadline(zx_time_add_duration(now, ZX_MSEC(10)), kSlack);
+    timer_set(t, deadline, uart_rx_poll, NULL);
     platform_drain_debug_uart_rx();
 }
 
@@ -118,8 +121,8 @@ void platform_debug_start_uart_timer(void) {
     if (!started) {
         started = true;
         timer_init(&uart_rx_poll_timer);
-        timer_set(&uart_rx_poll_timer, zx_time_add_duration(current_time(), ZX_MSEC(10)),
-                  TIMER_SLACK_CENTER, ZX_MSEC(1), uart_rx_poll, NULL);
+        const Deadline deadline(zx_time_add_duration(current_time(), ZX_MSEC(10)), kSlack);
+        timer_set(&uart_rx_poll_timer, deadline, uart_rx_poll, NULL);
     }
 }
 

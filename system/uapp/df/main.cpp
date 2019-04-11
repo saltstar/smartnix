@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <dirent.h>
 #include <errno.h>
@@ -15,6 +18,8 @@
 #include <fuchsia/io/c/fidl.h>
 #include <lib/fzl/fdio.h>
 #include <zircon/device/vfs.h>
+
+#include <utility>
 
 int usage(void) {
     fprintf(stderr, "usage: df [ <option>* ] [paths]\n");
@@ -184,7 +189,7 @@ int main(int argc, const char** argv) {
 
         fuchsia_io_FilesystemInfo info;
         zx_status_t status;
-        fzl::FdioCaller caller(fbl::move(fd));
+        fzl::FdioCaller caller(std::move(fd));
         zx_status_t io_status = fuchsia_io_DirectoryAdminQueryFilesystem(caller.borrow_channel(),
                                                                          &status, &info);
         if (io_status != ZX_OK || status != ZX_OK) {

@@ -1,7 +1,12 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <audio-proto-utils/format-utils.h>
 #include <fbl/algorithm.h>
 #include <fbl/auto_call.h>
+
+#include <utility>
 
 #include "debug-logging.h"
 #include "usb-audio-device.h"
@@ -144,7 +149,7 @@ zx_status_t UsbAudioStreamInterface::AddInterface(DescriptorListMemory::Iterator
         }
 
         max_req_size_ = fbl::max(max_req_size_, format->max_req_size());
-        formats_.push_back(fbl::move(format));
+        formats_.push_back(std::move(format));
     } else {
         if (idle_hdr_ == nullptr) {
             idle_hdr_ = ihdr;
@@ -376,12 +381,12 @@ zx_status_t UsbAudioStreamInterface::ActivateFormat(size_t ndx, uint32_t frames_
         buffer[0] = static_cast<uint8_t>(frames_per_second);
         buffer[1] = static_cast<uint8_t>(frames_per_second >> 8);
         buffer[2] = static_cast<uint8_t>(frames_per_second >> 16);
-        status = usb_control(&parent_.usb_proto(),
+        status = usb_control_out(&parent_.usb_proto(),
                              USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_ENDPOINT,
                              USB_AUDIO_SET_CUR,
                              USB_AUDIO_SAMPLING_FREQ_CONTROL << 8,
-                             f.ep_addr_,
-                             &buffer, sizeof(buffer), ZX_TIME_INFINITE, NULL);
+                             f.ep_addr_, ZX_TIME_INFINITE,
+                             &buffer, sizeof(buffer));
         if (status != ZX_OK) {
             if (status == ZX_ERR_IO_REFUSED || status == ZX_ERR_IO_INVALID) {
                 // clear the stall/error
@@ -412,7 +417,7 @@ void UsbAudioStreamInterface::LinkPath(fbl::unique_ptr<AudioPath> path) {
     ZX_DEBUG_ASSERT(path_ == nullptr);
     ZX_DEBUG_ASSERT(direction() == path->direction());
     ZX_DEBUG_ASSERT(term_link() == path->stream_terminal().id());
-    path_ = fbl::move(path);
+    path_ = std::move(path);
 }
 
 zx_status_t UsbAudioStreamInterface::Format::Init(DescriptorListMemory::Iterator* iter) {

@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <assert.h>
 #include <dirent.h>
@@ -9,6 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <fuchsia/hardware/input/c/fidl.h>
 #include <hid/acer12.h>
 #include <hid/egalax.h>
 #include <hid/eyoyo.h>
@@ -17,7 +21,6 @@
 #include <hid/usages.h>
 #include <lib/fdio/unsafe.h>
 #include <lib/framebuffer/framebuffer.h>
-#include <zircon/input/c/fidl.h>
 #include <zircon/process.h>
 #include <zircon/syscalls.h>
 #include <zircon/types.h>
@@ -532,7 +535,7 @@ int main(int argc, char* argv[]) {
         }
         touchsvc = fdio_unsafe_borrow_channel(touchio);
 
-        status = zircon_input_DeviceGetReportDescSize(touchsvc, &rpt_desc_len);
+        status = fuchsia_hardware_input_DeviceGetReportDescSize(touchsvc, &rpt_desc_len);
         if (status != ZX_OK) {
             printf("failed to get report descriptor length for %s: %d\n", devname, status);
             goto next_node;
@@ -545,7 +548,8 @@ int main(int argc, char* argv[]) {
         }
 
         size_t actual;
-        status = zircon_input_DeviceGetReportDesc(touchsvc, rpt_desc, rpt_desc_len, &actual);
+        status =
+            fuchsia_hardware_input_DeviceGetReportDesc(touchsvc, rpt_desc, rpt_desc_len, &actual);
         if (status != ZX_OK) {
             printf("failed to get report descriptor for %s: %d\n", devname, status);
             goto next_node;
@@ -628,7 +632,7 @@ next_node:
     assert(rpt_desc);
 
     uint16_t max_rpt_sz = 0;
-    status = zircon_input_DeviceGetMaxInputReportSize(touchsvc, &max_rpt_sz);
+    status = fuchsia_hardware_input_DeviceGetMaxInputReportSize(touchsvc, &max_rpt_sz);
     if (status != ZX_OK) {
         printf("failed to get max report size: %d\n", status);
         ret = -1;

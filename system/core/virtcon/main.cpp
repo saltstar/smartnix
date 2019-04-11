@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <assert.h>
 #include <fcntl.h>
@@ -27,6 +30,8 @@
 #include <zircon/syscalls/log.h>
 #include <zircon/syscalls/object.h>
 
+#include <utility>
+
 #include "vc.h"
 
 port_t port;
@@ -46,8 +51,7 @@ static zx_status_t log_reader_cb(port_handler_t* ph, zx_signals_t signals, uint3
     for (;;) {
         if ((status = zx_debuglog_read(ph->handle, 0, rec, ZX_LOG_RECORD_MAX)) < 0) {
             if (status == ZX_ERR_SHOULD_WAIT) {
-                // return non-OK to avoid needlessly re-arming the repeating wait
-                return ZX_ERR_NEXT;
+                return ZX_OK;
             }
             break;
         }
@@ -278,7 +282,7 @@ static void setup_dir_watcher(const char* dir,
         return;
     }
 
-    fzl::FdioCaller caller(fbl::move(fd));
+    fzl::FdioCaller caller(std::move(fd));
     zx_status_t status;
     zx_status_t io_status = fuchsia_io_DirectoryWatch(caller.borrow_channel(),
                                                       fuchsia_io_WATCH_MASK_ALL, 0,
@@ -340,7 +344,7 @@ static zx_status_t input_cb(port_handler_t* ph, zx_signals_t signals, uint32_t e
 
 void set_log_listener_active(bool active) {
     if (active) {
-        port_wait_repeating(&port, &log_ph);
+        port_wait(&port, &log_ph);
     } else {
         port_cancel(&port, &log_ph);
     }
@@ -401,9 +405,9 @@ int main(int argc, char** argv) {
         proc_koid = info.koid;
     }
 
-    // TODO: receive from launching process
-    if (zx_debuglog_create(ZX_HANDLE_INVALID, ZX_LOG_FLAG_READABLE, &log_ph.handle) < 0) {
-        printf("vc log listener: cannot open log\n");
+    log_ph.handle = zx_take_startup_handle(PA_HND(PA_USER0, 1));
+    if (log_ph.handle == ZX_HANDLE_INVALID) {
+        printf("vc log listener: did not receive log startup handle\n");
         return -1;
     }
 

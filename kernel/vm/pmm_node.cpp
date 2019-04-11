@@ -3,10 +3,10 @@
 
 #include <inttypes.h>
 #include <kernel/mp.h>
+#include <new>
 #include <trace.h>
 #include <vm/bootalloc.h>
 #include <vm/physmap.h>
-#include <zxcpp/new.h>
 
 #include "vm_priv.h"
 

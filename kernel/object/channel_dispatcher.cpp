@@ -17,7 +17,6 @@
 
 #include <fbl/alloc_checker.h>
 #include <fbl/auto_lock.h>
-#include <fbl/type_support.h>
 #include <zircon/rights.h>
 #include <zircon/types.h>
 
@@ -40,11 +39,11 @@ zx_status_t ChannelDispatcher::Create(fbl::RefPtr<Dispatcher>* dispatcher0,
         return ZX_ERR_NO_MEMORY;
     auto holder1 = holder0;
 
-    auto ch0 = fbl::AdoptRef(new (&ac) ChannelDispatcher(fbl::move(holder0)));
+    auto ch0 = fbl::AdoptRef(new (&ac) ChannelDispatcher(ktl::move(holder0)));
     if (!ac.check())
         return ZX_ERR_NO_MEMORY;
 
-    auto ch1 = fbl::AdoptRef(new (&ac) ChannelDispatcher(fbl::move(holder1)));
+    auto ch1 = fbl::AdoptRef(new (&ac) ChannelDispatcher(ktl::move(holder1)));
     if (!ac.check())
         return ZX_ERR_NO_MEMORY;
 
@@ -52,19 +51,19 @@ zx_status_t ChannelDispatcher::Create(fbl::RefPtr<Dispatcher>* dispatcher0,
     ch1->Init(ch0);
 
     *rights = default_rights();
-    *dispatcher0 = fbl::move(ch0);
-    *dispatcher1 = fbl::move(ch1);
+    *dispatcher0 = ktl::move(ch0);
+    *dispatcher1 = ktl::move(ch1);
     return ZX_OK;
 }
 
 ChannelDispatcher::ChannelDispatcher(fbl::RefPtr<PeerHolder<ChannelDispatcher>> holder)
-    : PeeredDispatcher(fbl::move(holder), ZX_CHANNEL_WRITABLE) {
+    : PeeredDispatcher(ktl::move(holder), ZX_CHANNEL_WRITABLE) {
 }
 
 // This is called before either ChannelDispatcher is accessible from threads other than the one
 // initializing the channel, so it does not need locking.
 void ChannelDispatcher::Init(fbl::RefPtr<ChannelDispatcher> other) TA_NO_THREAD_SAFETY_ANALYSIS {
-    peer_ = fbl::move(other);
+    peer_ = ktl::move(other);
     peer_koid_ = peer_->get_koid();
 }
 
@@ -164,7 +163,7 @@ void ChannelDispatcher::OnPeerZeroHandlesLocked() {
 zx_status_t ChannelDispatcher::Read(zx_koid_t owner,
                                     uint32_t* msg_size,
                                     uint32_t* msg_handle_count,
-                                    fbl::unique_ptr<MessagePacket>* msg,
+                                    MessagePacketPtr* msg,
                                     bool may_discard) {
     canary_.Assert();
 
@@ -197,7 +196,7 @@ zx_status_t ChannelDispatcher::Read(zx_koid_t owner,
     return rv;
 }
 
-zx_status_t ChannelDispatcher::Write(zx_koid_t owner, fbl::unique_ptr<MessagePacket> msg) {
+zx_status_t ChannelDispatcher::Write(zx_koid_t owner, MessagePacketPtr msg) {
     canary_.Assert();
 
     AutoReschedDisable resched_disable; // Must come before the lock guard.
@@ -213,14 +212,14 @@ zx_status_t ChannelDispatcher::Write(zx_koid_t owner, fbl::unique_ptr<MessagePac
     if (!peer_)
         return ZX_ERR_PEER_CLOSED;
 
-    peer_->WriteSelf(fbl::move(msg));
+    peer_->WriteSelf(ktl::move(msg));
 
     return ZX_OK;
 }
 
 zx_status_t ChannelDispatcher::Call(zx_koid_t owner,
-                                    fbl::unique_ptr<MessagePacket> msg,
-                                    zx_time_t deadline, fbl::unique_ptr<MessagePacket>* reply) {
+                                    MessagePacketPtr msg,
+                                    zx_time_t deadline, MessagePacketPtr* reply) {
     canary_.Assert();
 
     auto waiter = ThreadDispatcher::GetCurrent()->GetMessageWaiter();
@@ -269,17 +268,21 @@ alloc_txid:
         waiters_.push_back(waiter);
 
         // (1) Write outbound message to opposing endpoint.
-        peer_->WriteSelf(fbl::move(msg));
+        peer_->WriteSelf(ktl::move(msg));
     }
+
+    auto process = ProcessDispatcher::GetCurrent();
+    const TimerSlack slack = process->GetTimerSlackPolicy();
+    const Deadline slackDeadline(deadline, slack);
 
     // Reuse the code from the half-call used for retrying a Call after thread
     // suspend.
-    return ResumeInterruptedCall(waiter, deadline, reply);
+    return ResumeInterruptedCall(waiter, slackDeadline, reply);
 }
 
 zx_status_t ChannelDispatcher::ResumeInterruptedCall(MessageWaiter* waiter,
-                                                     zx_time_t deadline,
-                                                     fbl::unique_ptr<MessagePacket>* reply) {
+                                                     const Deadline& deadline,
+                                                     MessagePacketPtr* reply) {
     canary_.Assert();
 
     // (2) Wait for notification via waiter's event or for the
@@ -316,11 +319,7 @@ zx_status_t ChannelDispatcher::ResumeInterruptedCall(MessageWaiter* waiter,
     }
 }
 
-size_t ChannelDispatcher::TxMessageMax() const {
-    return SIZE_MAX;
-}
-
-void ChannelDispatcher::WriteSelf(fbl::unique_ptr<MessagePacket> msg) {
+void ChannelDispatcher::WriteSelf(MessagePacketPtr msg) {
     canary_.Assert();
 
     if (!waiters_.is_empty()) {
@@ -333,12 +332,12 @@ void ChannelDispatcher::WriteSelf(fbl::unique_ptr<MessagePacket> msg) {
             // Remove waiter from list.
             if (waiter.get_txid() == txid) {
                 waiters_.erase(waiter);
-                waiter.Deliver(fbl::move(msg));
+                waiter.Deliver(ktl::move(msg));
                 return;
             }
         }
     }
-    messages_.push_back(fbl::move(msg));
+    messages_.push_back(ktl::move(msg));
     message_count_++;
     if (message_count_ > max_message_count_) {
         max_message_count_ = message_count_;
@@ -367,15 +366,15 @@ zx_status_t ChannelDispatcher::MessageWaiter::BeginWait(fbl::RefPtr<ChannelDispa
     DEBUG_ASSERT(!InContainer());
 
     status_ = ZX_ERR_TIMED_OUT;
-    channel_ = fbl::move(channel);
+    channel_ = ktl::move(channel);
     event_.Unsignal();
     return ZX_OK;
 }
 
-void ChannelDispatcher::MessageWaiter::Deliver(fbl::unique_ptr<MessagePacket> msg) {
+void ChannelDispatcher::MessageWaiter::Deliver(MessagePacketPtr msg) {
     DEBUG_ASSERT(channel_);
 
-    msg_ = fbl::move(msg);
+    msg_ = ktl::move(msg);
     status_ = ZX_OK;
     event_.Signal(ZX_OK);
 }
@@ -387,7 +386,7 @@ void ChannelDispatcher::MessageWaiter::Cancel(zx_status_t status) {
     event_.Signal(status);
 }
 
-zx_status_t ChannelDispatcher::MessageWaiter::Wait(zx_time_t deadline) {
+zx_status_t ChannelDispatcher::MessageWaiter::Wait(const Deadline& deadline) {
     if (unlikely(!channel_)) {
         return ZX_ERR_BAD_STATE;
     }
@@ -395,11 +394,11 @@ zx_status_t ChannelDispatcher::MessageWaiter::Wait(zx_time_t deadline) {
 }
 
 // Returns any delivered message via out and the status.
-zx_status_t ChannelDispatcher::MessageWaiter::EndWait(fbl::unique_ptr<MessagePacket>* out) {
+zx_status_t ChannelDispatcher::MessageWaiter::EndWait(MessagePacketPtr* out) {
     if (unlikely(!channel_)) {
         return ZX_ERR_BAD_STATE;
     }
-    *out = fbl::move(msg_);
+    *out = ktl::move(msg_);
     channel_ = nullptr;
     return status_;
 }

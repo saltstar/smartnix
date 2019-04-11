@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -347,6 +350,8 @@ enum class Digitizer : uint32_t {
     kMultiplePointDigitizer         = 0x0c,
     kFreeSpaceWand                  = 0x0d,
 
+    kFinger                         = 0x22,
+
     kTipPressure                    = 0x30,
     kBarrelPressure                 = 0x31,
     kInRange                        = 0x32,
@@ -413,6 +418,10 @@ inline bool operator==(uint16_t e, hid::usage::Page up) {
 
 inline bool operator==(uint32_t e, hid::usage::GenericDesktop gd) {
     return (static_cast<uint32_t>(gd) == e);
+}
+
+inline bool operator==(uint32_t e, hid::usage::Digitizer d) {
+    return (static_cast<uint32_t>(d) == e);
 }
 
 inline bool operator==(uint32_t e, hid::usage::LEDs gd) {

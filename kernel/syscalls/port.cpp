@@ -22,7 +22,7 @@
 zx_status_t sys_port_create(uint32_t options, user_out_handle* out) {
     LTRACEF("options %u\n", options);
     auto up = ProcessDispatcher::GetCurrent();
-    zx_status_t result = up->QueryPolicy(ZX_POL_NEW_PORT);
+    zx_status_t result = up->QueryBasicPolicy(ZX_POL_NEW_PORT);
     if (result != ZX_OK)
         return result;
 
@@ -35,7 +35,7 @@ zx_status_t sys_port_create(uint32_t options, user_out_handle* out) {
 
     uint32_t koid = (uint32_t)dispatcher->get_koid();
 
-    result = out->make(fbl::move(dispatcher), rights);
+    result = out->make(ktl::move(dispatcher), rights);
 
     ktrace(TAG_PORT_CREATE, koid, 0, 0, 0);
     return result;
@@ -72,10 +72,12 @@ zx_status_t sys_port_wait(zx_handle_t handle, zx_time_t deadline,
     if (status != ZX_OK)
         return status;
 
+    const Deadline slackDeadline(deadline, up->GetTimerSlackPolicy());
+
     ktrace(TAG_PORT_WAIT, (uint32_t)port->get_koid(), 0, 0, 0);
 
     zx_port_packet_t pp;
-    zx_status_t st = port->Dequeue(deadline, &pp);
+    zx_status_t st = port->Dequeue(slackDeadline, &pp);
 
     ktrace(TAG_PORT_WAIT_DONE, (uint32_t)port->get_koid(), st, 0, 0);
 

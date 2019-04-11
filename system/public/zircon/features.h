@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_FEATURES_H_
 #define ZIRCON_FEATURES_H_
@@ -5,7 +8,9 @@
 // clang-format off
 
 // types of features that can be retrieved via |zx_system_get_features|
-#define ZX_FEATURE_KIND_CPU ((uint32_t)0)
+#define ZX_FEATURE_KIND_CPU                   ((uint32_t)0)
+#define ZX_FEATURE_KIND_HW_BREAKPOINT_COUNT   ((uint32_t)1)
+#define ZX_FEATURE_KIND_HW_WATCHPOINT_COUNT   ((uint32_t)2)
 
 // arch-independent CPU features
 #define ZX_HAS_CPU_FEATURES            ((uint32_t)(1u << 0))

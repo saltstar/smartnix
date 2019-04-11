@@ -1,4 +1,3 @@
-
 #ifndef _LINUX_VIRTIO_IDS_H
 #define _LINUX_VIRTIO_IDS_H
 /*

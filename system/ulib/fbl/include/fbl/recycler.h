@@ -1,8 +1,13 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <zircon/assert.h>
 #include <fbl/type_support.h>
+
+#include <type_traits>
 
 // fbl::Recyclable<T>
 //
@@ -104,7 +109,7 @@ struct recycler {
 };
 
 template <typename T>
-struct recycler<T, typename enable_if<has_fbl_recycle<T>::value == true>::type> {
+struct recycler<T, typename std::enable_if<has_fbl_recycle<T>::value == true>::type> {
     static inline void recycle(T* ptr) {
         Recyclable<typename remove_cv<T>::type>::fbl_recycle_thunk(
                 const_cast<typename remove_cv<T>::type *>(ptr));
@@ -115,7 +120,7 @@ struct recycler<T, typename enable_if<has_fbl_recycle<T>::value == true>::type> 
 
 template <typename T>
 class Recyclable<T,
-                 typename enable_if<is_same<typename remove_cv<T>::type, T>::value>::type> {
+                 typename std::enable_if<is_same<typename remove_cv<T>::type, T>::value>::type> {
 private:
     // Recyclable is friends with all cv-forms of the internal::recycler.  This
     // way, managed pointer types can say internal::recycler<T>::recycle(ptr)

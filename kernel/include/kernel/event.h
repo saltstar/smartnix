@@ -3,13 +3,12 @@
 
 #include <err.h>
 #include <kernel/thread.h>
+#include <kernel/timer.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
 #include <zircon/compiler.h>
 #include <zircon/types.h>
-
-__BEGIN_CDECLS
 
 #define EVENT_MAGIC (0x65766E74) // "evnt"
 
@@ -45,13 +44,18 @@ typedef struct event {
 //     time it will unsignal atomicly and return immediately) or
 //     event_unsignal() is called.
 
-void event_init(event_t*, bool initial, uint flags);
+static inline void event_init(event_t* e, bool initial, uint flags) {
+    *e = (event_t)EVENT_INITIAL_VALUE(*e, initial, flags);
+}
 void event_destroy(event_t*);
 
 // Wait until deadline
 // Interruptable arg allows it to return early with ZX_ERR_INTERNAL_INTR_KILLED if thread
 // is signaled for kill.
 zx_status_t event_wait_deadline(event_t*, zx_time_t, bool interruptable);
+
+// Wait until the event occurs, the deadline has elapsed, or the thread is interrupted.
+zx_status_t event_wait_interruptable(event_t* e, const Deadline& deadline);
 
 // no deadline, non interruptable version of the above.
 static inline zx_status_t event_wait(event_t* e) {
@@ -75,17 +79,12 @@ static inline bool event_signaled(const event_t* e) {
     return e->signaled;
 }
 
-__END_CDECLS
-
-#ifdef __cplusplus
-
 // C++ wrapper. This should be waited on from only a single thread, but may be
 // signaled from many threads (Signal() is thread-safe).
 class Event {
 public:
-    Event(uint32_t opts = 0) {
-        event_init(&event_, false, opts);
-    }
+    constexpr explicit Event(uint32_t opts = 0)
+        : event_(EVENT_INITIAL_VALUE(event_, false, opts)) {}
     ~Event() {
         event_destroy(&event_);
     }
@@ -98,12 +97,20 @@ public:
     // ZX_ERR_TIMED_OUT - time out expired
     // ZX_ERR_INTERNAL_INTR_KILLED - thread killed
     // Or the |status| which the caller specified in Event::Signal(status)
-    zx_status_t Wait(zx_time_t deadline) {
-        return event_wait_deadline(&event_, deadline, true);
+    zx_status_t Wait(const Deadline& deadline) {
+        return event_wait_interruptable(&event_, deadline);
     }
 
     void Signal(zx_status_t status = ZX_OK) {
         event_signal_etc(&event_, true, status);
+    }
+
+    void SignalThreadLocked() TA_REQ(thread_lock) {
+        event_signal_thread_locked(&event_);
+    }
+
+    void SignalNoResched() {
+        event_signal(&event_, false);
     }
 
     zx_status_t Unsignal() {
@@ -113,5 +120,3 @@ public:
 private:
     event_t event_;
 };
-
-#endif // __cplusplus

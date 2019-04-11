@@ -1,18 +1,23 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <zircon/compiler.h>
 #include <fbl/algorithm.h>
 #include <fbl/auto_lock.h>
 #include <fbl/deleter.h>
 #include <fbl/intrusive_single_list.h>
 #include <fbl/mutex.h>
-#include <fbl/new.h>
 #include <fbl/null_lock.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/slab_malloc.h>
 #include <fbl/type_support.h>
 #include <fbl/unique_ptr.h>
+#include <new>
+#include <type_traits>
+#include <utility>
+#include <zircon/compiler.h>
 
 // Usage Notes:
 //
@@ -239,7 +244,7 @@
 //
 // class MyObject : public fbl::SlabAllocated<AllocatorTraits>,
 //                  public fbl::RefCounted<MyObject>,
-//                  public fbl::SinglyLinkedListable<fbl::RefCounted<MyObject>> {
+//                  public fbl::SinglyLinkedListable<fbl::RefPtr<MyObject>> {
 // public:
 //     explicit MyObject(int val) : my_int_(val) { }
 //     explicit MyObject(const char* val) : my_string_(val) { }
@@ -371,7 +376,7 @@ struct SlabOriginSetter {
 // have (or need) a slab_origin.  Their "origin setter" is a no-op.
 template <typename SATraits>
 struct SlabOriginSetter<SATraits,
-                        typename enable_if<
+                        typename std::enable_if<
                             (SATraits::AllocatorFlavor == SlabAllocatorFlavor::STATIC) ||
                             (SATraits::AllocatorFlavor == SlabAllocatorFlavor::MANUAL_DELETE)
                         >::type> {
@@ -580,7 +585,7 @@ public:
         // about).
         ObjType* obj = ::fbl::SlabAllocator<SATraits>::ConstructObject(
                 mem,
-                fbl::forward<ConstructorSignature>(args)...);
+                std::forward<ConstructorSignature>(args)...);
 
         // Now, record the slab allocator this object came from so it can be
         // returned later on.
@@ -696,7 +701,7 @@ struct SlabAllocatorTraits {
 ////////////////////////////////////////////////////////////////////////////////
 template <typename SATraits>
 class SlabAllocator<SATraits,
-                    typename enable_if<
+                    typename std::enable_if<
                         (SATraits::AllocatorFlavor == SlabAllocatorFlavor::INSTANCED) ||
                         (SATraits::AllocatorFlavor == SlabAllocatorFlavor::MANUAL_DELETE)
                     >::type>
@@ -726,13 +731,13 @@ private:
 
     template <typename... ConstructorSignature>
     static ObjType* ConstructObject(void* mem, ConstructorSignature&&... args) {
-        return new (mem) ObjType(fbl::forward<ConstructorSignature>(args)...);
+        return new (mem) ObjType(std::forward<ConstructorSignature>(args)...);
     }
 };
 
 template <typename SATraits>
 class SlabAllocated<SATraits,
-                    typename enable_if<
+                    typename std::enable_if<
                         (SATraits::AllocatorFlavor == SlabAllocatorFlavor::INSTANCED)
                     >::type> {
 public:
@@ -764,7 +769,7 @@ private:
 
 template <typename SATraits>
 class SlabAllocated<SATraits,
-                    typename enable_if<
+                    typename std::enable_if<
                         (SATraits::PtrTraits::IsManaged == false) &&
                         (SATraits::AllocatorFlavor == SlabAllocatorFlavor::MANUAL_DELETE)
                     >::type> {
@@ -835,7 +840,7 @@ using UnlockedManualDeleteSlabAllocatorTraits =
 ////////////////////////////////////////////////////////////////////////////////
 template <typename SATraits>
 class SlabAllocator<SATraits,
-                    typename enable_if<
+                    typename std::enable_if<
                         (SATraits::AllocatorFlavor == SlabAllocatorFlavor::STATIC)
                     >::type> {
 public:
@@ -851,7 +856,7 @@ public:
 
     template <typename... ConstructorSignature>
     static PtrType New(ConstructorSignature&&... args) {
-        return allocator_.New(fbl::forward<ConstructorSignature>(args)...);
+        return allocator_.New(std::forward<ConstructorSignature>(args)...);
     }
 
     static size_t max_slabs() { return allocator_.max_slabs(); }
@@ -866,7 +871,7 @@ private:
 
     template <typename... ConstructorSignature>
     static ObjType* ConstructObject(void* mem, ConstructorSignature&&... args) {
-        return new (mem) ObjType(fbl::forward<ConstructorSignature>(args)...);
+        return new (mem) ObjType(std::forward<ConstructorSignature>(args)...);
     }
 
     static void ReturnToFreeList(void* ptr) { allocator_.ReturnToFreeList(ptr); }
@@ -875,7 +880,7 @@ private:
 
 template <typename SATraits>
 class SlabAllocated<SATraits,
-                    typename enable_if<
+                    typename std::enable_if<
                         (SATraits::AllocatorFlavor == SlabAllocatorFlavor::STATIC)
                     >::type> {
 public:

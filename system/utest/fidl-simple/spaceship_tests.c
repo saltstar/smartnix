@@ -4,7 +4,7 @@
 
 #include <fidl/test/spaceship/c/fidl.h>
 #include <lib/async-loop/loop.h>
-#include <lib/fidl/bind.h>
+#include <lib/fidl-async/bind.h>
 #include <string.h>
 #include <zircon/fidl.h>
 #include <zircon/syscalls.h>
@@ -62,6 +62,16 @@ static zx_status_t SpaceShip_AddFuelTank(void* ctx, const fidl_test_spaceship_Fu
     return fidl_test_spaceship_SpaceShipAddFuelTank_reply(txn, level->reaction_mass / 2);
 }
 
+static zx_status_t SpaceShip_ReportAstrologicalData(void* ctx, const fidl_test_spaceship_AstrologicalData* data, fidl_txn_t* txn) {
+    EXPECT_EQ(data->tag, fidl_test_spaceship_AstrologicalDataTag_star, "");
+    for (size_t idx = 0; idx < sizeof(data->star.data); ++idx) {
+        EXPECT_EQ(42, data->star.data[idx], "");
+    }
+
+    const zx_status_t status = ZX_OK;
+    return fidl_test_spaceship_SpaceShipReportAstrologicalData_reply(txn, status);
+}
+
 static const fidl_test_spaceship_SpaceShip_ops_t kOps = {
     .AdjustHeading = SpaceShip_AdjustHeading,
     .ScanForLifeforms = SpaceShip_ScanForLifeforms,
@@ -70,6 +80,7 @@ static const fidl_test_spaceship_SpaceShip_ops_t kOps = {
     .GetFuelRemaining = SpaceShip_GetFuelRemaining,
     .AddFuelTank = SpaceShip_AddFuelTank,
     .ScanForTensorLifeforms = SpaceShip_ScanForTensorLifeforms,
+    .ReportAstrologicalData = SpaceShip_ReportAstrologicalData,
 };
 
 static bool spaceship_test(void) {
@@ -91,6 +102,24 @@ static bool spaceship_test(void) {
         int8_t result = 0;
         ASSERT_EQ(ZX_OK, fidl_test_spaceship_SpaceShipAdjustHeading(client, stars, 3, &result), "");
         ASSERT_EQ(-12, result, "");
+    }
+
+    {
+        const uint32_t num_stars_overflow = fidl_test_spaceship_MaxStarsAdjustHeading * 2;
+        const uint32_t stars[num_stars_overflow];
+        int8_t result = 0;
+        ASSERT_EQ(
+            ZX_ERR_INVALID_ARGS,
+            fidl_test_spaceship_SpaceShipAdjustHeading(client, stars, num_stars_overflow, &result),
+            "");
+    }
+
+    {
+        int8_t result = 0;
+        ASSERT_EQ(
+            ZX_ERR_INVALID_ARGS,
+            fidl_test_spaceship_SpaceShipAdjustHeading(client, NULL, 1 << 31, &result),
+            "");
     }
 
     {
@@ -146,6 +175,14 @@ static bool spaceship_test(void) {
         uint32_t out_consumed = 0u;
         ASSERT_EQ(ZX_OK, fidl_test_spaceship_SpaceShipAddFuelTank(client, &level, &out_consumed), "");
         ASSERT_EQ(4741u, out_consumed, "");
+    }
+
+    {
+        fidl_test_spaceship_AstrologicalData data = {};
+        data.tag = fidl_test_spaceship_AstrologicalDataTag_star;
+        memset(&data.star, 42, sizeof(data.star));
+        ASSERT_EQ(ZX_OK, fidl_test_spaceship_SpaceShipReportAstrologicalData(client, &data, &status), "");
+        ASSERT_EQ(ZX_OK, status, "");
     }
 
     ASSERT_EQ(ZX_OK, zx_handle_close(client), "");

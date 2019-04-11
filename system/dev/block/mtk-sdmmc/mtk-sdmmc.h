@@ -1,14 +1,31 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <ddk/protocol/platform-device-lib.h>
-#include <ddk/protocol/platform-device.h>
+#include <threads.h>
+
+#include <ddk/io-buffer.h>
+#include <ddk/phys-iter.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddktl/device.h>
 #include <ddktl/mmio.h>
 #include <ddktl/protocol/gpio.h>
 #include <ddktl/protocol/sdmmc.h>
+#include <fbl/auto_lock.h>
+#include <lib/sync/completion.h>
+#include <lib/zx/interrupt.h>
+#include <soc/mt8167/mt8167-sdmmc.h>
+#include <zircon/thread_annotations.h>
+
+#include <utility>
+
+#include "mtk-sdmmc-reg.h"
 
 namespace sdmmc {
+
+constexpr uint32_t kPageMask = PAGE_SIZE - 1;
 
 struct RequestStatus {
     RequestStatus()
@@ -16,6 +33,9 @@ struct RequestStatus {
 
     RequestStatus(zx_status_t status)
         : cmd_status(status), data_status(ZX_OK) {}
+
+    RequestStatus(zx_status_t cmd, zx_status_t data)
+        : cmd_status(cmd), data_status(data) {}
 
     zx_status_t Get() const {
         return cmd_status == ZX_OK ? data_status : cmd_status;
@@ -30,12 +50,16 @@ class TuneWindow;
 class MtkSdmmc;
 using DeviceType = ddk::Device<MtkSdmmc>;
 
-class MtkSdmmc : public DeviceType, public ddk::SdmmcProtocol<MtkSdmmc> {
+class MtkSdmmc : public DeviceType, public ddk::SdmmcProtocol<MtkSdmmc, ddk::base_protocol> {
 
 public:
-    static zx_status_t Create(zx_device_t* parent);
+    static zx_status_t Create(void* ctx, zx_device_t* parent);
+
+    virtual ~MtkSdmmc() = default;
 
     void DdkRelease() { delete this; }
+
+    zx_status_t Bind();
 
     zx_status_t SdmmcHostInfo(sdmmc_host_info_t* info);
     zx_status_t SdmmcSetSignalVoltage(sdmmc_voltage_t voltage);
@@ -46,23 +70,43 @@ public:
     zx_status_t SdmmcPerformTuning(uint32_t cmd_idx);
     zx_status_t SdmmcRequest(sdmmc_req_t* req);
 
+    // Visible for testing.
+    MtkSdmmc(zx_device_t* parent, ddk::MmioBuffer mmio, zx::bti bti, const sdmmc_host_info_t& info,
+             zx::interrupt irq, const ddk::GpioProtocolClient& reset_gpio,
+             const ddk::GpioProtocolClient& power_en_gpio, const pdev_device_info_t& dev_info,
+             const board_mt8167::MtkSdmmcConfig& config)
+        : DeviceType(parent), req_(nullptr), mmio_(std::move(mmio)), bti_(std::move(bti)),
+          info_(info), irq_(std::move(irq)), cmd_status_(ZX_OK), reset_gpio_(reset_gpio),
+          power_en_gpio_(power_en_gpio), dev_info_(dev_info), config_(config) {}
+
+    // Visible for testing.
+    zx_status_t Init();
+
+    // Visible for testing.
+protected:
+    virtual zx_status_t WaitForInterrupt();
+
+    int JoinIrqThread() {
+        return thrd_join(irq_thread_, nullptr);
+    }
+
+    fbl::Mutex mutex_;
+    sdmmc_req_t* req_ TA_GUARDED(mutex_);
+
 private:
-    MtkSdmmc(zx_device_t* parent, ddk::MmioBuffer mmio, zx::bti bti, const sdmmc_host_info_t& info)
-        : DeviceType(parent), mmio_(fbl::move(mmio)), bti_(fbl::move(bti)), info_(info) {}
-
-    void Init();
-
     RequestStatus SdmmcRequestWithStatus(sdmmc_req_t* req);
 
     // Prepares the VMO and the DMA engine for receiving data.
-    RequestStatus RequestPrepareDma(sdmmc_req_t* req);
+    zx_status_t RequestPrepareDma(sdmmc_req_t* req) TA_REQ(mutex_);
+    // Creates the GPDMA and BDMA descriptors.
+    zx_status_t SetupDmaDescriptors(phys_iter_buffer_t* phys_iter_buf);
     // Waits for the DMA engine to finish and unpins the VMO pages.
-    RequestStatus RequestFinishDma(sdmmc_req_t* req);
+    zx_status_t RequestFinishDma(sdmmc_req_t* req) TA_REQ(mutex_);
 
     // Clears the FIFO in preparation for receiving data.
-    RequestStatus RequestPreparePolled(sdmmc_req_t* req);
+    zx_status_t RequestPreparePolled(sdmmc_req_t* req) TA_REQ(mutex_);
     // Polls the FIFO register for received data.
-    RequestStatus RequestFinishPolled(sdmmc_req_t* req);
+    zx_status_t RequestFinishPolled(sdmmc_req_t* req) TA_REQ(mutex_);
 
     RequestStatus SendTuningBlock(uint32_t cmd_idx, zx_handle_t vmo);
 
@@ -73,10 +117,26 @@ private:
     void TestDelaySettings(DelayCallback&& set_delay, RequestCallback&& do_request,
                            TuneWindow* window);
 
+    int IrqThread();
+
+    // Finish the command portion of the request. Returns true if control should be passed back to
+    // the main thread or false if more interrupts are expected. This should be called from the IRQ
+    // thread with mutex_ held.
+    bool CmdDone(const MsdcInt& msdc_int) TA_REQ(mutex_);
+
     ddk::MmioBuffer mmio_;
     zx::bti bti_;
     const sdmmc_host_info_t info_;
-    zx::pmt pmt_;
+    zx::interrupt irq_;
+    thrd_t irq_thread_;
+    io_buffer_t gpdma_buf_;
+    io_buffer_t bdma_buf_;
+    sync_completion_t req_completion_;
+    zx_status_t cmd_status_ TA_GUARDED(mutex_);
+    const ddk::GpioProtocolClient reset_gpio_;
+    const ddk::GpioProtocolClient power_en_gpio_;
+    const pdev_device_info_t dev_info_;
+    const board_mt8167::MtkSdmmcConfig config_;
 };
 
 // TuneWindow keeps track of the results of a series of tuning tests. It is expected that either

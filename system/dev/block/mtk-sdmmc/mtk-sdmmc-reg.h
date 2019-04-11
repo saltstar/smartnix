@@ -1,8 +1,33 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <hw/sdmmc.h>
 #include <hwreg/bitfields.h>
+
+// Define weak specialization methods that can be overridden in tests. There is a slight performance
+// hit as doing this prevents the MMIO accesses from being inlined.
+
+template <>
+template <>
+__WEAK uint8_t ddk::MmioBuffer::Read<uint8_t>(zx_off_t offs) const {
+    return *reinterpret_cast<volatile uint8_t*>(ptr_ + offs);
+}
+
+template <>
+template <>
+__WEAK uint32_t ddk::MmioBuffer::Read<uint32_t>(zx_off_t offs) const {
+    return *reinterpret_cast<volatile uint32_t*>(ptr_ + offs);
+}
+
+template <>
+template <>
+__WEAK void ddk::MmioBuffer::Write<uint32_t>(uint32_t val, zx_off_t offs) const {
+    *reinterpret_cast<volatile uint32_t*>(ptr_ + offs) = val;
+    hw_mb();
+}
 
 namespace sdmmc {
 
@@ -46,15 +71,32 @@ public:
     }
 
     bool DataInterrupt() {
-        return transfer_complete() || data_timeout() || data_crc_err();
+        return transfer_complete() || data_timeout() || data_crc_err() || bd_checksum_err() ||
+               gpd_checksum_err();
     }
 
+    DEF_BIT(18, gpd_checksum_err);
+    DEF_BIT(17, bd_checksum_err);
     DEF_BIT(15, data_crc_err);
     DEF_BIT(14, data_timeout);
     DEF_BIT(12, transfer_complete);
     DEF_BIT(10, cmd_crc_err);
     DEF_BIT(9, cmd_timeout);
     DEF_BIT(8, cmd_ready);
+};
+
+class MsdcIntEn : public hwreg::RegisterBase<MsdcIntEn, uint32_t> {
+public:
+    static auto Get() { return hwreg::RegisterAddr<MsdcIntEn>(0x10); }
+
+    DEF_BIT(18, gpd_checksum_err_enable);
+    DEF_BIT(17, bd_checksum_err_enable);
+    DEF_BIT(15, data_crc_err_enable);
+    DEF_BIT(14, data_timeout_enable);
+    DEF_BIT(12, transfer_complete_enable);
+    DEF_BIT(10, cmd_crc_err_enable);
+    DEF_BIT(9, cmd_timeout_enable);
+    DEF_BIT(8, cmd_ready_enable);
 };
 
 class MsdcFifoCs : public hwreg::RegisterBase<MsdcFifoCs, uint32_t> {
@@ -85,6 +127,8 @@ public:
     static auto Get() { return hwreg::RegisterAddr<SdcCfg>(0x30); }
 
     DEF_FIELD(31, 24, read_timeout);
+    DEF_BIT(20, sdio_interrupt_enable);
+    DEF_BIT(19, sdio_enable);
     DEF_FIELD(17, 16, bus_width);
 };
 
@@ -139,11 +183,16 @@ public:
             }
         }
 
+        if (req->cmd_flags & SDMMC_CMD_TYPE_ABORT) {
+            cmd.set_stop(1);
+        }
+
         return cmd;
     }
 
     DEF_FIELD(29, 28, auto_cmd);
     DEF_FIELD(27, 16, block_size);
+    DEF_BIT(14, stop);
     DEF_BIT(13, write);
     DEF_FIELD(12, 11, block_type);
     DEF_FIELD(9, 7, resp_type);
@@ -211,9 +260,13 @@ private:
 
 class DmaCtrl : public hwreg::RegisterBase<DmaCtrl, uint32_t> {
 public:
+    static constexpr uint32_t kDmaModeBasic = 0;
+    static constexpr uint32_t kDmaModeDescriptor = 1;
+
     static auto Get() { return hwreg::RegisterAddr<DmaCtrl>(0x98); }
 
     DEF_BIT(10, last_buffer);
+    DEF_BIT(8, dma_mode);
     DEF_BIT(1, dma_stop);
     DEF_BIT(0, dma_start);
 };
@@ -222,6 +275,7 @@ class DmaCfg : public hwreg::RegisterBase<DmaCfg, uint32_t> {
 public:
     static auto Get() { return hwreg::RegisterAddr<DmaCfg>(0x9c); }
 
+    DEF_BIT(1, checksum_enable);
     DEF_BIT(0, dma_active);
 };
 
@@ -240,6 +294,49 @@ public:
     DEF_FIELD(20, 16, cmd_delay);
     DEF_BIT(13, data_delay_sel);
     DEF_FIELD(12, 8, data_delay);
+};
+
+class GpDmaDescriptorInfo : public hwreg::RegisterBase<GpDmaDescriptorInfo, uint32_t> {
+public:
+    DEF_FIELD(31, 28, bdma_desc_addr_high_4_bits);
+    DEF_FIELD(27, 24, next_addr_high_4_bits);
+    DEF_FIELD(15, 8, checksum);
+    DEF_BIT(1, bdp);
+    DEF_BIT(0, hwo);
+
+    GpDmaDescriptorInfo& set_bdma_desc_addr(uint64_t addr) {
+        set_bdma_desc_addr_high_4_bits((addr & kAddressMask) >> 32);
+        return *this;
+    }
+
+    GpDmaDescriptorInfo& set_next_addr(uint64_t addr) {
+        set_next_addr_high_4_bits((addr & kAddressMask) >> 32);
+        return *this;
+    }
+
+private:
+    static constexpr uint64_t kAddressMask = 0xf00000000;
+};
+
+class BDmaDescriptorInfo : public hwreg::RegisterBase<BDmaDescriptorInfo, uint32_t> {
+public:
+    DEF_FIELD(31, 28, buffer_addr_high_4_bits);
+    DEF_FIELD(27, 24, next_addr_high_4_bits);
+    DEF_FIELD(15, 8, checksum);
+    DEF_BIT(0, last);
+
+    BDmaDescriptorInfo& set_buffer_addr(uint64_t addr) {
+        set_buffer_addr_high_4_bits((addr & kAddressMask) >> 32);
+        return *this;
+    }
+
+    BDmaDescriptorInfo& set_next_addr(uint64_t addr) {
+        set_next_addr_high_4_bits((addr & kAddressMask) >> 32);
+        return *this;
+    }
+
+private:
+    static constexpr uint64_t kAddressMask = 0xf00000000;
 };
 
 }  // namespace sdmmc

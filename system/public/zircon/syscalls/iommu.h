@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -41,7 +44,7 @@ typedef struct zx_iommu_desc_intel_scope {
     // ending with the device itself.
     // |dev_func[0]| is the address on |start_bus| of the first bridge in the
     // path (excluding the host bridge).  |dev_func[num_hops-1]| is the address
-    // of the the device itself.
+    // of the device itself.
     uint8_t dev_func[5];
 } zx_iommu_desc_intel_scope_t;
 

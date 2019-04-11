@@ -2,14 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// WARNING: THIS FILE IS MACHINE GENERATED. DO NOT EDIT.
-//          MODIFY system/fidl/protocols/bt_gatt_svc.banjo INSTEAD.
-
 #pragma once
 
 #include <string.h>
 
-#include <ddk/protocol/bt-gatt-svc.h>
+#include <ddk/protocol/bt/gattsvc.h>
 #include <zircon/compiler.h>
 #include <zircon/types.h>
 
@@ -44,9 +41,9 @@ static inline bt_gatt_uuid_t bt_gatt_make_uuid32(uint32_t value) {
 static inline bt_gatt_uuid_t bt_gatt_make_uuid16(uint16_t value) {
     return bt_gatt_make_uuid32((uint32_t)value);
 }
-// UUID comparsion.
-// Note: this method only does a binary comparsion and doesn't break out low,
-// mid, high, version, sequence, or node parts for indiviual comparison so
+// UUID comparison.
+// Note: this method only does a binary comparison and doesn't break out low,
+// mid, high, version, sequence, or node parts for individual comparison so
 // doesn't conform to standard UUID sort.
 static inline int bt_gatt_compare_uuid(const bt_gatt_uuid_t* u1,
                                        const bt_gatt_uuid_t* u2) {

@@ -9,7 +9,6 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := driver
 
 MODULE_SRCS := \
-    $(LOCAL_DIR)/bind.c \
     $(LOCAL_DIR)/usb-xhci.cpp \
     $(LOCAL_DIR)/xdc.cpp \
     $(LOCAL_DIR)/xdc-transfer.cpp \
@@ -38,5 +37,14 @@ MODULE_LIBS := \
     system/ulib/c \
 
 MODULE_FIDL_LIBS := system/fidl/fuchsia-usb-debug
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-pci \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-bus \
+    system/banjo/ddk-protocol-usb-hci \
+    system/banjo/ddk-protocol-usb-hub \
+    system/banjo/ddk-protocol-usb-request \
 
 include make/module.mk

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -38,6 +41,10 @@ public:
 
     // move semantics only
     DISALLOW_COPY_AND_ASSIGN_ALLOW_MOVE(unique_fd);
+
+    fbl::unique_fd duplicate() {
+        return fbl::unique_fd(dup(fd_));
+    }
 
     int release() {
         int t = fd_;

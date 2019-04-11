@@ -290,7 +290,8 @@
                         MMU_TCR_ORGN0(MMU_RGN_WRITE_BACK_ALLOCATE) | \
                         MMU_TCR_IRGN0(MMU_RGN_WRITE_BACK_ALLOCATE) | \
                         MMU_TCR_T0SZ(64 - MMU_IDENT_SIZE_SHIFT))
-#define MMU_TCR_FLAGS_IDENT (MMU_TCR_IPS_DEFAULT | MMU_TCR_FLAGS1 | MMU_TCR_FLAGS0_IDENT)
+#define MMU_TCR_FLAGS_IDENT (MMU_TCR_IPS_DEFAULT | MMU_TCR_FLAGS1 | \
+                        MMU_TCR_FLAGS0_IDENT | MMU_TCR_AS | MMU_TCR_A1)
 
 #define MMU_TCR_FLAGS_KERNEL (MMU_TCR_IPS_DEFAULT | \
                               MMU_TCR_FLAGS1 | \
@@ -380,13 +381,13 @@ __BEGIN_CDECLS
 #define ARM64_TLBI_NOADDR(op)            \
     ({                                   \
         __asm__ volatile("tlbi " #op::); \
-        ISB;                             \
+        __isb(ARM_MB_SY);                             \
     })
 
 #define ARM64_TLBI(op, val)                                          \
     ({                                                               \
         __asm__ volatile("tlbi " #op ", %0" ::"r"((uint64_t)(val))); \
-        ISB;                                                         \
+        __isb(ARM_MB_SY);                                                         \
     })
 
 const size_t MMU_ARM64_ASID_BITS = 16;

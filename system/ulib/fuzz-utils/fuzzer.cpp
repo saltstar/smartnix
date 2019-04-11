@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <ctype.h>
 #include <errno.h>
@@ -275,21 +278,16 @@ void Fuzzer::FindFuchsiaFuzzers(const fbl::String& package, const fbl::String& t
         }
         auto targets = path.List();
         targets->keep_if(target);
-        fbl::String abspath;
+        path.Pop();
         for (const char* t = targets->first(); t; t = targets->next()) {
-            if (path.Push(t) != ZX_OK) {
-                continue;
-            }
-            size_t tmp;
-            if (path.GetSize("corpora", &tmp) == ZX_OK &&
-                path.GetSize("dictionary", &tmp) == ZX_OK &&
-                path.GetSize("options", &tmp) == ZX_OK) {
+            if (path.IsFile(fbl::StringPrintf("data/%s/corpora", t)) &&
+                path.IsFile(fbl::StringPrintf("data/%s/dictionary", t)) &&
+                path.IsFile(fbl::StringPrintf("data/%s/options", t)) &&
+                path.IsFile(fbl::StringPrintf("meta/%s.cmx", t))) {
                 out->set(fbl::StringPrintf("%s/%s", p, t),
                          fbl::StringPrintf("fuchsia-pkg://fuchsia.com/%s#meta/%s.cmx", p, t));
             }
-            path.Pop();
         }
-        path.Pop();
     }
 }
 
@@ -332,7 +330,7 @@ void Fuzzer::FindFuzzers(const fbl::String& name, StringMap* out) {
 void Fuzzer::GetArgs(StringList* out) {
     out->clear();
     if (strstr(target_.c_str(), "fuchsia-pkg://fuchsia.com/") == target_.c_str()) {
-        out->push_back("/system/bin/run");
+        out->push_back("/bin/run");
     }
     out->push_back(target_);
     const char* key;
@@ -374,7 +372,16 @@ zx_status_t Fuzzer::Execute() {
     // in the correct namespace name, /pkg/bin/<binary>.
     if ((rc = fdio_spawn(ZX_HANDLE_INVALID, FDIO_SPAWN_CLONE_ALL, argv[0], argv,
                          process_.reset_and_get_address())) != ZX_OK) {
-        fprintf(err_, "Failed to spawn '%s': %s\n", argv[0], zx_status_get_string(rc));
+        Path path;
+        if (strcmp(argv[0], "/bin/run") != 0) {
+            fprintf(err_, "Failed to spawn '%s': %s\n", argv[0], zx_status_get_string(rc));
+        } else if (GetPackagePath("run", &path) != ZX_OK) {
+            fprintf(err_, "Required package 'run' is missing.\n");
+        } else if (argc > 1) {
+            fprintf(err_, "Failed to spawn '%s': %s\n", argv[1], zx_status_get_string(rc));
+        } else {
+            fprintf(err_, "Malformed command line: '%s'\n", argv[0]);
+        }
         return rc;
     }
 
@@ -442,7 +449,7 @@ bool Fuzzer::CheckProcess(zx_handle_t task, bool kill) const {
     if (meta) {
         target = meta + strlen("#meta/");
     }
-    if (strcmp(name, target) != 0) {
+    if (strncmp(name, target, sizeof(name) - 1) != 0) {
         return false;
     }
     if (kill) {
@@ -696,8 +703,6 @@ zx_status_t Fuzzer::Start() {
 }
 
 zx_status_t Fuzzer::Check() {
-    zx_status_t rc;
-
     // Report fuzzer execution status
     Walker walker(this, false /* !kill */);
     if (walker.WalkRootJobTree() != ZX_ERR_STOP) {
@@ -709,19 +714,20 @@ zx_status_t Fuzzer::Check() {
     fprintf(out_, "    Output path:  %s\n", data_path_.c_str());
 
     // Report corpus details, if present
-    if ((rc = data_path_.Push("corpus")) != ZX_OK) {
+    if (data_path_.Push("corpus") != ZX_OK) {
         fprintf(out_, "    Corpus size:  0 inputs / 0 bytes\n");
     } else {
         auto corpus = data_path_.List();
+        size_t corpus_len = 0;
         size_t corpus_size = 0;
         for (const char* input = corpus->first(); input; input = corpus->next()) {
             size_t input_size;
-            if ((rc = data_path_.GetSize(input, &input_size)) != ZX_OK) {
-                return rc;
+            if (data_path_.GetSize(input, &input_size) == ZX_OK) {
+                ++corpus_len;
+                corpus_size += input_size;
             }
-            corpus_size += input_size;
         }
-        fprintf(out_, "    Corpus size:  %zu inputs / %zu bytes\n", corpus->length(), corpus_size);
+        fprintf(out_, "    Corpus size:  %zu inputs / %zu bytes\n", corpus_len, corpus_size);
         data_path_.Pop();
     }
 

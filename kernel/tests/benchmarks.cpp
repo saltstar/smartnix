@@ -4,6 +4,7 @@
 #include <arch/ops.h>
 #include <err.h>
 #include <inttypes.h>
+#include <kernel/brwlock.h>
 #include <kernel/mp.h>
 #include <kernel/mutex.h>
 #include <kernel/spinlock.h>
@@ -251,7 +252,6 @@ __NO_INLINE static void bench_spinlock() {
 
 __NO_INLINE static void bench_mutex() {
     mutex_t m;
-    mutex_init(&m);
 
     static const uint count = 128 * 1024 * 1024;
     uint64_t c = arch_cycle_count();
@@ -262,6 +262,28 @@ __NO_INLINE static void bench_mutex() {
     c = arch_cycle_count() - c;
 
     printf("%" PRIu64 " cycles to acquire/release uncontended mutex %u times (%" PRIu64 " cycles per)\n", c, count, c / count);
+}
+
+__NO_INLINE static void bench_rwlock() {
+    BrwLock rw;
+    static const uint count = 128 * 1024 * 1024;
+    uint64_t c = arch_cycle_count();
+    for (size_t i = 0; i < count; i++) {
+        rw.ReadAcquire();
+        rw.ReadRelease();
+    }
+    c = arch_cycle_count() - c;
+
+    printf("%" PRIu64 " cycles to acquire/release uncontended brwlock for read %u times (%" PRIu64 " cycles per)\n", c, count, c / count);
+
+    c = arch_cycle_count();
+    for (size_t i = 0; i < count; i++) {
+        rw.WriteAcquire();
+        rw.WriteRelease();
+    }
+    c = arch_cycle_count() - c;
+ 
+    printf("%" PRIu64 " cycles to acquire/release uncontended brwlock for write %u times (%" PRIu64 " cycles per)\n", c, count, c / count);
 }
 
 int benchmarks(int, const cmd_args*, uint32_t) {
@@ -280,6 +302,7 @@ int benchmarks(int, const cmd_args*, uint32_t) {
 
     bench_spinlock();
     bench_mutex();
+    bench_rwlock();
 
     return 0;
 }

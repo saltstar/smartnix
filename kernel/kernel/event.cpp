@@ -29,17 +29,6 @@
 #include <zircon/types.h>
 
 /**
- * @brief  Initialize an event object
- *
- * @param e        Event object to initialize
- * @param initial  Initial value for "signaled" state
- * @param flags    0 or EVENT_FLAG_AUTOUNSIGNAL
- */
-void event_init(event_t* e, bool initial, uint flags) {
-    *e = (event_t)EVENT_INITIAL_VALUE(*e, initial, flags);
-}
-
-/**
  * @brief  Destroy an event object.
  *
  * Event's resources are freed and it may no longer be
@@ -57,7 +46,8 @@ void event_destroy(event_t* e) {
     wait_queue_destroy(&e->wait);
 }
 
-static zx_status_t event_wait_worker(event_t* e, zx_time_t deadline,
+static zx_status_t event_wait_worker(event_t* e,
+                                     const Deadline& deadline,
                                      bool interruptable,
                                      uint signal_mask) {
     thread_t* current_thread = get_current_thread();
@@ -78,7 +68,7 @@ static zx_status_t event_wait_worker(event_t* e, zx_time_t deadline,
         }
     } else {
         /* unsignaled, block here */
-        ret = wait_queue_block_with_mask(&e->wait, deadline, signal_mask);
+        ret = wait_queue_block_etc(&e->wait, deadline, signal_mask, ResourceOwnership::Normal);
     }
 
     current_thread->interruptable = false;
@@ -104,7 +94,27 @@ static zx_status_t event_wait_worker(event_t* e, zx_time_t deadline,
  *          when event_signal_etc is used.
  */
 zx_status_t event_wait_deadline(event_t* e, zx_time_t deadline, bool interruptable) {
-    return event_wait_worker(e, deadline, interruptable, 0);
+    return event_wait_worker(e, Deadline::no_slack(deadline), interruptable, 0);
+}
+
+/**
+ * @brief  Wait for event to be signaled
+ *
+ * If the event has already been signaled, this function
+ * returns immediately.  Otherwise, the current thread
+ * goes to sleep until the event object is signaled or destroyed by another
+ * thread, the deadline is reached, or the calling thread is interrupted.
+ *
+ * @param e        Event object
+ * @param deadline Deadline to timeout at
+ * @param slack    Allowed deviation from the deadline
+ *
+ * @return  0 on success, ZX_ERR_TIMED_OUT on timeout,
+ *          other values depending on wait_result value
+ *          when event_signal_etc is used.
+ */
+zx_status_t event_wait_interruptable(event_t* e, const Deadline& deadline) {
+    return event_wait_worker(e, deadline, true, 0);
 }
 
 /**
@@ -123,7 +133,7 @@ zx_status_t event_wait_deadline(event_t* e, zx_time_t deadline, bool interruptab
  *          when event_signal_etc is used.
  */
 zx_status_t event_wait_with_mask(event_t* e, uint signal_mask) {
-    return event_wait_worker(e, ZX_TIME_INFINITE, true, signal_mask);
+    return event_wait_worker(e, Deadline::infinite(), true, signal_mask);
 }
 
 static int event_signal_internal(event_t* e, bool reschedule,

@@ -3,16 +3,17 @@
 #include <dev/pcie_bus_driver.h>
 #include <dev/pcie_device.h>
 #include <dev/pcie_root.h>
-#include <inttypes.h>
-#include <vm/vm_aspace.h>
-#include <lib/pci/pio.h>
-#include <lk/init.h>
 #include <fbl/algorithm.h>
 #include <fbl/alloc_checker.h>
 #include <fbl/auto_lock.h>
 #include <fbl/limits.h>
 #include <fbl/mutex.h>
+#include <inttypes.h>
+#include <ktl/move.h>
+#include <lib/pci/pio.h>
+#include <lk/init.h>
 #include <trace.h>
+#include <vm/vm_aspace.h>
 
 using fbl::AutoLock;
 
@@ -77,7 +78,7 @@ zx_status_t PcieBusDriver::AddRoot(fbl::RefPtr<PcieRoot>&& root) {
     // Attempt to add it to the collection of roots.
     {
         AutoLock bus_topology_lock(&bus_topology_lock_);
-        if (!roots_.insert_or_find(fbl::move(root))) {
+        if (!roots_.insert_or_find(ktl::move(root))) {
             TRACEF("Failed to add PCIe root for bus %u, root already exists!\n",
                     root->managed_bus_id());
             return ZX_ERR_ALREADY_EXISTS;
@@ -87,7 +88,7 @@ zx_status_t PcieBusDriver::AddRoot(fbl::RefPtr<PcieRoot>&& root) {
     return ZX_OK;
 }
 
-zx_status_t PcieBusDriver::SetAddressTranslationProvider(fbl::unique_ptr<PcieAddressProvider> provider) {
+zx_status_t PcieBusDriver::SetAddressTranslationProvider(ktl::unique_ptr<PcieAddressProvider> provider) {
     if (!IsNotStarted()) {
         TRACEF("Cannot set an address provider if the driver is already running\n");
         return ZX_ERR_BAD_STATE;
@@ -97,7 +98,7 @@ zx_status_t PcieBusDriver::SetAddressTranslationProvider(fbl::unique_ptr<PcieAdd
         return ZX_ERR_INVALID_ARGS;
     }
 
-    addr_provider_ = fbl::move(provider);
+    addr_provider_ = ktl::move(provider);
 
     return ZX_OK;
 }
@@ -215,7 +216,7 @@ fbl::RefPtr<PcieDevice> PcieBusDriver::GetNthDevice(uint32_t index) {
             return true;
         }, &state);
 
-    return fbl::move(state.ret);
+    return ktl::move(state.ret);
 }
 
 void PcieBusDriver::LinkDeviceToUpstream(PcieDevice& dev, PcieUpstreamNode& upstream) {
@@ -290,7 +291,7 @@ fbl::RefPtr<PcieDevice> PcieBusDriver::GetRefedDevice(uint bus_id,
                 return true;
             }, &state);
 
-    return fbl::move(state.ret);
+    return ktl::move(state.ret);
 }
 
 void PcieBusDriver::ForeachRoot(ForeachRootCallback cbk, void* ctx) {
@@ -389,7 +390,7 @@ bool PcieBusDriver::ForeachDownstreamDevice(const fbl::RefPtr<PcieUpstreamNode>&
             if (dev->is_bridge()) {
                 // TODO(johngro): eliminate the need to hold this extra ref.  If
                 // we had the ability to up and downcast when moving RefPtrs, we
-                // could just fbl::move dev into a PcieBridge pointer and then
+                // could just ktl::move dev into a PcieBridge pointer and then
                 // down into a PcieUpstreamNode pointer.
                 fbl::RefPtr<PcieUpstreamNode> downstream_bridge(
                         static_cast<PcieUpstreamNode*>(
@@ -479,7 +480,7 @@ void PcieBusDriver::ShutdownDriver() {
 
     {
         AutoLock lock(&driver_lock_);
-        driver = fbl::move(driver_);
+        driver = ktl::move(driver_);
     }
 
     driver.reset();

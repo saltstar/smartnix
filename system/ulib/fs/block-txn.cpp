@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <zircon/device/block.h>
 #include <fbl/algorithm.h>
@@ -6,6 +9,8 @@
 
 #include <fs/block-txn.h>
 #include <fs/vfs.h>
+
+#include <utility>
 
 namespace fs {
 
@@ -52,7 +57,7 @@ void BlockTxn::EnqueueOperation(uint32_t op, vmoid_t id, uint64_t vmo_offset,
     request.length = blocks;
     request.vmo_offset = vmo_offset;
     request.dev_offset = dev_offset;
-    requests_.push_back(fbl::move(request));
+    requests_.push_back(std::move(request));
 }
 
 zx_status_t BlockTxn::Transact() {

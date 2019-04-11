@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#pragma once
+#ifndef LIB_ZX_OBJECT_TRAITS_H_
+#define LIB_ZX_OBJECT_TRAITS_H_
 
 namespace zx {
 
@@ -27,6 +28,7 @@ class pmt;
 // - bti
 // - resource
 // - timer
+// - iommu
 template <typename T> struct object_traits {
     static constexpr bool supports_duplication = true;
     static constexpr bool supports_user_signal = true;
@@ -91,7 +93,7 @@ template <> struct object_traits<vmar> {
 };
 
 template <> struct object_traits<interrupt> {
-    static constexpr bool supports_duplication = false;
+    static constexpr bool supports_duplication = true;
     static constexpr bool supports_user_signal = false;
     static constexpr bool supports_wait = true;
     static constexpr bool has_peer_handle = false;
@@ -105,3 +107,5 @@ template <> struct object_traits<guest> {
 };
 
 } // namespace zx
+
+#endif  // LIB_ZX_OBJECT_TRAITS_H_

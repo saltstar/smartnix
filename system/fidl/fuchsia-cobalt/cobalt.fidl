@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 library fuchsia.cobalt;
 
@@ -92,10 +95,9 @@ interface LoggerFactory {
     // returned Logger is for.
     //
     // |status| Returns OK on success or INVALID_ARGUMENTS if the project
-    //  profile does not contain a valid Cobalt config with only a single
-    //  project_id.
-    1: CreateLogger(ProjectProfile profile,
-                    request<Logger> logger)
+    // profile does not contain a valid Cobalt config with only a single
+    // project_id.
+    1: CreateLogger(ProjectProfile profile, request<Logger> logger)
            -> (Status status);
 
     // Creates a LoggerSimple for the given ProjectProfile.
@@ -104,15 +106,109 @@ interface LoggerFactory {
     // returned Logger is for.
     //
     // |status| Returns OK on success or INVALID_ARGUMENTS if the project
-    //  profile does not contain a valid Cobalt config with only a single
-    //  project_id.
-    2: CreateLoggerSimple(ProjectProfile profile,
-                          request<LoggerSimple> logger)
+    // profile does not contain a valid Cobalt config with only a single
+    // project_id.
+    2: CreateLoggerSimple(ProjectProfile profile, request<LoggerSimple> logger)
+           -> (Status status);
+
+    // Creates a Logger for the project with the given name, using the state of
+    // the metrics registry that is bundled with Cobalt.
+    //
+    // WARNING: This version of CreateLogger does not allow the client to
+    // provide Cobalt with an updated version of the metrics registry. Therefore
+    // only metrics that were already registered at the time Cobalt was built
+    // may be used. This method may be appropriate in the case where it is known
+    // that new versions of the calling package will only be installed along
+    // with new versions of Cobalt. For other cases consider the method
+    // CreateLogger() above.
+    //
+    // |project_name| The name of the client's Cobalt project. (Only Cobalt v1.0
+    // projects are supported)
+    //
+    // |release_stage| The release stage for the client's project.
+    //
+    // |status| Returns OK on success or INVALID_ARGUMENTS if there is no
+    // project with the given name in the version of the metrics registry that
+    // is bundled with Cobalt.
+    3: CreateLoggerFromProjectName(string:64 project_name,
+                                   ReleaseStage release_stage,
+                                   request<Logger> logger)
+           -> (Status status);
+
+    // Creates a LoggerSimple for the project with the given name, using the
+    // state of the metrics registry that is bundled with Cobalt.
+    //
+    // WARNING: This version of CreateLoggerSimple does not allow the client to
+    // provide Cobalt with an updated version of the metrics registry. Therefore
+    // only metrics that were already registered at the time Cobalt was built
+    // may be used. This method may be appropriate in the case where it is known
+    // that new versions of the calling package will only be installed along
+    // with new versions of Cobalt. For other cases consider the method
+    // CreateLoggerSimple() above.
+    //
+    // |project_name| The name of the client's Cobalt project. (Only Cobalt v1.0
+    // projects are supported)
+    //
+    // |release_stage| The release stage for the client's project.
+    //
+    // |status| Returns OK on success or INVALID_ARGUMENTS if there is no
+    // project with the given name in the version of the metrics registry that
+    // is bundled with Cobalt.
+    4: CreateLoggerSimpleFromProjectName(string:64 project_name,
+                                         ReleaseStage release_stage,
+                                         request<LoggerSimple> logger)
+           -> (Status status);
+
+    // Creates a Logger for the project with the given name, using the state of
+    // the metrics registry that is bundled with Cobalt.
+    //
+    // WARNING: This version of CreateLogger does not allow the client to
+    // provide Cobalt with an updated version of the metrics registry. Therefore
+    // only metrics that were already registered at the time Cobalt was built
+    // may be used. This method may be appropriate in the case where it is known
+    // that new versions of the calling package will only be installed along
+    // with new versions of Cobalt. For other cases consider the method
+    // CreateLogger() above.
+    //
+    // |project_id| The id of the client's Cobalt project. (Only Cobalt v0.1
+    // projects are supported)
+    //
+    // |release_stage| The release stage for the client's project.
+    //
+    // |status| Returns OK on success or INVALID_ARGUMENTS if there is no
+    // project with the given name in the version of the metrics registry that
+    // is bundled with Cobalt.
+    5: CreateLoggerFromProjectId(uint32 project_id, ReleaseStage release_stage,
+                                 request<Logger> logger)
+           -> (Status status);
+
+    // Creates a LoggerSimple for the project with the given name, using the
+    // state of the metrics registry that is bundled with Cobalt.
+    //
+    // WARNING: This version of CreateLoggerSimple does not allow the client to
+    // provide Cobalt with an updated version of the metrics registry. Therefore
+    // only metrics that were already registered at the time Cobalt was built
+    // may be used. This method may be appropriate in the case where it is known
+    // that new versions of the calling package will only be installed along
+    // with new versions of Cobalt. For other cases consider the method
+    // CreateLoggerSimple() above.
+    //
+    // |project_id| The id of the client's Cobalt project. (Only Cobalt v0.1
+    // projects are supported)
+    //
+    // |release_stage| The release stage for the client's project.
+    //
+    // |status| Returns OK on success or INVALID_ARGUMENTS if there is no
+    // project with the given name in the version of the metrics registry that
+    // is bundled with Cobalt.
+    6: CreateLoggerSimpleFromProjectId(uint32 project_id,
+                                       ReleaseStage release_stage,
+                                       request<LoggerSimple> logger)
            -> (Status status);
 };
 
 /////////////////////////////////////////////////////////////////////
-// LoggerBase Interface
+/// LoggerBase Interface
 /////////////////////////////////////////////////////////////////////
 
 // LoggerBase and its extensions are used to log Events to the Cobalt system.
@@ -136,9 +232,9 @@ interface LoggerBase {
     // from the ProjectProfile used to obtain this Logger, and it must be of
     // type EVENT_OCCURRED.
     //
-    // |event_type_index| The index of the event type that occurred. The indexed
-    //     set of all event types is specified in the metric definition.
-    1: LogEvent(uint32 metric_id, uint32 event_type_index)
+    // |event_code| The index of the event that occurred. The indexed set of all
+    // event codes and their labels is specified in the metric definition.
+    1: LogEvent(uint32 metric_id, uint32 event_code)
            -> (Status status);
 
     // Logs that an event has occurred a given number of times.
@@ -147,26 +243,25 @@ interface LoggerBase {
     // from the ProjectProfile used to obtain this Logger, and it must be of
     // type EVENT_COUNT.
     //
-    // |event_type_index| The index of the event type that occurred. The indexed
-    //     set of all event types is specified in the metric definition.
+    // |event_code| The index of the event that occurred. The indexed set of all
+    // event codes and their labels is specified in the metric definition.
     //
-    // |component| Optionally, a component associated with the event may
-    //     also be logged. Any notion of component that makes sense may be
-    //     used or use the empty string if there is no natural notion of
-    //     component.
+    // |component| Optionally, a component associated with the event may also be
+    // logged. Any notion of component that makes sense may be used or use the
+    // empty string if there is no natural notion of component.
     //
-    // |period_duration_micros| Optionally, the period of time over which
-    //     the |count| events occurred may be logged. If this is not
-    //     relevant the value may be set to 0. Otherwise specify the period
-    //     duration as a number of microseconds.
+    // |period_duration_micros| Optionally, the period of time over which the
+    // |count| events occurred may be logged. If this is not relevant the value
+    // may be set to 0. Otherwise specify the period duration as a number of
+    // microseconds.
     //
-    //  |count| The number of times the event occurred. One may choose to
-    //      always set this value to 1 and always set
-    //     |period_duration_micros| to 0 in order to achieve a semantics
-    //     similar to the LogEventOccurred() method, but with a |component|.
-    2: LogEventCount(uint32 metric_id, uint32 event_type_index,
-                     string:64 component, int64 period_duration_micros,
-                     int64 count)
+    // |count| The number of times the event occurred. One may choose to always
+    // set this value to 1 and always set
+    //
+    // |period_duration_micros| to 0 in order to achieve a semantics similar to
+    // the LogEventOccurred() method, but with a |component|.
+    2: LogEventCount(uint32 metric_id, uint32 event_code, string:64 component,
+                     int64 period_duration_micros, int64 count)
            -> (Status status);
 
     // Logs that an event lasted a given amount of time.
@@ -175,18 +270,17 @@ interface LoggerBase {
     // from the ProjectProfile used to obtain this Logger, and it must be of
     // type ELAPSED_TIME.
     //
-    // |event_type_index| The index of the event type that occurred. The indexed
-    //     set of all event types is specified in the metric definition.
+    // |event_code| The index of the event that occurred. The indexed set of all
+    // event codes and their labels is specified in the metric definition.
     //
-    // |component| Optionally, a component associated with the event may
-    //     also be logged. Any notion of component that makes sense may be
-    //     used or use the empty string if there is no natural notion of
-    //     component.
+    // |component| Optionally, a component associated with the event may also be
+    // logged. Any notion of component that makes sense may be used or use the
+    // empty string if there is no natural notion of component.
     //
-    // |elapsed_micros| The elapsed time of the event, specified as a number
-    //     of microseconds.
-    3: LogElapsedTime(uint32 metric_id, uint32 event_type_index,
-                      string:64 component, int64 elapsed_micros)
+    // |elapsed_micros| The elapsed time of the event, specified as a number of
+    // microseconds.
+    3: LogElapsedTime(uint32 metric_id, uint32 event_code, string:64 component,
+                      int64 elapsed_micros)
            -> (Status status);
 
     // Logs a measured average frame rate.
@@ -195,18 +289,18 @@ interface LoggerBase {
     // from the ProjectProfile used to obtain this Logger, and it must be of
     // type FRAME_RATE.
     //
-    // |event_type_index| The index of the event type that associated with the
-    //     frame-rate measurement. The indexed set of all event types is
-    //     specified in the metric definition.
+    // |event_code| The index of the event that associated with the frame-rate
+    // measurement. The indexed set of all event codes and their labels is
+    // specified in the metric definition.
     //
     // |component| Optionally, a component associated with the frame-rate
-    //     measurement may also be logged. Any notion of component that makes
-    //     sense may be used or use the empty string if there is no natural
-    //     notion of component.
+    // measurement may also be logged. Any notion of component that makes sense
+    // may be used or use the empty string if there is no natural notion of
+    // component.
     //
     // |fps| The average-frame rate in frames-per-second.
-    4: LogFrameRate(uint32 metric_id, uint32 event_type_index,
-                    string:64 component, float32 fps)
+    4: LogFrameRate(uint32 metric_id, uint32 event_code, string:64 component,
+                    float32 fps)
            -> (Status status);
 
     // Logs a measured memory usage.
@@ -215,18 +309,17 @@ interface LoggerBase {
     // from the ProjectProfile used to obtain this Logger, and it must be of
     // type MEMORY_USAGE.
     //
-    // |event_type_index| The index of the event type associated with the memory
-    //     usage. The indexed set of all event types is specified in the metric
-    //     definition.
+    // |event_code| The index of the event type associated with the memory
+    // usage. The indexed set of all event codes and their labels is specified
+    // in the metric definition.
     //
-    // |component| Optionally, a component associated with the memory usage
-    //     may also be logged. Any notion of component that makes sense may be
-    //     used or use the empty string if there is no natural notion of
-    //     component.
+    // |component| Optionally, a component associated with the memory usage may
+    // also be logged. Any notion of component that makes sense may be used or
+    // use the empty string if there is no natural notion of component.
     //
     // |bytes| The memory used, in bytes.
-    5: LogMemoryUsage(uint32 metric_id, uint32 event_type_index,
-                      string:64 component, int64 bytes)
+    5: LogMemoryUsage(uint32 metric_id, uint32 event_code, string:64 component,
+                      int64 bytes)
            -> (Status status);
 
     // Logs the fact that a given string was used, in a specific context.
@@ -245,8 +338,8 @@ interface LoggerBase {
     // from the ProjectProfile used to obtain this Logger, and it must be of
     // type STRING_USED.
     //
-    // |s| The string to log. This should be a human-readable string of
-    //      size no more than 256 bytes.
+    // |s| The string to log. This should be a human-readable string of size no
+    // more than 256 bytes.
     6: LogString(uint32 metric_id, string:256 s) -> (Status status);
 
     // This method is part of Cobalt's helper service for measuring the time
@@ -262,34 +355,32 @@ interface LoggerBase {
     // from the ProjectProfile used to obtain this Logger, and it must be of
     // type ELAPSED_TIME.
     //
-    // |event_type_index| The index of the event type to associate with the
-    // elapsed time. This is passed to LogElapsedTime()
+    // |event_code| The index of the event type to associate with the elapsed
+    // time. This is passed to LogElapsedTime()
     //
-    // |component| Optionally, a component associated with the event may
-    //     also be logged. See the description at LogElapsedTime().
+    // |component| Optionally, a component associated with the event may also be
+    // logged. See the description at LogElapsedTime().
     //
     // |timer_id| The ID of the timer being started. This is an arbitrary
-    //     non-empty string provided by the caller and it is the caller's
-    //     responsibility to ensure that Cobalt receives a pair of
-    //     StartTimer(), EndTimer() calls with this id before the timeout
-    //     and without any intervening additional calls to StartTimer()
-    //     or EndTimer() using the same id. Once such a pair is received
-    //     Cobalt will delete the timer with this ID and after that the
-    //     ID may be re-used.
+    // non-empty string provided by the caller and it is the caller's
+    // responsibility to ensure that Cobalt receives a pair of StartTimer(),
+    // EndTimer() calls with this id before the timeout and without any
+    // intervening additional calls to StartTimer() or EndTimer() using the same
+    // id. Once such a pair is received Cobalt will delete the timer with this
+    // ID and after that the ID may be re-used.
     //
     // |timestamp| The timestamp to set as the start of the timer. The units
-    //     must be microseconds. The absolute value does not matter, only the
-    //     difference between the end and start timestamps will be used.
+    // must be microseconds. The absolute value does not matter, only the
+    // difference between the end and start timestamps will be used.
     //
     // |timeout_s| The number of seconds Cobalt should wait to receive the
-    //     corresponding EndTimer() call with the same |timer_id|. If
-    //     Cobalt has already received the corresponding EndTimer() call
-    //     before receiving this StartTimer() call then this value is
-    //     ignored as the timeout has already been set by the EndTimer()
-    //     call. If Cobalt does not receive the corresponding EndTimer()
-    //     call before the timeout then the timer will be deleted and
-    //     this invocation of StartTimer() will be forgotten. Must be a
-    //     positive value less than 300.
+    // corresponding EndTimer() call with the same |timer_id|. If Cobalt has
+    // already received the corresponding EndTimer() call before receiving this
+    // StartTimer() call then this value is ignored as the timeout has already
+    // been set by the EndTimer() call. If Cobalt does not receive the
+    // corresponding EndTimer() call before the timeout then the timer will be
+    // deleted and this invocation of StartTimer() will be forgotten. Must be a
+    // positive value less than 300.
     //
     // |status| Returns OK on success. There are two success cases:
     //     (i) Cobalt does not currently have any timers with the given
@@ -310,9 +401,8 @@ interface LoggerBase {
     //        will be forgotten.
     //     Any error returned by LogElapsedTime() may also be returned by this
     //     method.
-    7: StartTimer(uint32 metric_id, uint32 event_type_index,
-                  string:64 component, string:64 timer_id,
-                  uint64 timestamp, uint32 timeout_s)
+    7: StartTimer(uint32 metric_id, uint32 event_code, string:64 component,
+                  string:64 timer_id, uint64 timestamp, uint32 timeout_s)
            -> (Status status);
 
     // This method is part of Cobalt's helper service for measuring the time
@@ -325,27 +415,25 @@ interface LoggerBase {
     // call before the StartTimer() call.
     //
     // |timer_id| The ID of the timer being ended. This is an arbitrary
-    //     non-empty string provided by the caller and it is the caller's
-    //     responsibility to ensure that Cobalt receives a pair of
-    //     StartTimer(), EndTimer() calls with this id before the timeout
-    //     and without any intervening additional calls to StartTimer()
-    //     or EndTimer() using the same id. Once such a pair is received
-    //     Cobalt will delete the timer with this ID and after that the
-    //     ID may be re-used.
+    // non-empty string provided by the caller and it is the caller's
+    // responsibility to ensure that Cobalt receives a pair of StartTimer(),
+    // EndTimer() calls with this id before the timeout and without any
+    // intervening additional calls to StartTimer() or EndTimer() using the same
+    // id. Once such a pair is received Cobalt will delete the timer with this
+    // ID and after that the ID may be re-used.
     //
-    // |timestamp| The timestamp to set as the end of the timer. The units
-    //     must be microseconds. The absolute value does not matter, only the
-    //     difference between the end and start timestamps will be used.
+    // |timestamp| The timestamp to set as the end of the timer. The units must
+    // be microseconds. The absolute value does not matter, only the difference
+    // between the end and start timestamps will be used.
     //
     // |timeout_s| The number of seconds Cobalt should wait to receive the
-    //     corresponding EndTimer() call with the same |timer_id|. If
-    //     Cobalt has already received the corresponding EndTimer() call
-    //     before receiving this StartTimer() call then this value is
-    //     ignored as the timeout has already been set by the EndTimer()
-    //     call. If Cobalt does not receive the corresponding EndTimer()
-    //     call before the timeout then the timer will be deleted and
-    //     this invocation of StartTimer() will be forgotten. Must be a
-    //     positive value less than 300.
+    // corresponding EndTimer() call with the same |timer_id|. If Cobalt has
+    // already received the corresponding EndTimer() call before receiving this
+    // StartTimer() call then this value is ignored as the timeout has already
+    // been set by the EndTimer() call. If Cobalt does not receive the
+    // corresponding EndTimer() call before the timeout then the timer will be
+    // deleted and this invocation of StartTimer() will be forgotten. Must be a
+    // positive value less than 300.
     //
     // |status| Returns OK on success. There are two success cases:
     //     (i) Cobalt does not currently have any timers with the given
@@ -373,7 +461,7 @@ interface LoggerBase {
 };
 
 /////////////////////////////////////////////////////////////////////
-// Logger Interface
+/// Logger Interface
 /////////////////////////////////////////////////////////////////////
 
 // A value for a custom Event. This is used by the method LogCustomEvent().
@@ -403,6 +491,49 @@ struct HistogramBucket {
     uint64 count;
 };
 
+// Used to log that an event has occurred a given number of times. Using this
+// struct with LogCobaltEvent() is equivalent to invoking LogEventCount().
+struct CountEvent {
+    // The number of microseconds over which this count was observed.
+    int64 period_duration_micros;
+
+    // The number of times the event occurred
+    int64 count;
+};
+
+// The variadic part of a CobaltEvent.
+union EventPayload {
+    // A Count event.
+    CountEvent event_count;
+
+    // An IntHistogram event.
+    vector<HistogramBucket> int_histogram;
+};
+
+// A specification of an event that occurred to be passed to LogCobaltEvent().
+// This is part of an alternative API to cobalt that uses a single method with a
+// variadic parameter instead of the multiple methods above. This technique
+// allows multiple event codes to be passed whereas the methods above support
+// only a single event code.
+struct CobaltEvent {
+    // ID of the metric to use. It must be one of the Metrics from the
+    // ProjectProfile used to obtain this Logger, and its type must match the
+    // |payload| type.
+    uint32 metric_id;
+
+    // The event codes for the event that occurred. There must be one event code
+    // given for each dimension specified in the metric definition.
+    vector<uint32>:5 event_codes;
+
+    // Optionally, a component associated with the event that occurred may also
+    // be logged also be logged. Any notion of component that makes sense may be
+    // used or use the empty string if there is no natural notion of component.
+    string:64? component;
+
+    // The event-specific information for the event to be logged.
+    EventPayload payload;
+};
+
 // Logger is an extension of the LoggerBase interface that adds some additional
 // methods that do not naturally conform to the Simple layout. We opt for
 // a natural easy-to-understand interface at the cost of not being "Simple".
@@ -423,19 +554,19 @@ interface Logger : LoggerBase {
     // from the ProjectProfile used to obtain this Logger, and it must be of
     // type INT_HISTOGRAM.
     //
-    // |event_type_index| The index of the event type associated with the
-    // integer-valued measurement. The indexed set of all event types is
-    // specified in the metric definition.
+    // |event_code| The index of the event type associated with the
+    // integer-valued measurement. The indexed set of all event codes and their
+    // labels is specified in the metric definition.
     //
     // |component| Optionally, a component associated with integer-valued
-    //     measurements may also be logged. Any notion of component that makes
-    //     sense may be used or use the empty string if there is no natural
-    //     notion of component.
+    // measurements may also be logged. Any notion of component that makes sense
+    // may be used or use the empty string if there is no natural notion of
+    // component.
     //
     // |histogram| The histogram to log. Each HistogramBucket gives the count
-    //     for one bucket of the histogram. The definitions of the buckets is
-    //     given in the Metric definition.
-    100: LogIntHistogram(uint32 metric_id, uint32 event_type_index,
+    // for one bucket of the histogram. The definitions of the buckets is given
+    // in the Metric definition.
+    100: LogIntHistogram(uint32 metric_id, uint32 event_code,
                          string:64 component, vector<HistogramBucket> histogram)
              -> (Status status);
 
@@ -449,13 +580,26 @@ interface Logger : LoggerBase {
     // |event_values| The values for the custom Event. There is one value for
     // each dimension of the Metric. The number and types of the values must
     // be consistent with the dimensions declared in the Metric definition.
-    101: LogCustomEvent(uint32 metric_id,
-                        vector<CustomEventValue> event_values)
+    101: LogCustomEvent(uint32 metric_id, vector<CustomEventValue> event_values)
              -> (Status status);
+
+    // Logs a CobaltEvent. This method offers an alternative API to Cobalt that
+    // uses a single method with a variadic parameter instead of the multiple
+    // methods defined above. The reason to use this method is that a
+    // CobaltEvent allows multiple event codes to be specified whereas the
+    // methods above allow only a single event code.
+    [Transitional]
+    102: LogCobaltEvent(CobaltEvent event) -> (Status status);
+
+    // Logs a list of CobaltEvents. This method is equivalent to invoking
+    // LogCobaltEvent() multiple times but is more efficient as it requires only
+    // a single FIDL call.
+    [Transitional]
+    103: LogCobaltEvents(vector<CobaltEvent> events) -> (Status status);
 };
 
 /////////////////////////////////////////////////////////////////////
-// LoggerSimple Interface
+/// LoggerSimple Interface
 /////////////////////////////////////////////////////////////////////
 
 // LoggerSimple is an extension of the LoggerBase interface that adds some
@@ -473,7 +617,7 @@ interface LoggerSimple : LoggerBase {
     // requirements of Simple layout. Instead of a vector of HistogramBucekts
     // this version takes two parallel vectors of bucket indices and the
     // corresponding bucket counts.
-    100: LogIntHistogram(uint32 metric_id, uint32 event_type_index,
+    100: LogIntHistogram(uint32 metric_id, uint32 event_code,
                          string:64 component,
                          vector<uint32>:100 bucket_indices,
                          vector<uint64>:100 bucket_counts)
@@ -481,7 +625,7 @@ interface LoggerSimple : LoggerBase {
 };
 
 /////////////////////////////////////////////////////////////////////
-// SystemProfileUpdater Interface
+/// SystemProfileUpdater Interface
 /////////////////////////////////////////////////////////////////////
 
 // The state of a single experiment on a device or binary.
@@ -500,9 +644,9 @@ interface SystemDataUpdater {
     // Resets Cobalt's view of the system-wide experiment state and replaces it
     // with the given values.
     //
-    // |experiments|  All experiments the device has a notion of and the
-    // arms the device belongs to for each of them. These are the only
-    // experiments the device can collect data for.
+    // |experiments|  All experiments the device has a notion of and the arms
+    // the device belongs to for each of them. These are the only experiments
+    // the device can collect data for.
     1: SetExperimentState(vector<Experiment> experiments)
-            -> (Status status);
+           -> (Status status);
 };

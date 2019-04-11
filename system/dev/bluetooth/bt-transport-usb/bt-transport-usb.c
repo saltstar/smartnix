@@ -6,9 +6,9 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/protocol/bt-hci.h>
+#include <ddk/protocol/bt/hci.h>
 #include <ddk/protocol/usb.h>
-#include <ddk/usb/usb.h>
+#include <usb/usb.h>
 #include <usb/usb-request.h>
 #include <zircon/device/bt-hci.h>
 #include <zircon/listnode.h>
@@ -78,21 +78,31 @@ typedef struct {
     list_node_t free_acl_write_reqs;
 
     mtx_t mutex;
+    size_t parent_req_size;
 } hci_t;
 
+static void hci_event_complete(void* ctx, usb_request_t* req);
+static void hci_acl_read_complete(void* ctx, usb_request_t* req);
+
 static void queue_acl_read_requests_locked(hci_t* hci) {
-    list_node_t* node;
-    while ((node = list_remove_head(&hci->free_acl_read_reqs)) != NULL) {
-        usb_request_t* req = containerof(node, usb_request_t, node);
-        usb_request_queue(&hci->usb, req);
+    usb_request_t* req = NULL;
+    usb_request_complete_t complete = {
+        .callback = hci_acl_read_complete,
+        .ctx = hci,
+    };
+    while ((req = usb_req_list_remove_head(&hci->free_acl_read_reqs, hci->parent_req_size)) != NULL) {
+        usb_request_queue(&hci->usb, req, &complete);
     }
 }
 
 static void queue_interrupt_requests_locked(hci_t* hci) {
-    list_node_t* node;
-    while ((node = list_remove_head(&hci->free_event_reqs)) != NULL) {
-        usb_request_t* req = containerof(node, usb_request_t, node);
-        usb_request_queue(&hci->usb, req);
+    usb_request_t* req = NULL;
+    usb_request_complete_t complete = {
+        .callback = hci_event_complete,
+        .ctx = hci,
+    };
+    while ((req = usb_req_list_remove_head(&hci->free_event_reqs, hci->parent_req_size)) != NULL) {
+        usb_request_queue(&hci->usb, req, &complete);
     }
 }
 
@@ -120,10 +130,11 @@ static void snoop_channel_write_locked(hci_t* hci, uint8_t flags, uint8_t* bytes
     }
 }
 
-static void hci_event_complete(usb_request_t* req, void* cookie) {
-    hci_t* hci = (hci_t*)cookie;
+static void hci_event_complete(void* ctx, usb_request_t* req) {
+    hci_t* hci = (hci_t*)ctx;
     zxlogf(SPEW, "bt-transport-usb: Event received\n");
     mtx_lock(&hci->mutex);
+    zx_status_t status;
 
     // Handle the interrupt as long as either the command channel or the snoop
     // channel is open.
@@ -187,14 +198,15 @@ static void hci_event_complete(usb_request_t* req, void* cookie) {
     }
 
 out:
-    list_add_head(&hci->free_event_reqs, &req->node);
+    status = usb_req_list_add_head(&hci->free_event_reqs, req, hci->parent_req_size);
+    ZX_DEBUG_ASSERT(status == ZX_OK);
     queue_interrupt_requests_locked(hci);
 out2:
     mtx_unlock(&hci->mutex);
 }
 
-static void hci_acl_read_complete(usb_request_t* req, void* cookie) {
-    hci_t* hci = (hci_t*)cookie;
+static void hci_acl_read_complete(void* ctx, usb_request_t* req) {
+    hci_t* hci = (hci_t*)ctx;
     zxlogf(SPEW, "bt-transport-usb: ACL frame received\n");
     mtx_lock(&hci->mutex);
 
@@ -221,18 +233,21 @@ static void hci_acl_read_complete(usb_request_t* req, void* cookie) {
             hci, bt_hci_snoop_flags(BT_HCI_SNOOP_TYPE_ACL, true), buffer, req->response.actual);
     }
 
-    list_add_head(&hci->free_acl_read_reqs, &req->node);
+    zx_status_t status = usb_req_list_add_head(&hci->free_acl_read_reqs, req, hci->parent_req_size);
+    ZX_DEBUG_ASSERT(status == ZX_OK);
     queue_acl_read_requests_locked(hci);
 
     mtx_unlock(&hci->mutex);
 }
 
-static void hci_acl_write_complete(usb_request_t* req, void* cookie) {
-    hci_t* hci = (hci_t*)cookie;
+static void hci_acl_write_complete(void* ctx, usb_request_t* req) {
+    hci_t* hci = (hci_t*)ctx;
 
     // FIXME what to do with error here?
     mtx_lock(&hci->mutex);
-    list_add_tail(&hci->free_acl_write_reqs, &req->node);
+    zx_status_t status = usb_req_list_add_tail(&hci->free_acl_write_reqs, req,
+                                                hci->parent_req_size);
+    ZX_DEBUG_ASSERT(status == ZX_OK);
 
     if (hci->snoop_channel) {
         void* buffer;
@@ -296,15 +311,17 @@ static void hci_handle_cmd_read_events(hci_t* hci, zx_wait_item_t* cmd_item) {
             goto fail;
         }
 
-        status = usb_control(&hci->usb, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_DEVICE,
-                             0, 0, 0, buf, length, ZX_TIME_INFINITE, NULL);
+        status = usb_control_out(&hci->usb, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_DEVICE,
+                             0, 0, 0, ZX_TIME_INFINITE, buf, length);
         if (status < 0) {
-            zxlogf(ERROR, "hci_read_thread: usb_control failed: %s\n", zx_status_get_string(status));
+            zxlogf(ERROR, "hci_read_thread: usb_control_out failed: %s\n",
+                   zx_status_get_string(status));
             goto fail;
         }
 
         mtx_lock(&hci->mutex);
-        snoop_channel_write_locked(hci, bt_hci_snoop_flags(BT_HCI_SNOOP_TYPE_CMD, false), buf, length);
+        snoop_channel_write_locked(hci, bt_hci_snoop_flags(BT_HCI_SNOOP_TYPE_CMD, false), buf,
+                                   length);
         mtx_unlock(&hci->mutex);
     }
 
@@ -345,10 +362,15 @@ static void hci_handle_acl_read_events(hci_t* hci, zx_wait_item_t* acl_item) {
         if (!node)
             return;
 
-        usb_request_t* req = containerof(node, usb_request_t, node);
+        usb_req_internal_t* req_int = containerof(node, usb_req_internal_t, node);
+        usb_request_t* req = REQ_INTERNAL_TO_USB_REQ(req_int, hci->parent_req_size);
         usb_request_copy_to(req, buf, length, 0);
         req->header.length = length;
-        usb_request_queue(&hci->usb, req);
+        usb_request_complete_t complete = {
+            .callback = hci_acl_write_complete,
+            .ctx = hci,
+        };
+        usb_request_queue(&hci->usb, req, &complete);
     }
 
     return;
@@ -476,13 +498,15 @@ static void hci_release(void* ctx) {
     mtx_lock(&hci->mutex);
 
     usb_request_t* req;
-    while ((req = list_remove_head_type(&hci->free_event_reqs, usb_request_t, node)) != NULL) {
+    while ((req = usb_req_list_remove_head(&hci->free_event_reqs, hci->parent_req_size)) != NULL) {
         usb_request_release(req);
     }
-    while ((req = list_remove_head_type(&hci->free_acl_read_reqs, usb_request_t, node)) != NULL) {
+    while ((req = usb_req_list_remove_head(&hci->free_acl_read_reqs,
+                                           hci->parent_req_size)) != NULL) {
         usb_request_release(req);
     }
-    while ((req = list_remove_head_type(&hci->free_acl_write_reqs, usb_request_t, node)) != NULL) {
+    while ((req = usb_req_list_remove_head(&hci->free_acl_write_reqs,
+                                           hci->parent_req_size)) != NULL) {
         usb_request_release(req);
     }
 
@@ -528,7 +552,7 @@ static zx_status_t hci_open_snoop_channel(void* ctx, zx_handle_t* out_channel) {
     if (ret == ZX_OK) {
         zx_signals_t sigs = ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED;
         zx_object_wait_async(hci->snoop_channel, hci->snoop_watch, 0, sigs,
-                             ZX_WAIT_ASYNC_REPEATING);
+                             ZX_WAIT_ASYNC_ONCE);
     }
     return ret;
 }
@@ -629,35 +653,34 @@ static zx_status_t hci_bind(void* ctx, zx_device_t* device) {
     hci->usb_zxdev = device;
     memcpy(&hci->usb, &usb, sizeof(hci->usb));
 
+    hci->parent_req_size = usb_get_request_size(&hci->usb);
+    size_t req_size = hci->parent_req_size + sizeof(usb_req_internal_t);
     for (int i = 0; i < EVENT_REQ_COUNT; i++) {
         usb_request_t* req;
-        status = usb_request_alloc(&req, intr_max_packet, intr_addr, sizeof(usb_request_t));
+        status = usb_request_alloc(&req, intr_max_packet, intr_addr, req_size);
         if (status != ZX_OK) {
             goto fail;
         }
-        req->complete_cb = hci_event_complete;
-        req->cookie = hci;
-        list_add_head(&hci->free_event_reqs, &req->node);
+        status = usb_req_list_add_head(&hci->free_event_reqs, req, hci->parent_req_size);
+        ZX_DEBUG_ASSERT(status == ZX_OK);
     }
     for (int i = 0; i < ACL_READ_REQ_COUNT; i++) {
         usb_request_t* req;
-        status = usb_request_alloc(&req, ACL_MAX_FRAME_SIZE, bulk_in_addr, sizeof(usb_request_t));
+        status = usb_request_alloc(&req, ACL_MAX_FRAME_SIZE, bulk_in_addr, req_size);
         if (status != ZX_OK) {
             goto fail;
         }
-        req->complete_cb = hci_acl_read_complete;
-        req->cookie = hci;
-        list_add_head(&hci->free_acl_read_reqs, &req->node);
+        status = usb_req_list_add_head(&hci->free_acl_read_reqs, req, hci->parent_req_size);
+        ZX_DEBUG_ASSERT(status == ZX_OK);
     }
     for (int i = 0; i < ACL_WRITE_REQ_COUNT; i++) {
         usb_request_t* req;
-        status = usb_request_alloc(&req, ACL_MAX_FRAME_SIZE, bulk_out_addr, sizeof(usb_request_t));
+        status = usb_request_alloc(&req, ACL_MAX_FRAME_SIZE, bulk_out_addr, req_size);
         if (status != ZX_OK) {
             goto fail;
         }
-        req->complete_cb = hci_acl_write_complete;
-        req->cookie = hci;
-        list_add_head(&hci->free_acl_write_reqs, &req->node);
+        status = usb_req_list_add_head(&hci->free_acl_write_reqs, req, hci->parent_req_size);
+        ZX_DEBUG_ASSERT(status == ZX_OK);
     }
 
     mtx_lock(&hci->mutex);

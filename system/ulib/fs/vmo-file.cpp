@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fs/vmo-file.h>
 
@@ -6,8 +9,10 @@
 
 #include <fbl/algorithm.h>
 #include <fbl/auto_lock.h>
+#include <fs/vfs.h>
 #include <fuchsia/io/c/fidl.h>
 #include <zircon/assert.h>
+#include <zircon/device/vfs.h>
 #include <zircon/syscalls.h>
 
 namespace fs {
@@ -105,8 +110,7 @@ zx_status_t VmoFile::Write(const void* data, size_t length, size_t offset, size_
     return status;
 }
 
-zx_status_t VmoFile::GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                                zxrio_node_info_t* extra) {
+zx_status_t VmoFile::GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info) {
     ZX_DEBUG_ASSERT(!IsWritable(flags) || writable_); // checked by the VFS
 
     zx::vmo vmo;
@@ -116,10 +120,10 @@ zx_status_t VmoFile::GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type
         return status;
     }
 
-    *hnd = vmo.release();
-    *type = fuchsia_io_NodeInfoTag_vmofile;
-    extra->vmofile.offset = offset;
-    extra->vmofile.length = length_;
+    info->tag = fuchsia_io_NodeInfoTag_vmofile;
+    info->vmofile.vmo = vmo.release();
+    info->vmofile.offset = offset;
+    info->vmofile.length = length_;
     return ZX_OK;
 }
 

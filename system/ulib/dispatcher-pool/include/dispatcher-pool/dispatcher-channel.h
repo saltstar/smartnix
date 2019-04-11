@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -37,7 +40,7 @@ namespace dispatcher {
 // object itself, or by deactivating the execution domain that the channel is
 // bound to.
 //
-// :: Activtation ::
+// :: Activation ::
 //
 // Two forms of the Activate method are provided.  One requires that a valid
 // zx::channel handle be supplied to the Channel object; this is the handle
@@ -51,7 +54,7 @@ namespace dispatcher {
 // :: Reading/Writing ::
 //
 // Reading and writing on the channel is done using the Read and Write methods.
-// Intenally, the handle itself is protected with a lock making it safe to call
+// Internally, the handle itself is protected with a lock making it safe to call
 // Read or Write on a Channel object from any thread.  Attempts to read or write
 // a channel which either has not been activated yet, or which has been
 // deactivated, will fail.
@@ -85,10 +88,10 @@ namespace dispatcher {
 //      thingy->ClientDisconnected(ch);
 //   }
 //
-//   return ch->Activate(fbl::move(ch_handle),
+//   return ch->Activate(std::move(ch_handle),
 //                       my_domain_,
-//                       fbl::move(phandler),
-//                       fbl::move(dhandler));
+//                       std::move(phandler),
+//                       std::move(dhandler));
 // }
 //
 class Channel : public EventSource {
@@ -100,7 +103,29 @@ public:
     using ChannelClosedHandler =
         fbl::InlineFunction<void(const Channel*), MAX_HANDLER_CAPTURE_SIZE>;
 
-    static fbl::RefPtr<Channel> Create();
+    // Create
+    //
+    // General method handles construction/initialization of a Channel subclass.
+    // Given an implementation called 'MyChannel', invocation should look like:
+    //
+    //   auto my_channel = Channel::Create<MyChannel>(arg1, arg2, ...);
+    //
+    // Note: Implementers are encouraged to keep their constructor/destructor
+    // protected/private. In order to do so, they should make sure to specify
+    // 'friend class Channel' and 'friend class fbl::RefPtr<T>'.
+    template <typename T = Channel, typename... ConstructorSignature>
+    static fbl::RefPtr<T> Create(ConstructorSignature&&... args) {
+        static_assert(fbl::is_base_of<Channel, T>::value, "Class must derive from Channel!");
+
+        fbl::AllocChecker ac;
+        auto ptr = fbl::AdoptRef(new (&ac) T(std::forward<ConstructorSignature>(args)...));
+
+        if (!ac.check()) {
+            return nullptr;
+        }
+
+        return ptr;
+    }
 
     // Activate a channel, creating the channel pair and retuning the client's
     // channel endpoint in the process.
@@ -137,12 +162,12 @@ public:
         __TA_EXCLUDES(obj_lock_);
 
 protected:
-    void Dispatch(ExecutionDomain* domain) __TA_EXCLUDES(obj_lock_) override;
-
-private:
     Channel() : EventSource(ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED) { }
     friend class fbl::RefPtr<Channel>;
 
+    void Dispatch(ExecutionDomain* domain) __TA_EXCLUDES(obj_lock_) override;
+
+private:
     zx_status_t ActivateLocked(zx::channel channel, fbl::RefPtr<ExecutionDomain> domain)
         __TA_REQUIRES(obj_lock_);
 

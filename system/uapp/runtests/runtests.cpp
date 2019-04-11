@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/string.h>
 #include <fbl/vector.h>
@@ -60,7 +63,7 @@ int main(int argc, char** argv) {
     const char* output_dir = GetOutputDir(argc, argv);
 
     // Start Log Listener.
-    fbl::unique_ptr<runtests::LogExporter> log_exporter_ptr;
+    std::unique_ptr<runtests::LogExporter> log_exporter_ptr;
     if (output_dir != nullptr) {
         int error = runtests::MkDirAll(output_dir);
         if (error) {

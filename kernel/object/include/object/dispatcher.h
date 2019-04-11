@@ -14,7 +14,8 @@
 #include <fbl/ref_counted.h>
 #include <fbl/ref_counted_upgradeable.h>
 #include <fbl/ref_ptr.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
+#include <ktl/move.h>
 
 #include <kernel/lockdep.h>
 #include <kernel/spinlock.h>
@@ -61,6 +62,7 @@ DECLARE_DISPTAG(BusTransactionInitiatorDispatcher, ZX_OBJ_TYPE_BTI)
 DECLARE_DISPTAG(ProfileDispatcher, ZX_OBJ_TYPE_PROFILE)
 DECLARE_DISPTAG(PinnedMemoryTokenDispatcher, ZX_OBJ_TYPE_PMT)
 DECLARE_DISPTAG(SuspendTokenDispatcher, ZX_OBJ_TYPE_SUSPEND_TOKEN)
+DECLARE_DISPTAG(PagerDispatcher, ZX_OBJ_TYPE_PAGER)
 
 #undef DECLARE_DISPTAG
 
@@ -174,7 +176,7 @@ public:
     };
 
     // Called whenever the object is bound to a new process. The |new_owner| is
-    // the koid of the new process. It is only overriden for objects where a single
+    // the koid of the new process. It is only overridden for objects where a single
     // owner makes sense.
     virtual void set_owner(zx_koid_t new_owner) {}
 
@@ -236,7 +238,7 @@ public:
     explicit SoloDispatcher(zx_signals_t signals = 0u)
         : Dispatcher(signals) {}
 
-    // Related koid is overidden by subclasses, like thread and process.
+    // Related koid is overridden by subclasses, like thread and process.
     zx_koid_t get_related_koid() const override TA_REQ(get_lock()) { return 0ULL; }
     bool is_waitable() const final { return default_rights() & ZX_RIGHT_WAIT; }
 
@@ -310,7 +312,7 @@ public:
     explicit PeeredDispatcher(fbl::RefPtr<PeerHolder<Self>> holder,
                               zx_signals_t signals = 0u)
         : Dispatcher(signals),
-          holder_(fbl::move(holder)) {}
+          holder_(ktl::move(holder)) {}
     virtual ~PeeredDispatcher() = default;
 
     zx_koid_t get_related_koid() const final TA_REQ(get_lock()) { return peer_koid_; }
@@ -347,7 +349,7 @@ public:
     // (i.e. the peer zeroing) is centralized here.
     void on_zero_handles() final TA_NO_THREAD_SAFETY_ANALYSIS {
         Guard<fbl::Mutex> guard{get_lock()};
-        auto peer = fbl::move(peer_);
+        auto peer = ktl::move(peer_);
         static_cast<Self*>(this)->on_zero_handles_locked();
 
         // This is needed to avoid leaks, and to ensure that
@@ -383,14 +385,14 @@ private:
 template <typename T>
 fbl::RefPtr<T> DownCastDispatcher(fbl::RefPtr<Dispatcher>* disp) {
     return (likely(DispatchTag<T>::ID == (*disp)->get_type())) ?
-            fbl::RefPtr<T>::Downcast(fbl::move(*disp)) :
+            fbl::RefPtr<T>::Downcast(ktl::move(*disp)) :
             nullptr;
 }
 
 // Dispatcher -> Dispatcher
 template <>
 inline fbl::RefPtr<Dispatcher> DownCastDispatcher(fbl::RefPtr<Dispatcher>* disp) {
-    return fbl::move(*disp);
+    return ktl::move(*disp);
 }
 
 // const Dispatcher -> const FooDispatcher
@@ -398,14 +400,14 @@ template <typename T>
 fbl::RefPtr<T> DownCastDispatcher(fbl::RefPtr<const Dispatcher>* disp) {
     static_assert(fbl::is_const<T>::value, "");
     return (likely(DispatchTag<typename fbl::remove_const<T>::type>::ID == (*disp)->get_type())) ?
-            fbl::RefPtr<T>::Downcast(fbl::move(*disp)) :
+            fbl::RefPtr<T>::Downcast(ktl::move(*disp)) :
             nullptr;
 }
 
 // const Dispatcher -> const Dispatcher
 template <>
 inline fbl::RefPtr<const Dispatcher> DownCastDispatcher(fbl::RefPtr<const Dispatcher>* disp) {
-    return fbl::move(*disp);
+    return ktl::move(*disp);
 }
 
 // The same, but for Dispatcher* and FooDispatcher* instead of RefPtr.

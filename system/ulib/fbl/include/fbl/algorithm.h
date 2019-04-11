@@ -1,8 +1,12 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <fbl/type_support.h>
 #include <stdlib.h>
+#include <type_traits>
 
 namespace fbl {
 
@@ -30,7 +34,7 @@ namespace internal {
 template <typename T, typename Enable = void> struct IsPow2Helper;
 
 template <typename T>
-struct IsPow2Helper<T, typename enable_if<is_unsigned_integer<T>::value>::type> {
+struct IsPow2Helper<T, typename std::enable_if<is_unsigned_integer<T>::value>::type> {
     static constexpr bool is_pow2(T val) {
         return (val != 0) && (((val - 1u) & val) == 0);
     }
@@ -51,8 +55,8 @@ constexpr bool is_pow2(T val) {
 // Zero is divisible by all multiples.
 template<class T, class U,
          class L = typename conditional<sizeof(T) >= sizeof(U), T, U>::type,
-         class = typename enable_if<is_unsigned_integer<T>::value>::type,
-         class = typename enable_if<is_unsigned_integer<U>::value>::type>
+         class = typename std::enable_if<is_unsigned_integer<T>::value>::type,
+         class = typename std::enable_if<is_unsigned_integer<U>::value>::type>
 constexpr const L round_up(const T& val_, const U& multiple_) {
     const L val = static_cast<L>(val_);
     const L multiple = static_cast<L>(multiple_);
@@ -65,8 +69,8 @@ constexpr const L round_up(const T& val_, const U& multiple_) {
 // Zero is divisible by all multiples.
 template<class T, class U,
          class L = typename conditional<sizeof(T) >= sizeof(U), T, U>::type,
-         class = typename enable_if<is_unsigned_integer<T>::value>::type,
-         class = typename enable_if<is_unsigned_integer<U>::value>::type>
+         class = typename std::enable_if<is_unsigned_integer<T>::value>::type,
+         class = typename std::enable_if<is_unsigned_integer<U>::value>::type>
 constexpr const L round_down(const T& val_, const U& multiple_) {
     const L val = static_cast<L>(val_);
     const L multiple = static_cast<L>(multiple_);
@@ -193,7 +197,7 @@ constexpr size_t count_of(T const(&)[N]) {
 //
 // gcd (greatest common divisor) returns the largest non-negative integer that cleanly
 // divides both inputs. Inputs are unsigned integers. gcd(x,0)=x; gcd(x,1)=1
-template <typename T, class = typename enable_if<is_unsigned_integer<T>::value>::type>
+template <typename T, class = typename std::enable_if<is_unsigned_integer<T>::value>::type>
 T gcd(T first, T second) {
     // If function need not support uint8 or uint16, static_casts can be removed
     while (second != 0) {
@@ -210,7 +214,7 @@ T gcd(T first, T second) {
 // lcm (least common multiple) returns the smallest non-negative integer that is
 // cleanly divided by both inputs.
 // Inputs are unsigned integers. lcm(x,0)=0; lcm(x,1)=x
-template <typename T, class = typename enable_if<is_unsigned_integer<T>::value>::type>
+template <typename T, class = typename std::enable_if<is_unsigned_integer<T>::value>::type>
 T lcm(T first, T second) {
     if (first == 0 && second == 0) {
         return 0;

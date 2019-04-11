@@ -633,6 +633,7 @@ void gfx_draw_pattern(void) {
         return;
 
     gfx_surface* surface = gfx_create_surface_from_display(&info);
+    DEBUG_ASSERT(surface != nullptr);
 
     uint x, y;
     for (y = 0; y < surface->height; y++) {
@@ -661,6 +662,7 @@ static void gfx_draw_pattern_white(void) {
         return;
 
     gfx_surface* surface = gfx_create_surface_from_display(&info);
+    DEBUG_ASSERT(surface != nullptr);
 
     uint x, y;
     for (y = 0; y < surface->height; y++) {
@@ -728,6 +730,7 @@ static int cmd_gfx(int argc, const cmd_args* argv, uint32_t flags) {
     }
 
     gfx_surface* surface = gfx_create_surface_from_display(&info);
+    DEBUG_ASSERT(surface != nullptr);
 
     if (!strcmp(argv[1].str, "display_info")) {
         printf("display:\n");

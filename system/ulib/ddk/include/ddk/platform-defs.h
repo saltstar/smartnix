@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -26,15 +29,19 @@ __BEGIN_CDECLS;
 #define PDEV_DID_ETH_MAC            16  // Ethernet MAC
 #define PDEV_DID_ETH_PHY            17  // Ethernet PHY
 #define PDEV_DID_CAMERA_SENSOR      18  // Camera Sensor
+#define PDEV_DID_HID_BUTTONS        19  // HID Buttons
+#define PDEV_DID_MUSB_PERIPHERAL    20  // MUSB in peripheral role
+#define PDEV_DID_MUSB_HOST          21  // MUSB in host role
+#define PDEV_DID_DUMMY_DISPLAY      22  // Dummy display
+#define PDEV_DID_FOCALTOUCH         23  // FocalTech touch device
+#define PDEV_DID_LITE_ON_ALS        24  // Lite-On ambient light sensor
+#define PDEV_DID_BOSCH_BMA253       25  // Bosch BMA253 acceleration sensor
+#define PDEV_DID_SG_MICRO_SGM37603A 26  // SG Micro SGM37603A backlight driver
+#define PDEV_DID_SYSMEM             27  // Sysmem driver
 
 // QEMU emulator
 #define PDEV_VID_QEMU               1
 #define PDEV_PID_QEMU               1
-
-#define PDEV_DID_QEMU_TEST_PARENT   1
-#define PDEV_DID_QEMU_TEST_CHILD_1  2
-#define PDEV_DID_QEMU_TEST_CHILD_2  3
-#define PDEV_DID_QEMU_TEST_CHILD_3  4
 
 // 96Boards
 #define PDEV_VID_96BOARDS           2
@@ -43,6 +50,8 @@ __BEGIN_CDECLS;
 #define PDEV_DID_HIKEY960_I2C_TEST  1
 #define PDEV_DID_HI3660_CLK         2
 #define PDEV_DID_HIKEY960_USB       3
+#define PDEV_DID_HI_DISPLAY         4
+#define PDEV_DID_HISILICON_UFS      5
 
 // Google
 #define PDEV_VID_GOOGLE             3
@@ -51,15 +60,14 @@ __BEGIN_CDECLS;
 #define PDEV_PID_ASTRO              3
 #define PDEV_PID_MADRONE            4
 #define PDEV_PID_SHERLOCK           5
+#define PDEV_PID_CLEO               6
+#define PDEV_PID_EAGLE              7
 
 #define PDEV_DID_GAUSS_AUDIO_IN     1
 #define PDEV_DID_GAUSS_AUDIO_OUT    2
 #define PDEV_DID_GAUSS_I2C_TEST     3
 #define PDEV_DID_GAUSS_LED          4
-#define PDEV_DID_ASTRO_FOCALTOUCH   5
-#define PDEV_DID_ASTRO_GOODIXTOUCH  6
-#define PDEV_DID_ASTRO_BUTTONS      7
-
+#define PDEV_DID_ASTRO_GOODIXTOUCH  5
 
 // Khadas
 #define PDEV_VID_KHADAS             4
@@ -96,6 +104,7 @@ __BEGIN_CDECLS;
 #define PDEV_DID_ASTRO_PDM          17
 #define PDEV_DID_AMLOGIC_G12B_CLK   18
 #define PDEV_DID_AMLOGIC_MIPI       19
+#define PDEV_DID_SHERLOCK_PDM       20
 
 
 // Broadcom
@@ -141,9 +150,43 @@ __BEGIN_CDECLS;
 #define PDEV_DID_MEDIATEK_EMMC      2
 #define PDEV_DID_MEDIATEK_DISPLAY   3
 #define PDEV_DID_MEDIATEK_I2C       4
+#define PDEV_DID_MEDIATEK_SDIO      5
+#define PDEV_DID_MEDIATEK_GPU       6
+#define PDEV_DID_MEDIATEK_CLK       7
+#define PDEV_DID_MEDIATEK_THERMAL   8
+#define PDEV_DID_MEDIATEK_AUDIO_OUT 9
+#define PDEV_DID_MEDIATEK_AUDIO_IN  10
 
 // Sony
 #define PDEV_VID_SONY               14
 #define PDEV_PID_SONY_IMX227        1
+
+// Hisilicon
+#define PDEV_VID_HISILICON          15
+#define PDEV_PID_CORNEL             1
+
+// Texas Instruments
+#define PDEV_VID_TI                 16
+#define PDEV_PID_TI_LP8556          1
+#define PDEV_DID_TI_BACKLIGHT       1
+
+// Test
+#define PDEV_VID_TEST               17
+#define PDEV_PID_PBUS_TEST          1
+
+#define PDEV_DID_TEST_PARENT        1
+#define PDEV_DID_TEST_CHILD_1       2
+#define PDEV_DID_TEST_CHILD_2       3
+#define PDEV_DID_TEST_CHILD_3       4
+#define PDEV_DID_TEST_GPIO          5
+
+// ARM
+#define PDEV_VID_ARM                18
+#define PDEV_PID_ISP                1
+#define PDEV_DID_ARM_MALI_IV009     1
+
+// Qualcomm
+#define PDEV_VID_QUALCOMM           19
+#define PDEV_PID_QUALCOMM_MSM8X53    1
 
 __END_CDECLS;

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -5,6 +8,12 @@
 #error Fuchsia-only Header
 #endif
 
+#include <utility>
+
+#include <blobfs/allocator.h>
+#include <blobfs/format.h>
+#include <blobfs/metrics.h>
+#include <blobfs/transaction-manager.h>
 #include <fbl/algorithm.h>
 #include <fbl/auto_lock.h>
 #include <fbl/intrusive_hash_table.h>
@@ -14,23 +23,15 @@
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_ptr.h>
 #include <fbl/vector.h>
-
 #include <fs/block-txn.h>
 #include <fs/queue.h>
 #include <fs/vfs.h>
-
+#include <fs/vnode.h>
 #include <lib/sync/completion.h>
-
 #include <lib/fzl/owned-vmo-mapper.h>
 #include <lib/zx/vmo.h>
 
-#include <blobfs/blobfs.h>
-#include <blobfs/format.h>
-
 namespace blobfs {
-
-class Blobfs;
-class VnodeBlob;
 
 struct WriteRequest {
     zx_handle_t vmo;
@@ -44,6 +45,7 @@ enum class WritebackState {
     kReady,    // Indicates the queue is ready to start running.
     kRunning,  // Indicates that the queue's async processor is currently running.
     kReadOnly, // State of a writeback queue which no longer allows writes.
+    kComplete, // Indicates that the async processor has been torn down.
 };
 
 // A transaction consisting of enqueued VMOs to be written
@@ -52,13 +54,14 @@ class WriteTxn {
 public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(WriteTxn);
 
-    explicit WriteTxn(Blobfs* bs) : bs_(bs), vmoid_(VMOID_INVALID), block_count_(0) {}
+    explicit WriteTxn(TransactionManager* transaction_manager)
+        : transaction_manager_(transaction_manager), vmoid_(VMOID_INVALID), block_count_(0) {}
 
     virtual ~WriteTxn();
 
     // Identifies that |nblocks| blocks of data starting at |relative_block| within the |vmo|
     // should be written out to |absolute_block| on disk at a later point in time.
-    void Enqueue(zx_handle_t vmo, uint64_t relative_block, uint64_t absolute_block,
+    void Enqueue(const zx::vmo& vmo, uint64_t relative_block, uint64_t absolute_block,
                  uint64_t nblocks);
 
     fbl::Vector<WriteRequest>& Requests() { return requests_; }
@@ -95,33 +98,25 @@ protected:
     zx_status_t Flush();
 
 private:
-    Blobfs* bs_;
+    TransactionManager* transaction_manager_;
     vmoid_t vmoid_;
     fbl::Vector<WriteRequest> requests_;
     size_t block_count_;
 };
 
-
-// A wrapper around a WriteTxn, holding references to the underlying Vnodes
-// corresponding to the txn, so their Vnodes (and VMOs) are not released
-// while being written out to disk.
-//
-// Additionally, this class allows completions to be signalled when the transaction
-// has successfully completed.
+// A wrapper around a WriteTxn with added support for callback invocation on completion.
 class WritebackWork : public WriteTxn,
                       public fbl::SinglyLinkedListable<fbl::unique_ptr<WritebackWork>> {
 public:
     using ReadyCallback = fbl::Function<bool()>;
     using SyncCallback = fs::Vnode::SyncCallback;
 
-    // Create a WritebackWork given a vnode (which may be null)
-    // Vnode is stored for duration of txn so that it isn't destroyed during the write process
-    WritebackWork(Blobfs* bs, fbl::RefPtr<VnodeBlob> vnode);
-    ~WritebackWork() = default;
+    WritebackWork(TransactionManager* transaction_manager);
+    virtual ~WritebackWork() = default;
 
-    // Returns the WritebackWork to the default state that it was in
-    // after being created. Takes in the |reason| it is being reset.
-    void Reset(zx_status_t reason);
+    // Sets the WritebackWork to a completed state. |status| should indicate whether the work was
+    // completed successfully.
+    void MarkCompleted(zx_status_t status);
 
     // Returns true if the WritebackWork is "ready" to be processed. This is always true unless a
     // "ready callback" exists, in which case that callback determines the state of readiness. Once
@@ -138,29 +133,32 @@ public:
     // Adds a callback to the WritebackWork, such that it will be signalled when the WritebackWork
     // is flushed to disk. If no callback is set, nothing will get signalled.
     //
-    // Only one sync callback may be set for each WritebackWork unit.
+    // Multiple callbacks may be set. They are invoked in "first-in, last-out" order (i.e.,
+    // enqueueing A, B, C will invoke C, B, A).
     void SetSyncCallback(SyncCallback callback);
-
-    // Tells work to remove sync flag once the txn has successfully completed.
-    void SetSyncComplete();
 
     // Persists the enqueued work to disk,
     // and resets the WritebackWork to its initial state.
     zx_status_t Complete();
 
 private:
-    // If a sync callback exists, call it with |status|.
-    void InvokeSyncCallback(zx_status_t status);
-
-    // Delete any internal members that are no longer needed.
-    void ResetInternal();
-
     // Optional callbacks.
     ReadyCallback ready_cb_; // Call to check whether work is ready to be processed.
     SyncCallback sync_cb_; // Call after work has been completely flushed.
+};
 
-    bool sync_;
-    fbl::RefPtr<VnodeBlob> vn_;
+// An object compatible with the WritebackWork interface, which contains a single blob reference.
+// When the writeback is completed, this reference will go out of scope.
+//
+// This class helps WritebackWork avoid concurrent writes and reads to blobs: if a BlobWork
+// is alive, the impacted Blob is still alive.
+class BlobWork : public WritebackWork {
+public:
+    BlobWork(TransactionManager* transaction_manager, fbl::RefPtr<Blob> vnode)
+        : WritebackWork(transaction_manager), vnode_(std::move(vnode)) {}
+
+private:
+    fbl::RefPtr<Blob> vnode_;
 };
 
 // In-memory data buffer.
@@ -172,8 +170,8 @@ public:
     ~Buffer();
 
     // Initializes the buffer VMO with |blocks| blocks of size kBlobfsBlockSize.
-    static zx_status_t Create(Blobfs* blobfs, const size_t blocks, const char* label,
-                              fbl::unique_ptr<Buffer>* out);
+    static zx_status_t Create(TransactionManager* transaction_manager, const size_t blocks,
+                              const char* label, fbl::unique_ptr<Buffer>* out);
 
     // Adds a transaction to |txn| which reads all data into buffer
     // starting from |disk_start| on disk.
@@ -227,11 +225,11 @@ public:
         return reinterpret_cast<char*>(mapper_.start()) + (index * kBlobfsBlockSize);
     }
 private:
-    Buffer(Blobfs* blobfs, fzl::OwnedVmoMapper mapper)
-        : blobfs_(blobfs), mapper_(fbl::move(mapper)), start_(0), length_(0),
-          capacity_(mapper_.size() / kBlobfsBlockSize) {}
+    Buffer(TransactionManager* transaction_manager, fzl::OwnedVmoMapper mapper)
+        : transaction_manager_(transaction_manager), mapper_(std::move(mapper)), start_(0),
+          length_(0), capacity_(mapper_.size() / kBlobfsBlockSize) {}
 
-    Blobfs* blobfs_;
+    TransactionManager* transaction_manager_;
     fzl::OwnedVmoMapper mapper_;
     vmoid_t vmoid_ = VMOID_INVALID;
 
@@ -251,7 +249,7 @@ public:
 
     // Initializes the WritebackBuffer at |out|
     // with a buffer of |buffer_blocks| blocks of size kBlobfsBlockSize.
-    static zx_status_t Create(Blobfs* bs, const size_t buffer_blocks,
+    static zx_status_t Create(TransactionManager* transaction_manager, const size_t buffer_blocks,
                               fbl::unique_ptr<WritebackQueue>* out);
 
     // Copies all transaction data referenced from |work| into the writeback buffer.
@@ -260,6 +258,9 @@ public:
     bool IsReadOnly() const __TA_REQUIRES(lock_) { return state_ == WritebackState::kReadOnly; }
 
     size_t GetCapacity() const { return buffer_->capacity(); }
+
+    // Stops the asynchronous queue processor.
+    zx_status_t Teardown();
 private:
     // The waiter struct may be used as a stack-allocated queue for producers.
     // It allows them to take turns putting data into the buffer when it is
@@ -268,7 +269,9 @@ private:
     using ProducerQueue = fs::Queue<Waiter*>;
     using WorkQueue = fs::Queue<fbl::unique_ptr<WritebackWork>>;
 
-    WritebackQueue(fbl::unique_ptr<Buffer> buffer) : buffer_(fbl::move(buffer)) {}
+    WritebackQueue(fbl::unique_ptr<Buffer> buffer) : buffer_(std::move(buffer)) {}
+
+    bool IsRunning() const __TA_REQUIRES(lock_);
 
     // Blocks until |blocks| blocks of data are free for the caller.
     // Doesn't actually allocate any space.
@@ -308,4 +311,19 @@ private:
     // transactions into the writeback buffer, they can each write in-order.
     ProducerQueue producer_queue_ __TA_GUARDED(lock_);
 };
+
+// A wrapper around "Enqueue" for content which risks being larger
+// than the writeback buffer.
+//
+// For content which is smaller than 3/4 the size of the writeback buffer: the
+// content is enqueued to |work| without flushing.
+//
+// For content which is larger than 3/4 the size of the writeback buffer: flush
+// the data by enqueueing it to the writeback thread in chunks until the
+// remainder is small enough to comfortably fit within the writeback buffer.
+zx_status_t EnqueuePaginated(fbl::unique_ptr<WritebackWork>* work,
+                             TransactionManager* transaction_manager, Blob* vn,
+                             const zx::vmo& vmo, uint64_t relative_block, uint64_t absolute_block,
+                             uint64_t nblocks);
+
 } // namespace blobfs

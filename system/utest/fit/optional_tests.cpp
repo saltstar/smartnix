@@ -8,6 +8,8 @@
 #include <lib/fit/optional.h>
 #include <unittest/unittest.h>
 
+#include "unittest_utils.h"
+
 namespace {
 
 template <bool define_assignment_operators>
@@ -34,8 +36,8 @@ struct slot : base<define_assignment_operators> {
     }
 
     ~slot() {
-        assert(balance > 0);
-        assert(value != -1);
+        ASSERT_CRITICAL(balance > 0);
+        ASSERT_CRITICAL(value != -1);
         value = -1; // sentinel to catch double-delete
         balance--;
     }
@@ -73,7 +75,7 @@ bool construct_without_value() {
     EXPECT_FALSE(opt.has_value());
     EXPECT_FALSE(!!opt);
 
-    EXPECT_EQ(42, opt.value_or({42}).value);
+    EXPECT_EQ(42, opt.value_or(T{42}).value);
 
     opt.reset();
     EXPECT_FALSE(opt.has_value());
@@ -85,12 +87,12 @@ template <typename T>
 bool construct_with_value() {
     BEGIN_TEST;
 
-    fit::optional<T> opt({42});
+    fit::optional<T> opt(T{42});
     EXPECT_TRUE(opt.has_value());
     EXPECT_TRUE(!!opt);
 
     EXPECT_EQ(42, opt.value().value);
-    EXPECT_EQ(42, opt.value_or({55}).value);
+    EXPECT_EQ(42, opt.value_or(T{55}).value);
 
     EXPECT_EQ(42, opt->get());
     EXPECT_EQ(43, opt->increment());
@@ -106,7 +108,7 @@ template <typename T>
 bool construct_copy() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
+    fit::optional<T> a(T{42});
     fit::optional<T> b(a);
     fit::optional<T> c;
     fit::optional<T> d(c);
@@ -124,7 +126,7 @@ template <typename T>
 bool construct_move() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
+    fit::optional<T> a(T{42});
     fit::optional<T> b(std::move(a));
     fit::optional<T> c;
     fit::optional<T> d(std::move(c));
@@ -138,21 +140,36 @@ bool construct_move() {
 }
 
 template <typename T>
+T get_value(fit::optional<T> opt) {
+    return opt.value();
+}
+
+bool construct_with_implicit_conversion() {
+    BEGIN_TEST;
+
+    // get_value expects a value of type fit::optional<T> but we pass 3
+    // so this exercises the converting constructor
+    EXPECT_EQ(3, get_value<int>(3));
+
+    END_TEST;
+}
+
+template <typename T>
 bool accessors() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
+    fit::optional<T> a(T{42});
     T& value = a.value();
     EXPECT_EQ(42, value.value);
 
     const T& const_value = const_cast<const decltype(a)&>(a).value();
     EXPECT_EQ(42, const_value.value);
 
-    T rvalue = fit::optional<T>({42}).value();
+    T rvalue = fit::optional<T>(T{42}).value();
     EXPECT_EQ(42, rvalue.value);
 
     T const_rvalue = const_cast<const fit::optional<T>&&>(
-                         fit::optional<T>({42}))
+                         fit::optional<T>(T{42}))
                          .value();
     EXPECT_EQ(42, const_rvalue.value);
 
@@ -163,18 +180,18 @@ template <typename T>
 bool assign() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
+    fit::optional<T> a(T{42});
     EXPECT_TRUE(a.has_value());
     EXPECT_EQ(42, a.value().value);
 
-    a = {99};
+    a = T{99};
     EXPECT_TRUE(a.has_value());
     EXPECT_EQ(99, a.value().value);
 
     a.reset();
     EXPECT_FALSE(a.has_value());
 
-    a = {55};
+    a = T{55};
     EXPECT_TRUE(a.has_value());
     EXPECT_EQ(55, a.value().value);
 
@@ -188,8 +205,8 @@ template <typename T>
 bool assign_copy() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
-    fit::optional<T> b({55});
+    fit::optional<T> a(T{42});
+    fit::optional<T> b(T{55});
     fit::optional<T> c;
     EXPECT_TRUE(a.has_value());
     EXPECT_EQ(42, a.value().value);
@@ -213,12 +230,21 @@ bool assign_copy() {
     EXPECT_TRUE(a.has_value());
     EXPECT_EQ(55, b.value().value);
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wself-assign-overloaded"
+#endif
+
     b = b;
     EXPECT_TRUE(b.has_value());
     EXPECT_EQ(55, b.value().value);
 
     c = c;
     EXPECT_FALSE(c.has_value());
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
     END_TEST;
 }
@@ -227,8 +253,8 @@ template <typename T>
 bool assign_move() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
-    fit::optional<T> b({55});
+    fit::optional<T> a(T{42});
+    fit::optional<T> b(T{55});
     fit::optional<T> c;
     EXPECT_TRUE(a.has_value());
     EXPECT_EQ(42, a.value().value);
@@ -273,7 +299,7 @@ bool emplace() {
     EXPECT_TRUE(a.has_value());
     EXPECT_EQ(55, a.value().value);
 
-    fit::optional<T> b({42});
+    fit::optional<T> b(T{42});
     EXPECT_EQ(66, b.emplace(66).value);
     EXPECT_TRUE(b.has_value());
     EXPECT_EQ(66, b.value().value);
@@ -285,7 +311,7 @@ template <typename T>
 bool invoke() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
+    fit::optional<T> a(T{42});
     EXPECT_EQ(42, a->get());
     EXPECT_EQ(43, a->increment());
     EXPECT_EQ(43, (*a).value);
@@ -297,9 +323,9 @@ template <typename T>
 bool comparisons() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
-    fit::optional<T> b({55});
-    fit::optional<T> c({42});
+    fit::optional<T> a(T{42});
+    fit::optional<T> b(T{55});
+    fit::optional<T> c(T{42});
     fit::optional<T> d;
     fit::optional<T> e;
 
@@ -344,8 +370,8 @@ template <typename T>
 bool swapping() {
     BEGIN_TEST;
 
-    fit::optional<T> a({42});
-    fit::optional<T> b({55});
+    fit::optional<T> a(T{42});
+    fit::optional<T> b(T{55});
     fit::optional<T> c;
     fit::optional<T> d;
 
@@ -391,6 +417,7 @@ bool balance() {
 } // namespace
 
 BEGIN_TEST_CASE(optional_tests)
+RUN_TEST(construct_with_implicit_conversion)
 RUN_TEST(construct_without_value<slot<false>>)
 RUN_TEST(construct_without_value<slot<true>>)
 RUN_TEST(construct_with_value<slot<false>>)

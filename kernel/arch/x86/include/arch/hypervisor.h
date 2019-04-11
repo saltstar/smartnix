@@ -5,7 +5,7 @@
 #include <arch/x86/interrupts.h>
 #include <arch/x86/vmx_state.h>
 #include <fbl/ref_ptr.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 #include <hypervisor/guest_physical_address_space.h>
 #include <hypervisor/id_allocator.h>
 #include <hypervisor/interrupt_tracker.h>
@@ -29,7 +29,7 @@ private:
 // Represents a guest within the hypervisor.
 class Guest {
 public:
-    static zx_status_t Create(fbl::unique_ptr<Guest>* out);
+    static zx_status_t Create(ktl::unique_ptr<Guest>* out);
     ~Guest();
     DISALLOW_COPY_ASSIGN_AND_MOVE(Guest);
 
@@ -44,7 +44,7 @@ public:
     zx_status_t FreeVpid(uint16_t vpid);
 
 private:
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas_;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas_;
     hypervisor::TrapMap traps_;
     VmxPage msr_bitmaps_page_;
 
@@ -80,12 +80,13 @@ struct PvClockState {
 // Represents a virtual CPU within a guest.
 class Vcpu {
 public:
-    static zx_status_t Create(Guest* guest, zx_vaddr_t entry, fbl::unique_ptr<Vcpu>* out);
+    static zx_status_t Create(Guest* guest, zx_vaddr_t entry, ktl::unique_ptr<Vcpu>* out);
     ~Vcpu();
     DISALLOW_COPY_ASSIGN_AND_MOVE(Vcpu);
 
     zx_status_t Resume(zx_port_packet_t* packet);
-    zx_status_t Interrupt(uint32_t interrupt);
+    cpu_mask_t Interrupt(uint32_t vector, hypervisor::InterruptType type);
+    void VirtualInterrupt(uint32_t vector);
     zx_status_t ReadState(uint32_t kind, void* buf, size_t len) const;
     zx_status_t WriteState(uint32_t kind, const void* buf, size_t len);
 

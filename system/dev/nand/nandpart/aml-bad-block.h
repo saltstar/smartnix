@@ -15,6 +15,8 @@
 #include <zircon/thread_annotations.h>
 #include <zircon/types.h>
 
+#include <utility>
+
 #include "bad-block.h"
 
 namespace nand {
@@ -23,7 +25,7 @@ namespace nand {
 class AmlBadBlock : public BadBlock {
 public:
     struct OobMetadata {
-        // Identifer value.
+        // Identifier value.
         uint32_t magic;
         // Number of times the block has been programmed and erased.
         int16_t program_erase_cycles;
@@ -55,14 +57,14 @@ private:
         bool valid;
     };
 
-    AmlBadBlock(zx::vmo data_vmo, zx::vmo oob_vmo, fbl::Array<uint8_t> nand_op,
-                Config config, zircon_nand_Info nand_info, BlockStatus* table, uint32_t table_len,
+    AmlBadBlock(zx::vmo data_vmo, zx::vmo oob_vmo, fbl::Array<uint8_t> nand_op, Config config,
+                fuchsia_hardware_nand_Info nand_info, BlockStatus* table, uint32_t table_len,
                 OobMetadata* oob)
-        : BadBlock(fbl::move(data_vmo), fbl::move(oob_vmo), fbl::move(nand_op)),
+        : BadBlock(std::move(data_vmo), std::move(oob_vmo), std::move(nand_op)),
           config_(config.bad_block_config), nand_proto_(config.nand_proto), nand_(&nand_proto_),
-          nand_info_(nand_info), block_entry_(nullptr), page_(0),
-          generation_(0), table_valid_(false), oob_(oob), bad_block_table_(table),
-          bad_block_table_len_(table_len) {}
+          nand_info_(nand_info), block_entry_(nullptr), page_(0), generation_(0),
+          table_valid_(false), oob_(oob), bad_block_table_(table), bad_block_table_len_(table_len) {
+    }
 
     ~AmlBadBlock() override {
         zx::vmar::root_self()->unmap(reinterpret_cast<uintptr_t>(oob_), sizeof(OobMetadata));
@@ -92,8 +94,8 @@ private:
     const bad_block_config_t config_;
     // Parent nand protocol implementation.
     nand_protocol_t nand_proto_;
-    ddk::NandProtocolProxy nand_;
-    const zircon_nand_Info nand_info_;
+    ddk::NandProtocolClient nand_;
+    const fuchsia_hardware_nand_Info nand_info_;
     // Information about blocks which store BBT entries.
     BlockListEntry block_list_[kBlockListMax];
     // Block with most recent valid BBT entry.

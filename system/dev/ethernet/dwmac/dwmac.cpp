@@ -8,15 +8,14 @@
 #include <ddk/debug.h>
 #include <ddk/metadata.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/ethernet_mac.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/ethernet/mac.h>
 #include <ddk/protocol/platform-device-lib.h>
+#include <ddk/protocol/platform/device.h>
 #include <fbl/algorithm.h>
 #include <fbl/auto_call.h>
 #include <fbl/auto_lock.h>
 #include <fbl/ref_counted.h>
 #include <fbl/ref_ptr.h>
-#include <fbl/type_support.h>
 #include <hw/arch_ops.h>
 #include <hw/reg.h>
 #include <lib/fzl/vmar-manager.h>
@@ -79,7 +78,7 @@ int DWMacDevice::WorkerThread() {
     sync_completion_wait(&cb_registered_signal_, ZX_TIME_INFINITE);
 
     // Configure the phy.
-    cb_.config_phy(cb_.ctx, mac_, MAC_ARRAY_LENGTH);
+    cbs_.config_phy(cbs_.ctx, mac_);
 
     InitDevice();
 
@@ -105,8 +104,8 @@ void DWMacDevice::UpdateLinkStatus() {
     bool temp = dwmac_regs_->rgmiistatus & GMAC_RGMII_STATUS_LNKSTS;
     if (temp != online_) {
         online_ = temp;
-        if (ethmac_proxy_ != nullptr) {
-            ethmac_proxy_->Status(online_ ? ETHMAC_STATUS_ONLINE : 0u);
+        if (ethmac_client_.is_valid()) {
+            ethmac_client_.Status(online_ ? ETHMAC_STATUS_ONLINE : 0u);
         } else {
             zxlogf(ERROR, "dwmac: System not ready\n");
         }
@@ -129,35 +128,31 @@ zx_status_t DWMacDevice::InitPdev() {
     }
 
     // Map mac control registers and dma control registers.
-    mmio_buffer_t mmio;
-    status = pdev_map_mmio_buffer2(&pdev_, kEthMacMmio, ZX_CACHE_POLICY_UNCACHED_DEVICE,
-                                   &mmio);
+    status = pdev_.MapMmio(kEthMacMmio, &dwmac_regs_iobuff_);
     if (status != ZX_OK) {
         zxlogf(ERROR, "dwmac: could not map dwmac mmio: %d\n", status);
         return status;
     }
 
-    dwmac_regs_iobuff_ = ddk::MmioBuffer(mmio);
     dwmac_regs_ = static_cast<dw_mac_regs_t*>(dwmac_regs_iobuff_->get());
     dwdma_regs_ = offset_ptr<dw_dma_regs_t>(dwmac_regs_, DW_DMA_BASE_OFFSET);
 
     // Map dma interrupt.
-    status = pdev_map_interrupt(&pdev_, 0, dma_irq_.reset_and_get_address());
+    status = pdev_.GetInterrupt(0, &dma_irq_);
     if (status != ZX_OK) {
         zxlogf(ERROR, "dwmac: could not map dma interrupt\n");
         return status;
     }
 
     // Get our bti.
-    status = pdev_get_bti(&pdev_, 0, bti_.reset_and_get_address());
+    status = pdev_.GetBti(0, &bti_);
     if (status != ZX_OK) {
         zxlogf(ERROR, "dwmac: could not obtain bti: %d\n", status);
         return status;
     }
 
     // Get ETH_BOARD protocol.
-    status = device_get_protocol(parent_, ZX_PROTOCOL_ETH_BOARD, &eth_board_);
-    if (status != ZX_OK) {
+    if (!eth_board_.is_valid()) {
         zxlogf(ERROR, "dwmac: could not obtain ETH_BOARD protocol: %d\n", status);
         return status;
     }
@@ -165,33 +160,6 @@ zx_status_t DWMacDevice::InitPdev() {
     return status;
 }
 
-static void DdkUnbindWrapper(void* ctx) {
-    auto& self = *static_cast<DWMacDevice*>(ctx);
-    // TODO(braval): Remove all PHY devices and then call DdkUnbind()
-    self.DdkUnbind();
-}
-
-static void DdkReleaseWrapper(void* ctx) {
-    delete static_cast<DWMacDevice*>(ctx);
-}
-
-static zx_protocol_device_t eth_mac_device_ops = []() {
-    zx_protocol_device_t result;
-
-    result.version = DEVICE_OPS_VERSION;
-    result.unbind = &DdkUnbindWrapper;
-    result.release = &DdkReleaseWrapper;
-    return result;
-}();
-
-static device_add_args_t phy_device_args = []() {
-    device_add_args_t result;
-    result.version = DEVICE_ADD_ARGS_VERSION;
-    result.name = "eth_phy";
-    result.ops = &eth_mac_device_ops,
-    result.proto_id = ZX_PROTOCOL_ETH_MAC;
-    return result;
-}();
 
 zx_status_t DWMacDevice::Create(zx_device_t* device) {
     auto mac_device = fbl::make_unique<DWMacDevice>(device);
@@ -202,7 +170,7 @@ zx_status_t DWMacDevice::Create(zx_device_t* device) {
     }
 
     // Reset the phy.
-    eth_board_reset_phy(&mac_device->eth_board_);
+    mac_device->eth_board_.ResetPhy();
 
     // Get and cache the mac address.
     mac_device->GetMAC(device);
@@ -231,24 +199,6 @@ zx_status_t DWMacDevice::Create(zx_device_t* device) {
 
     sync_completion_reset(&mac_device->cb_registered_signal_);
 
-    auto mdio_write_thunk = [](void* arg, uint32_t reg, uint32_t val) -> zx_status_t {
-        return reinterpret_cast<DWMacDevice*>(arg)->MDIOWrite(reg, val);
-    };
-
-    auto mdio_read_thunk = [](void* arg, uint32_t reg, uint32_t* val) -> zx_status_t {
-        return reinterpret_cast<DWMacDevice*>(arg)->MDIORead(reg, val);
-    };
-
-    auto register_cb_thunk = [](void* arg, eth_mac_callbacks_t* cb) -> zx_status_t {
-        return reinterpret_cast<DWMacDevice*>(arg)->RegisterCallbacks(cb);
-    };
-
-    static eth_mac_protocol_ops_t proto_ops = {
-        .mdio_read = mdio_read_thunk,
-        .mdio_write = mdio_write_thunk,
-        .register_callbacks = register_cb_thunk,
-    }; // namespace eth
-
     // Populate board specific information
     eth_dev_metadata_t phy_info;
     size_t actual;
@@ -259,16 +209,21 @@ zx_status_t DWMacDevice::Create(zx_device_t* device) {
         return status;
     }
 
-    static zx_device_prop_t props[] = {
+    zx_device_prop_t props[] = {
         {BIND_PLATFORM_DEV_VID, 0, phy_info.vid},
         {BIND_PLATFORM_DEV_DID, 0, phy_info.did},
         {BIND_PLATFORM_DEV_PID, 0, phy_info.pid},
     };
 
+    device_add_args_t phy_device_args = {};
+    phy_device_args.version = DEVICE_ADD_ARGS_VERSION;
+    phy_device_args.name = "eth_phy";
+    phy_device_args.ops = &mac_device->ddk_device_proto_,
+    phy_device_args.proto_id = ZX_PROTOCOL_ETH_MAC;
     phy_device_args.props = props;
     phy_device_args.prop_count = countof(props);
     phy_device_args.ctx = mac_device.get();
-    phy_device_args.proto_ops = &proto_ops;
+    phy_device_args.proto_ops = &mac_device->eth_mac_protocol_ops_;
 
     // TODO(braval): use proper device pointer, depending on how
     //               many PHY devices we have to load, from the metadata.
@@ -348,12 +303,11 @@ zx_status_t DWMacDevice::InitBuffers() {
     return ZX_OK;
 }
 
-zx_handle_t DWMacDevice::EthmacGetBti() {
-
-    return bti_.get();
+void DWMacDevice::EthmacGetBti(zx::bti* bti) {
+    bti_.duplicate(ZX_RIGHT_SAME_RIGHTS, bti);
 }
 
-zx_status_t DWMacDevice::MDIOWrite(uint32_t reg, uint32_t val) {
+zx_status_t DWMacDevice::EthMacMdioWrite(uint32_t reg, uint32_t val) {
     dwmac_regs_->miidata = val;
 
     uint32_t miiaddr = (mii_addr_ << MIIADDRSHIFT) |
@@ -372,7 +326,7 @@ zx_status_t DWMacDevice::MDIOWrite(uint32_t reg, uint32_t val) {
     return ZX_ERR_TIMED_OUT;
 }
 
-zx_status_t DWMacDevice::MDIORead(uint32_t reg, uint32_t* val) {
+zx_status_t DWMacDevice::EthMacMdioRead(uint32_t reg, uint32_t* val) {
     uint32_t miiaddr = (mii_addr_ << MIIADDRSHIFT) |
                        (reg << MIIREGSHIFT);
 
@@ -389,20 +343,19 @@ zx_status_t DWMacDevice::MDIORead(uint32_t reg, uint32_t* val) {
     return ZX_ERR_TIMED_OUT;
 }
 
-zx_status_t DWMacDevice::RegisterCallbacks(eth_mac_callbacks_t* callbacks) {
-    if (callbacks == nullptr) {
+zx_status_t DWMacDevice::EthMacRegisterCallbacks(const eth_mac_callbacks_t* cbs) {
+    if (cbs == nullptr) {
         return ZX_ERR_INVALID_ARGS;
     }
 
-    memcpy(&cb_, callbacks, sizeof(eth_mac_callbacks_t));
+    cbs_ = *cbs;
 
     sync_completion_signal(&cb_registered_signal_);
     return ZX_OK;
 }
 
 DWMacDevice::DWMacDevice(zx_device_t* device)
-    : ddk::Device<DWMacDevice, ddk::Unbindable>(device) {
-}
+    : ddk::Device<DWMacDevice, ddk::Unbindable>(device), pdev_(device), eth_board_(device) {}
 
 void DWMacDevice::ReleaseBuffers() {
     //Unpin the memory used for the dma buffers
@@ -431,7 +384,7 @@ zx_status_t DWMacDevice::ShutDown() {
     thrd_join(thread_, NULL);
     fbl::AutoLock lock(&lock_);
     online_ = false;
-    ethmac_proxy_.reset();
+    ethmac_client_.clear();
     DeInitDevice();
     ReleaseBuffers();
     return ZX_OK;
@@ -470,23 +423,24 @@ zx_status_t DWMacDevice::EthmacQuery(uint32_t options, ethmac_info_t* info) {
     info->features = ETHMAC_FEATURE_DMA;
     info->mtu = 1500;
     memcpy(info->mac, mac_, sizeof info->mac);
+    info->netbuf_size = sizeof(ethmac_netbuf_t);
     return ZX_OK;
 }
 
 void DWMacDevice::EthmacStop() {
     zxlogf(INFO, "Stopping Ethermac\n");
     fbl::AutoLock lock(&lock_);
-    ethmac_proxy_.reset();
+    ethmac_client_.clear();
 }
 
-zx_status_t DWMacDevice::EthmacStart(fbl::unique_ptr<ddk::EthmacIfcProxy> proxy) {
+zx_status_t DWMacDevice::EthmacStart(const ethmac_ifc_t* ifc) {
     fbl::AutoLock lock(&lock_);
 
-    if (ethmac_proxy_ != nullptr) {
+    if (ethmac_client_.is_valid()) {
         zxlogf(ERROR, "dwmac:  Already bound!!!");
         return ZX_ERR_ALREADY_BOUND;
     } else {
-        ethmac_proxy_ = fbl::move(proxy);
+        ethmac_client_ = ddk::EthmacIfcClient(ifc);
         UpdateLinkStatus();
         zxlogf(INFO, "dwmac: Started\n");
     }
@@ -565,9 +519,9 @@ void DWMacDevice::ProcRxBuffer(uint32_t int_status) {
 
         { // limit scope of autolock
             fbl::AutoLock lock(&lock_);
-            if ((ethmac_proxy_ != nullptr)) {
+            if ((ethmac_client_.is_valid())) {
 
-                ethmac_proxy_->Recv(temptr, fr_len, 0);
+                ethmac_client_.Recv(temptr, fr_len, 0);
 
             } else {
                 zxlogf(ERROR, "Dropping bad packet\n");
@@ -594,7 +548,7 @@ zx_status_t DWMacDevice::EthmacQueueTx(uint32_t options, ethmac_netbuf_t* netbuf
         }
     }
 
-    if (netbuf->len > kTxnBufSize) {
+    if (netbuf->data_size > kTxnBufSize) {
         return ZX_ERR_INVALID_ARGS;
     }
     if (tx_descriptors_[curr_tx_buf_].txrx_status & DESC_TXSTS_OWNBYDMA) {
@@ -603,10 +557,10 @@ zx_status_t DWMacDevice::EthmacQueueTx(uint32_t options, ethmac_netbuf_t* netbuf
     }
     uint8_t* temptr = &tx_buffer_[curr_tx_buf_ * kTxnBufSize];
 
-    memcpy(temptr, netbuf->data, netbuf->len);
+    memcpy(temptr, netbuf->data_buffer, netbuf->data_size);
     hw_mb();
 
-    zx_cache_flush(temptr, netbuf->len, ZX_CACHE_FLUSH_DATA);
+    zx_cache_flush(temptr, netbuf->data_size, ZX_CACHE_FLUSH_DATA);
 
     // Descriptors are pre-iniitialized with the paddr of their corresponding
     // buffers, only need to setup the control and status fields.
@@ -615,7 +569,7 @@ zx_status_t DWMacDevice::EthmacQueueTx(uint32_t options, ethmac_netbuf_t* netbuf
         DESC_TXCTRL_TXLAST |
         DESC_TXCTRL_TXFIRST |
         DESC_TXCTRL_TXCHAIN |
-        (netbuf->len & DESC_TXCTRL_SIZE1MASK);
+        ((uint32_t)netbuf->data_size & DESC_TXCTRL_SIZE1MASK);
 
     tx_descriptors_[curr_tx_buf_].txrx_status = DESC_TXSTS_OWNBYDMA;
     curr_tx_buf_ = (curr_tx_buf_ + 1) % kNumDesc;
@@ -626,7 +580,8 @@ zx_status_t DWMacDevice::EthmacQueueTx(uint32_t options, ethmac_netbuf_t* netbuf
     return ZX_OK;
 }
 
-zx_status_t DWMacDevice::EthmacSetParam(uint32_t param, int32_t value, void* data) {
+zx_status_t DWMacDevice::EthmacSetParam(uint32_t param, int32_t value, const void* data,
+                                        size_t data_size) {
     zxlogf(INFO, "SetParam called  %x  %x\n", param, value);
     return ZX_OK;
 }

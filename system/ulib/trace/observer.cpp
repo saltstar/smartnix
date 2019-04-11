@@ -1,7 +1,12 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <trace/observer.h>
 
 #include <zircon/assert.h>
+
+#include <utility>
 
 namespace trace {
 
@@ -17,7 +22,7 @@ void TraceObserver::Start(async_dispatcher_t* dispatcher, fbl::Closure callback)
     ZX_DEBUG_ASSERT(callback);
 
     Stop();
-    callback_ = fbl::move(callback);
+    callback_ = std::move(callback);
 
     zx_status_t status = zx::event::create(0u, &event_);
     ZX_ASSERT(status == ZX_OK);

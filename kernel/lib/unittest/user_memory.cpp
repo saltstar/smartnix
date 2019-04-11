@@ -12,7 +12,7 @@ UserMemory::~UserMemory() {
 }
 
 // static
-fbl::unique_ptr<UserMemory> UserMemory::Create(size_t size) {
+ktl::unique_ptr<UserMemory> UserMemory::Create(size_t size) {
     size = ROUNDUP_PAGE_SIZE(size);
 
     fbl::RefPtr<VmObject> vmo;
@@ -46,7 +46,7 @@ fbl::unique_ptr<UserMemory> UserMemory::Create(size_t size) {
     });
 
     fbl::AllocChecker ac;
-    fbl::unique_ptr<UserMemory> mem(new (&ac) UserMemory(mapping));
+    ktl::unique_ptr<UserMemory> mem(new (&ac) UserMemory(mapping));
     if (!ac.check()) {
         unittest_printf("failed to allocate from heap\n");
         return nullptr;

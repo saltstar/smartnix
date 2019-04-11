@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,6 +9,8 @@
 #include <fbl/intrusive_container_utils.h>
 #include <fbl/intrusive_pointer_traits.h>
 #include <fbl/macros.h>
+
+#include <utility>
 
 // Usage and Implementation Notes:
 //
@@ -183,21 +188,21 @@ public:
 
     // push_front : Push an element onto the front of the list.
     void push_front(const PtrType& ptr) { push_front(PtrType(ptr)); }
-    void push_front(PtrType&& ptr) { internal_insert(head_, fbl::move(ptr)); }
+    void push_front(PtrType&& ptr) { internal_insert(head_, std::move(ptr)); }
 
     // push_back : Push an element onto the end of the list.
     void push_back(const PtrType& ptr) { push_back(PtrType(ptr)); }
-    void push_back(PtrType&& ptr) { internal_insert(sentinel(), fbl::move(ptr)); }
+    void push_back(PtrType&& ptr) { internal_insert(sentinel(), std::move(ptr)); }
 
     // insert : Insert an element before iter in the list.
     void insert(const iterator& iter, const PtrType&  ptr) { insert(iter, PtrType(ptr)); }
     void insert(const iterator& iter, PtrType&& ptr) {
-        internal_insert(iter.node_, fbl::move(ptr));
+        internal_insert(iter.node_, std::move(ptr));
     }
 
     void insert(ValueType& before, const PtrType& ptr) { insert(before, PtrType(ptr)); }
     void insert(ValueType& before, PtrType&& ptr) {
-        internal_insert(&before, fbl::move(ptr));
+        internal_insert(&before, std::move(ptr));
     }
 
     // splice : Splice another list before iter in this list.
@@ -259,7 +264,7 @@ public:
         ZX_DEBUG_ASSERT(iter.IsValid());
 
         auto& ns = NodeTraits::node_state(*iter.node_);
-        internal_insert(ns.next_, fbl::move(ptr));
+        internal_insert(ns.next_, std::move(ptr));
     }
 
     // pop_front and pop_back
@@ -413,16 +418,16 @@ public:
         iterator iter = find_if(fn);
 
         if (!iter.IsValid())
-            return fbl::move(ptr);
+            return std::move(ptr);
 
-        return internal_swap(*iter, fbl::move(ptr));
+        return internal_swap(*iter, std::move(ptr));
     }
 
     // replace (copy and move)
     //
     // Replaces the target member of the list with the given replacement.
     PtrType replace(typename PtrTraits::RefType target, PtrType replacement) {
-        return internal_swap(target, fbl::move(replacement));
+        return internal_swap(target, std::move(replacement));
     }
 
 private:

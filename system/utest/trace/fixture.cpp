@@ -21,7 +21,11 @@
 #include <trace-provider/handler.h>
 #include <trace-reader/reader.h>
 #include <trace-reader/reader_internal.h>
+#include <trace-test-utils/compare_records.h>
+#include <trace-test-utils/read_records.h>
 #include <unittest/unittest.h>
+
+#include <utility>
 
 namespace {
 
@@ -39,10 +43,30 @@ public:
         ZX_DEBUG_ASSERT(status == ZX_OK);
         status = zx::event::create(0u, &buffer_full_);
         ZX_DEBUG_ASSERT(status == ZX_OK);
+        ResetEngineState();
     }
 
     ~Fixture() {
         StopTracing(false);
+    }
+
+    void ResetEngineState() {
+        // The engine may be started/stopped multiple times between one call
+        // to StartTracing()/StopTracing(). Reset related state tracking vars
+        // each time.
+        disposition_ = ZX_ERR_INTERNAL;
+        buffer_bytes_written_ = 0u;
+        observed_stopped_callback_ = false;
+        ResetBufferFullNotification();
+    }
+
+    void StartEngine() {
+        ResetEngineState();
+
+        zx_status_t status = trace_start_engine(loop_.dispatcher(), this,
+                                                buffering_mode_,
+                                                buffer_.get(), buffer_.size());
+        ZX_DEBUG_ASSERT_MSG(status == ZX_OK, "status=%d", status);
     }
 
     void StartTracing() {
@@ -55,17 +79,30 @@ public:
             loop_.StartThread("trace test");
         }
 
-        // Asynchronously start the engine.
-        zx_status_t status = trace_start_engine(loop_.dispatcher(), this,
-                                                buffering_mode_,
-                                                buffer_.get(), buffer_.size());
-        ZX_DEBUG_ASSERT_MSG(status == ZX_OK, "status=%d", status);
+        StartEngine();
     }
 
     void StopEngine() {
         ZX_DEBUG_ASSERT(trace_running_);
         zx_status_t status = trace_stop_engine(ZX_OK);
         ZX_DEBUG_ASSERT_MSG(status == ZX_OK, "status=%d", status);
+    }
+
+    void WaitEngineStopped() {
+        zx_status_t status;
+        while (trace_state() != TRACE_STOPPED) {
+            if (attach_to_thread_ == kNoAttachToThread) {
+                status = trace_stopped_.wait_one(
+                    ZX_EVENT_SIGNALED, zx::deadline_after(zx::msec(100)),
+                    nullptr);
+                ZX_DEBUG_ASSERT_MSG(status == ZX_OK || status == ZX_ERR_TIMED_OUT,
+                                    "status=%d", status);
+            } else {
+                // Finish up any remaining tasks. The engine may have queued some.
+                status = loop_.RunUntilIdle();
+                ZX_DEBUG_ASSERT_MSG(status == ZX_OK, "status=%d", status);
+            }
+        }
     }
 
     void Shutdown() {
@@ -88,21 +125,7 @@ public:
         // tearing down the loop.  The trace engine should stop itself.
         if (!hard_shutdown) {
             StopEngine();
-
-            zx_status_t status;
-            while (trace_state() != TRACE_STOPPED) {
-                if (attach_to_thread_ == kNoAttachToThread) {
-                    status = trace_stopped_.wait_one(
-                        ZX_EVENT_SIGNALED, zx::deadline_after(zx::msec(100)),
-                        nullptr);
-                    ZX_DEBUG_ASSERT_MSG(status == ZX_OK || status == ZX_ERR_TIMED_OUT,
-                                        "status=%d", status);
-                } else {
-                    // Finish up any remaining tasks. The engine may have queued some.
-                    status = loop_.RunUntilIdle();
-                    ZX_DEBUG_ASSERT_MSG(status == ZX_OK, "status=%d", status);
-                }
-            }
+            WaitEngineStopped();
         }
 
         Shutdown();
@@ -141,25 +164,9 @@ public:
         observed_buffer_full_durable_data_end_ = 0;
     }
 
-    bool ReadRecords(fbl::Vector<trace::Record>* out_records,
-                     fbl::Vector<fbl::String>* out_errors) {
-        trace::TraceReader reader(
-            [out_records](trace::Record record) {
-                out_records->push_back(fbl::move(record));
-            },
-            [out_errors](fbl::String error) {
-                out_errors->push_back(fbl::move(error));
-            });
-        trace::internal::TraceBufferReader buffer_reader(
-            [&reader](trace::Chunk chunk) {
-                if (!reader.ReadRecords(chunk)) {
-                    // Nothing to do, error already recorded.
-                }
-            },
-            [out_errors](fbl::String error) {
-                out_errors->push_back(fbl::move(error));
-            });
-        return buffer_reader.ReadChunks(buffer_.get(), buffer_.size());
+    bool ReadRecords(fbl::Vector<trace::Record>* out_records) {
+        return trace_testing::ReadRecords(buffer_.get(), buffer_.size(),
+                                          out_records);
     }
 
 private:
@@ -196,24 +203,19 @@ private:
     trace_buffering_mode_t buffering_mode_;
     fbl::Array<uint8_t> buffer_;
     bool trace_running_ = false;
-    zx_status_t disposition_ = ZX_ERR_INTERNAL;
-    size_t buffer_bytes_written_ = 0u;
+    zx_status_t disposition_;
+    size_t buffer_bytes_written_;
     zx::event trace_stopped_;
     zx::event buffer_full_;
-    bool observed_stopped_callback_ = false;
-    bool observed_notify_buffer_full_callback_ = false;
-    uint32_t observed_buffer_full_wrapped_count_ = 0;
-    uint64_t observed_buffer_full_durable_data_end_ = 0;
+    bool observed_stopped_callback_;
+    bool observed_notify_buffer_full_callback_;
+    uint32_t observed_buffer_full_wrapped_count_;
+    uint64_t observed_buffer_full_durable_data_end_;
 };
 
 Fixture* g_fixture{nullptr};
 
 } // namespace
-
-struct FixtureSquelch {
-    // Records the compiled regex.
-    regex_t regex;
-};
 
 void fixture_set_up(attach_to_thread_t attach_to_thread,
                     trace_buffering_mode_t mode, size_t buffer_size) {
@@ -242,9 +244,19 @@ void fixture_stop_tracing_hard() {
     g_fixture->StopTracing(true);
 }
 
+void fixture_start_engine() {
+    ZX_DEBUG_ASSERT(g_fixture);
+    g_fixture->StartEngine();
+}
+
 void fixture_stop_engine() {
     ZX_DEBUG_ASSERT(g_fixture);
     g_fixture->StopEngine();
+}
+
+void fixture_wait_engine_stopped(void) {
+    ZX_DEBUG_ASSERT(g_fixture);
+    g_fixture->WaitEngineStopped();
 }
 
 void fixture_shutdown() {
@@ -277,114 +289,37 @@ void fixture_reset_buffer_full_notification() {
     g_fixture->ResetBufferFullNotification();
 }
 
-bool fixture_create_squelch(const char* regex_str, FixtureSquelch** out_squelch) {
-    // We don't make any assumptions about the copyability of |regex_t|.
-    // Therefore we construct it in place.
-    auto squelch = new FixtureSquelch;
-    if (regcomp(&squelch->regex, regex_str, REG_EXTENDED | REG_NEWLINE) != 0) {
-        return false;
-    }
-    *out_squelch = squelch;
-    return true;
-}
-
-void fixture_destroy_squelch(FixtureSquelch* squelch) {
-    regfree(&squelch->regex);
-    delete squelch;
-}
-
-fbl::String fixture_squelch(FixtureSquelch* squelch, const char* str) {
-    fbl::StringBuffer<1024u> buf;
-    const char* cur = str;
-    const char* end = str + strlen(str);
-    while (*cur) {
-        // size must be 1 + number of parenthesized subexpressions
-        size_t match_count = squelch->regex.re_nsub + 1;
-        regmatch_t match[match_count];
-        if (regexec(&squelch->regex, cur, match_count, match, 0) != 0) {
-            buf.Append(cur, end - cur);
-            break;
-        }
-        size_t offset = 0u;
-        for (size_t i = 1; i < match_count; i++) {
-            if (match[i].rm_so == -1)
-                continue;
-            buf.Append(cur, match[i].rm_so - offset);
-            buf.Append("<>");
-            cur += match[i].rm_eo - offset;
-            offset = match[i].rm_eo;
-        }
-    }
-    return buf;
-}
-
 bool fixture_compare_raw_records(const fbl::Vector<trace::Record>& records,
                                  size_t start_record, size_t max_num_records,
                                  const char* expected) {
     BEGIN_HELPER;
 
-    // Append |num_records| records to the buffer, replacing each match of a parenthesized
-    // subexpression of the regex with "<>".  This is used to strip out timestamps
-    // and other varying data that is not controlled by these tests.
-    FixtureSquelch* squelch;
-    ASSERT_TRUE(fixture_create_squelch(
-                    "([0-9]+/[0-9]+)"
-                    "|koid\\(([0-9]+)\\)"
-                    "|koid: ([0-9]+)"
-                    "|ts: ([0-9]+)"
-                    "|(0x[0-9a-f]+)",
-                    &squelch), "error creating squelch");
-
-    fbl::StringBuffer<16384u> buf;
-    size_t num_recs = 0;
-    for (size_t i = start_record; i < records.size(); ++i) {
-        if (num_recs == max_num_records)
-            break;
-        const auto& record = records[i];
-        fbl::String str = record.ToString();
-        buf.Append(fixture_squelch(squelch, str.c_str()));
-        buf.Append('\n');
-        ++num_recs;
-    }
-    EXPECT_STR_EQ(expected, buf.c_str(), "unequal cstr");
-    fixture_destroy_squelch(squelch);
+    ASSERT_TRUE(trace_testing::CompareRecords(records, start_record,
+                                              max_num_records, expected));
 
     END_HELPER;
 }
 
 bool fixture_compare_n_records(size_t max_num_records, const char* expected,
-                               fbl::Vector<trace::Record>* out_records) {
+                               fbl::Vector<trace::Record>* out_records,
+                               size_t* out_leading_to_skip) {
     ZX_DEBUG_ASSERT(g_fixture);
     BEGIN_HELPER;
 
     g_fixture->StopTracing(false);
 
-    fbl::Vector<trace::Record> records;
-    fbl::Vector<fbl::String> errors;
-    EXPECT_TRUE(g_fixture->ReadRecords(&records, &errors), "read error");
+    ASSERT_TRUE(g_fixture->ReadRecords(out_records), "read error");
 
-    for (const auto& error : errors)
-        printf("error: %s\n", error.c_str());
-    ASSERT_EQ(0u, errors.size(), "errors encountered");
-
-    ASSERT_GE(records.size(), 1u, "expected an initialization record");
-    ASSERT_EQ(trace::RecordType::kInitialization, records[0].type(),
-              "expected initialization record");
-    EXPECT_EQ(zx_ticks_per_second(),
-              records[0].GetInitialization().ticks_per_second);
-    records.erase(0);
-
-    EXPECT_TRUE(fixture_compare_raw_records(records, 0, max_num_records, expected));
-
-    if (out_records) {
-        *out_records = fbl::move(records);
-    }
+    ASSERT_TRUE(trace_testing::ComparePartialBuffer(*out_records,
+                                                    max_num_records, expected,
+                                                    out_leading_to_skip));
 
     END_HELPER;
 }
 
 bool fixture_compare_records(const char* expected) {
-    return fixture_compare_n_records(SIZE_MAX, expected, nullptr);
+    fbl::Vector<trace::Record> records;
+    return fixture_compare_n_records(SIZE_MAX, expected, &records, nullptr);
 }
 
 void fixture_snapshot_buffer_header(trace_buffer_header* header) {

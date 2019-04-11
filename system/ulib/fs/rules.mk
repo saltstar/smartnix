@@ -1,3 +1,6 @@
+# Copyright 2016 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -16,8 +19,10 @@ MODULE_SRCS += \
     $(COMMON_SRCS) \
     $(LOCAL_DIR)/connection.cpp \
     $(LOCAL_DIR)/fvm.cpp \
+    $(LOCAL_DIR)/handler.cpp \
     $(LOCAL_DIR)/lazy-dir.cpp \
     $(LOCAL_DIR)/managed-vfs.cpp \
+    $(LOCAL_DIR)/metrics.cpp \
     $(LOCAL_DIR)/mount.cpp \
     $(LOCAL_DIR)/pseudo-dir.cpp \
     $(LOCAL_DIR)/pseudo-file.cpp \
@@ -29,12 +34,16 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/watcher.cpp \
 
 MODULE_FIDL_LIBS := \
-    system/fidl/fuchsia-io
+    system/fidl/fuchsia-cobalt\
+    system/fidl/fuchsia-io \
+    system/fidl/fuchsia-mem \
 
 MODULE_STATIC_LIBS := \
     system/ulib/async \
     system/ulib/async.cpp \
+    system/ulib/cobalt-client \
     system/ulib/fbl \
+    system/ulib/fzl \
     system/ulib/sync \
     system/ulib/trace \
     system/ulib/zx \

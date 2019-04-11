@@ -11,6 +11,7 @@ MODULE_TYPE := driver
 MODULE_SRCS += \
     $(LOCAL_DIR)/astro.c \
     $(LOCAL_DIR)/astro-bluetooth.c \
+    $(LOCAL_DIR)/astro-sysmem.c \
     $(LOCAL_DIR)/astro-gpio.c \
     $(LOCAL_DIR)/astro-i2c.c \
     $(LOCAL_DIR)/astro-usb.c \
@@ -26,9 +27,11 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/astro-audio.c \
     $(LOCAL_DIR)/astro-tee.c \
     $(LOCAL_DIR)/astro-buttons.c \
+    $(LOCAL_DIR)/astro-backlight.c \
 
 MODULE_STATIC_LIBS := \
     system/dev/lib/amlogic \
+    system/dev/lib/focaltech \
     system/ulib/ddk \
     system/ulib/sync \
     system/dev/lib/broadcom \
@@ -37,5 +40,17 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/c \
     system/ulib/zircon
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-gpioimpl \
+    system/banjo/ddk-protocol-iommu \
+    system/banjo/ddk-protocol-platform-bus \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-scpi \
+    system/banjo/ddk-protocol-serial \
+
+MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-hardware-light \
 
 include make/module.mk

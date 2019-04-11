@@ -91,7 +91,7 @@ JobDispatcher::LiveRefsArray JobDispatcher::ForEachChildInLocked(
         // we keep the reference alive in the |refs| array and pass
         // the responsibility of releasing them outside the lock to
         // the caller.
-        refs[ix++] = fbl::move(cref);
+        refs[ix++] = ktl::move(cref);
 
         if (*result != ZX_OK)
             break;
@@ -102,7 +102,7 @@ JobDispatcher::LiveRefsArray JobDispatcher::ForEachChildInLocked(
 
 fbl::RefPtr<JobDispatcher> JobDispatcher::CreateRootJob() {
     fbl::AllocChecker ac;
-    auto job = fbl::AdoptRef(new (&ac) JobDispatcher(0u, nullptr, kPolicyEmpty));
+    auto job = fbl::AdoptRef(new (&ac) JobDispatcher(0u, nullptr, JobPolicy()));
     if (!ac.check())
         return nullptr;
     job->set_name(kRootJobName, sizeof(kRootJobName));
@@ -129,15 +129,15 @@ zx_status_t JobDispatcher::Create(uint32_t flags,
     }
 
     *rights = default_rights();
-    *dispatcher = fbl::move(job);
+    *dispatcher = ktl::move(job);
     return ZX_OK;
 }
 
 JobDispatcher::JobDispatcher(uint32_t /*flags*/,
                              fbl::RefPtr<JobDispatcher> parent,
-                             pol_cookie_t policy)
+                             JobPolicy policy)
     : SoloDispatcher(ZX_JOB_NO_PROCESSES | ZX_JOB_NO_JOBS),
-      parent_(fbl::move(parent)),
+      parent_(ktl::move(parent)),
       max_height_(parent_ ? parent_->max_height() - 1 : kRootJobMaxHeight),
       state_(State::READY),
       process_count_(0u),
@@ -145,12 +145,15 @@ JobDispatcher::JobDispatcher(uint32_t /*flags*/,
       kill_on_oom_(false),
       policy_(policy) {
 
+    // Maintain consistent lock ordering by grabbing the all-jobs lock before
+    // any individual JobDispatcher lock.
+    Guard<fbl::Mutex> guard{AllJobsLock::Get()};
+
     // Set the initial job order, and try to make older jobs closer to
     // the root (both hierarchically and temporally) show up earlier
     // in enumeration.
     if (parent_ == nullptr) {
         // Root job is the most important.
-        Guard<fbl::Mutex> guard{AllJobsLock::Get()};
         all_jobs_list_.push_back(this);
     } else {
         Guard<fbl::Mutex> parent_guard{parent_->get_lock()};
@@ -175,7 +178,6 @@ JobDispatcher::JobDispatcher(uint32_t /*flags*/,
         }
 
         // Make ourselves appear after our next-youngest neighbor.
-        Guard<fbl::Mutex> guard{AllJobsLock::Get()};
         all_jobs_list_.insert(all_jobs_list_.make_iterator(*neighbor), this);
     }
 }
@@ -294,7 +296,7 @@ void JobDispatcher::UpdateSignalsIncrementLocked() {
     UpdateStateLocked(clear, 0u);
 }
 
-pol_cookie_t JobDispatcher::GetPolicy() {
+JobPolicy JobDispatcher::GetPolicy() const {
     Guard<fbl::Mutex> guard{get_lock()};
     return policy_;
 }
@@ -318,11 +320,11 @@ bool JobDispatcher::Kill() {
 
         // Safely gather refs to the children.
         jobs_refs = ForEachChildInLocked(jobs_, &result, [&](fbl::RefPtr<JobDispatcher> job) {
-            jobs_to_kill.push_front(fbl::move(job));
+            jobs_to_kill.push_front(ktl::move(job));
             return ZX_OK;
         });
         proc_refs = ForEachChildInLocked(procs_, &result, [&](fbl::RefPtr<ProcessDispatcher> proc) {
-            procs_to_kill.push_front(fbl::move(proc));
+            procs_to_kill.push_front(ktl::move(proc));
             return ZX_OK;
         });
     }
@@ -340,22 +342,66 @@ bool JobDispatcher::Kill() {
     return true;
 }
 
-zx_status_t JobDispatcher::SetPolicy(
+bool JobDispatcher::CanSetPolicy() TA_REQ(get_lock()) {
+    // Can't set policy when there are active processes or jobs. This constraint ensures that a
+    // process's policy cannot change over its lifetime.  Because a process's policy cannot change,
+    // the risk of TOCTOU bugs is reduced and we are free to apply policy at the ProcessDispatcher
+    // without having to walk up the tree to its containing job.
+    if (!procs_.is_empty() || !jobs_.is_empty()) {
+        return false;
+    }
+    return true;
+}
+
+zx_status_t JobDispatcher::SetBasicPolicy(
     uint32_t mode, const zx_policy_basic* in_policy, size_t policy_count) {
-    // Can't set policy when there are active processes or jobs.
+
     Guard<fbl::Mutex> guard{get_lock()};
 
-    if (!procs_.is_empty() || !jobs_.is_empty())
+    if (!CanSetPolicy()) {
         return ZX_ERR_BAD_STATE;
+    }
 
-    pol_cookie_t new_policy;
-    auto status = GetSystemPolicyManager()->AddPolicy(
-        mode, policy_, in_policy, policy_count, &new_policy);
+    auto status = policy_.AddBasicPolicy(mode, in_policy, policy_count);
 
     if (status != ZX_OK)
         return status;
 
-    policy_ = new_policy;
+    return ZX_OK;
+}
+
+zx_status_t JobDispatcher::SetTimerSlackPolicy(const zx_policy_timer_slack& policy) {
+    Guard<fbl::Mutex> guard{get_lock()};
+
+    if (!CanSetPolicy()) {
+        return ZX_ERR_BAD_STATE;
+    }
+
+    // Is the policy valid?
+    if (policy.min_slack < 0) {
+        return ZX_ERR_INVALID_ARGS;
+    }
+    slack_mode new_mode;
+    switch (policy.default_mode) {
+    case ZX_TIMER_SLACK_CENTER:
+        new_mode = TIMER_SLACK_CENTER;
+        break;
+    case ZX_TIMER_SLACK_EARLY:
+        new_mode = TIMER_SLACK_EARLY;
+        break;
+    case ZX_TIMER_SLACK_LATE:
+        new_mode = TIMER_SLACK_LATE;
+        break;
+    default:
+        return ZX_ERR_INVALID_ARGS;
+    };
+
+    const TimerSlack old_slack = policy_.GetTimerSlack();
+    const zx_duration_t new_amount = fbl::max(old_slack.amount(), policy.min_slack);
+    const TimerSlack new_slack(new_amount, new_mode);
+
+    policy_.SetTimerSlack(new_slack);
+
     return ZX_OK;
 }
 
@@ -408,7 +454,7 @@ JobDispatcher::LookupProcessById(zx_koid_t koid) {
 
         proc_refs = ForEachChildInLocked(procs_, &result, [&](fbl::RefPtr<ProcessDispatcher> proc) {
             if (proc->get_koid() == koid) {
-                found_proc = fbl::move(proc);
+                found_proc = ktl::move(proc);
                 return ZX_ERR_STOP;
             }
             return ZX_OK;
@@ -430,7 +476,7 @@ JobDispatcher::LookupJobById(zx_koid_t koid) {
 
         jobs_refs = ForEachChildInLocked(jobs_, &result, [&](fbl::RefPtr<JobDispatcher> job) {
             if (job->get_koid() == koid) {
-                found_job = fbl::move(job);
+                found_job = ktl::move(job);
                 return ZX_ERR_STOP;
             }
             return ZX_OK;
@@ -473,11 +519,11 @@ zx_status_t JobDispatcher::SetExceptionPort(fbl::RefPtr<ExceptionPort> eport) {
     if (debugger) {
         if (debugger_exception_port_)
             return ZX_ERR_ALREADY_BOUND;
-        debugger_exception_port_ = fbl::move(eport);
+        debugger_exception_port_ = ktl::move(eport);
     } else {
         if (exception_port_)
             return ZX_ERR_ALREADY_BOUND;
-        exception_port_ = fbl::move(eport);
+        exception_port_ = ktl::move(eport);
     }
     return ZX_OK;
 }
@@ -485,7 +531,7 @@ zx_status_t JobDispatcher::SetExceptionPort(fbl::RefPtr<ExceptionPort> eport) {
 class OnExceptionPortRemovalEnumerator final : public JobEnumerator {
 public:
     OnExceptionPortRemovalEnumerator(fbl::RefPtr<ExceptionPort> eport)
-        : eport_(fbl::move(eport)) {}
+        : eport_(ktl::move(eport)) {}
     OnExceptionPortRemovalEnumerator(const OnExceptionPortRemovalEnumerator&) = delete;
 
 private:
@@ -498,7 +544,7 @@ private:
     fbl::RefPtr<ExceptionPort> eport_;
 };
 
-bool JobDispatcher::ResetExceptionPort(bool debugger, bool quietly) {
+bool JobDispatcher::ResetExceptionPort(bool debugger) {
     canary_.Assert();
 
     fbl::RefPtr<ExceptionPort> eport;
@@ -534,11 +580,9 @@ bool JobDispatcher::ResetExceptionPort(bool debugger, bool quietly) {
         eport->OnTargetUnbind();
     }
 
-    if (!quietly) {
-        OnExceptionPortRemovalEnumerator remover(eport);
-        if (!EnumerateChildren(&remover, true)) {
-            DEBUG_ASSERT(false);
-        }
+    OnExceptionPortRemovalEnumerator remover(eport);
+    if (!EnumerateChildren(&remover, true)) {
+        DEBUG_ASSERT(false);
     }
     return true;
 }

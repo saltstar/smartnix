@@ -2,6 +2,7 @@
 #pragma once
 
 #include <object/dispatcher.h>
+#include <object/excp_port.h>
 #include <object/semaphore.h>
 #include <object/state_observer.h>
 
@@ -12,7 +13,7 @@
 #include <fbl/canary.h>
 #include <fbl/intrusive_double_list.h>
 #include <fbl/mutex.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 #include <kernel/spinlock.h>
 
 #include <sys/types.h>
@@ -72,7 +73,6 @@
 //   when cancellation happens and the port still owns the packet.
 //
 
-class ExceptionPort;
 class PortDispatcher;
 class PortObserver;
 struct PortPacket;
@@ -87,7 +87,7 @@ struct PortAllocator {
 struct PortPacket final : public fbl::DoublyLinkedListable<PortPacket*> {
     zx_port_packet_t packet;
     const void* const handle;
-    fbl::unique_ptr<const PortObserver> observer;
+    ktl::unique_ptr<const PortObserver> observer;
     PortAllocator* const allocator;
 
     PortPacket(const void* handle, PortAllocator* allocator);
@@ -172,13 +172,13 @@ public:
     zx_status_t Queue(PortPacket* port_packet, zx_signals_t observed, uint64_t count);
     zx_status_t QueueUser(const zx_port_packet_t& packet);
     bool QueueInterruptPacket(PortInterruptPacket* port_packet, zx_time_t timestamp);
-    zx_status_t Dequeue(zx_time_t deadline, zx_port_packet_t* packet);
+    zx_status_t Dequeue(const Deadline& deadline, zx_port_packet_t* packet);
     bool RemoveInterruptPacket(PortInterruptPacket* port_packet);
 
     // Decides who is going to destroy the observer. If it returns the
     // observer back if it is the duty of the caller. It returns
     // nullptr if it is the duty of the port.
-    fbl::unique_ptr<PortObserver> MaybeReap(fbl::unique_ptr<PortObserver> observer,
+    ktl::unique_ptr<PortObserver> MaybeReap(ktl::unique_ptr<PortObserver> observer,
                                             PortPacket* port_packet);
 
     // Called under the handle table lock.
@@ -189,21 +189,23 @@ public:
     // When |handle| is null, ephemeral PortPackets are removed from the queue but not freed.
     bool CancelQueued(const void* handle, uint64_t key);
 
+    // Removes |port_packet| from this port's queue. Returns false if the packet was
+    // not in this queue. It is undefined to call this with a packet queued in another port.
+    bool CancelQueued(PortPacket* port_packet);
+
 private:
-    friend class ExceptionPort;
+    friend ExceptionPort;
 
     explicit PortDispatcher(uint32_t options);
 
-    void FreePacket(PortPacket* port_packet) TA_REQ(get_lock());
-
     // Adopts a RefPtr to |eport|, and adds it to |eports_|.
-    // Called by ExceptionPort.
-    void LinkExceptionPort(ExceptionPort* eport);
+    // Called by ExceptionPort under |eport|'s lock.
+    void LinkExceptionPortEportLocked(ExceptionPort* eport) TA_REQ(eport->lock_);
 
     // Removes |eport| from |eports_|, dropping its RefPtr.
     // Does nothing if |eport| is not on the list.
-    // Called by ExceptionPort.
-    void UnlinkExceptionPort(ExceptionPort* eport);
+    // Called by ExceptionPort under |eport|'s lock.
+    void UnlinkExceptionPortEportLocked(ExceptionPort* eport) TA_REQ(eport->lock_);
 
     fbl::Canary<fbl::magic("PORT")> canary_;
     const uint32_t options_;

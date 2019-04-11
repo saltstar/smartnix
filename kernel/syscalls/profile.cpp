@@ -6,15 +6,12 @@
 #include <lib/ktrace.h>
 
 #include <object/handle.h>
+#include <object/job_dispatcher.h>
 #include <object/profile_dispatcher.h>
 
-#include <zircon/syscalls/resource.h>
 #include <zircon/types.h>
 
-#include <object/resource.h>
-
 #include <fbl/ref_ptr.h>
-#include <fbl/type_support.h>
 
 #include "priv.h"
 
@@ -23,27 +20,41 @@ KCOUNTER(profile_set,    "kernel.profile.set");
 
 
 // zx_status_t zx_profile_create
-zx_status_t sys_profile_create(zx_handle_t resource,
+zx_status_t sys_profile_create(zx_handle_t root_job,
                                user_in_ptr<const zx_profile_info_t> user_profile_info,
                                user_out_handle* out) {
-    // TODO(cpu): check job policy.
+    // TODO(ZX-3352): check job policy.
 
-    zx_status_t status = validate_resource(resource, ZX_RSRC_KIND_ROOT);
-    if (status != ZX_OK)
+    auto up = ProcessDispatcher::GetCurrent();
+
+    fbl::RefPtr<JobDispatcher> job;
+    auto status = up->GetDispatcherWithRights(root_job, ZX_RIGHT_MANAGE_PROCESS, &job);
+    if (status != ZX_OK) {
         return status;
+    }
+
+    // Validate that the job is in fact the first usermode job (aka root job).
+    if (GetRootJobDispatcher() != job->parent()) {
+        // TODO(cpu): consider a better error code.
+        return ZX_ERR_ACCESS_DENIED;
+    }
 
     zx_profile_info_t profile_info;
     status = user_profile_info.copy_from_user(&profile_info);
-    if (status != ZX_OK)
+    if (status != ZX_OK) {
         return status;
+    }
 
     fbl::RefPtr<Dispatcher> dispatcher;
     zx_rights_t rights;
     status = ProfileDispatcher::Create(profile_info, &dispatcher, &rights);
-    if (status != ZX_OK)
+    if (status != ZX_OK) {
         return status;
+    }
 
-    return out->make(fbl::move(dispatcher), rights);
+    kcounter_add(profile_create, 1);
+
+    return out->make(ktl::move(dispatcher), rights);
 }
 
 // zx_status_t zx_object_set_profile
@@ -65,6 +76,7 @@ zx_status_t sys_object_set_profile(zx_handle_t handle,
     if (result != ZX_OK)
         return result;
 
-    return profile->ApplyProfile(fbl::move(thread));
-}
+    kcounter_add(profile_set, 1);
 
+    return profile->ApplyProfile(ktl::move(thread));
+}

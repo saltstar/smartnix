@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -29,6 +32,10 @@ public:
     // Returns an absolute path to the file described by |relpath|.
     fbl::String Join(const char* relpath) const;
     fbl::String Join(const fbl::String& relpath) const { return Join(relpath.c_str()); }
+
+    // Returns whether the given |relpath| is present and is a regular file.
+    bool IsFile(const char *relpath) const { return GetSize(relpath, nullptr) == ZX_OK; }
+    bool IsFile(const fbl::String &relpath) const { return IsFile(relpath.c_str()); }
 
     // Returns the size of the file in |out|, if it exists. |out| is unchanged on error.
     zx_status_t GetSize(const char* relpath, size_t* out) const;

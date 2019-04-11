@@ -23,7 +23,7 @@ zx_status_t sys_timer_create(uint32_t options, zx_clock_t clock_id,
         return ZX_ERR_INVALID_ARGS;
 
     auto up = ProcessDispatcher::GetCurrent();
-    zx_status_t result = up->QueryPolicy(ZX_POL_NEW_TIMER);
+    zx_status_t result = up->QueryBasicPolicy(ZX_POL_NEW_TIMER);
     if (result != ZX_OK)
         return result;
 
@@ -33,7 +33,7 @@ zx_status_t sys_timer_create(uint32_t options, zx_clock_t clock_id,
     result = TimerDispatcher::Create(options, &dispatcher, &rights);
 
     if (result == ZX_OK)
-        result = out->make(fbl::move(dispatcher), rights);
+        result = out->make(ktl::move(dispatcher), rights);
     return result;
 }
 
@@ -51,7 +51,11 @@ zx_status_t sys_timer_set(
     if (status != ZX_OK)
         return status;
 
-    return timer->Set(deadline, slack);
+    // Effective slack can only be increased so use max of the requested and the policy slack.
+    const zx_duration_t policySlack = up->GetTimerSlackPolicy().amount();
+    const zx_duration_t effectiveSlack = fbl::max(slack, policySlack);
+
+    return timer->Set(deadline, effectiveSlack);
 }
 
 

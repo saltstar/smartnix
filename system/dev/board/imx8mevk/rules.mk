@@ -10,6 +10,7 @@ MODULE_TYPE := driver
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/imx8mevk.c \
+    $(LOCAL_DIR)/imx8mevk-sysmem.c \
     $(LOCAL_DIR)/imx8mevk-gpio.c \
     $(LOCAL_DIR)/imx8mevk-gpu.c \
     $(LOCAL_DIR)/imx8mevk-i2c.c \
@@ -26,5 +27,13 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/c \
     system/ulib/zircon
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-gpioimpl \
+    system/banjo/ddk-protocol-iommu \
+    system/banjo/ddk-protocol-platform-bus \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-usb-modeswitch \
 
 include make/module.mk

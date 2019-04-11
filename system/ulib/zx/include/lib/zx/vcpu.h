@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#pragma once
+#ifndef LIB_ZX_VCPU_H_
+#define LIB_ZX_VCPU_H_
 
 #include <lib/zx/guest.h>
 #include <lib/zx/handle.h>
@@ -31,11 +32,11 @@ public:
     static zx_status_t create(const guest& guest, uint32_t options,
                               zx_gpaddr_t entry, vcpu* result);
 
-    zx_status_t resume(zx_port_packet_t* packet) {
+    zx_status_t resume(zx_port_packet_t* packet) const {
         return zx_vcpu_resume(get(), packet);
     }
 
-    zx_status_t interrupt(uint32_t interrupt) {
+    zx_status_t interrupt(uint32_t interrupt) const {
         return zx_vcpu_interrupt(get(), interrupt);
     }
 
@@ -43,7 +44,7 @@ public:
         return zx_vcpu_read_state(get(), kind, buf, len);
     }
 
-    zx_status_t write_state(uint32_t kind, const void* buf, size_t len) {
+    zx_status_t write_state(uint32_t kind, const void* buf, size_t len) const {
         return zx_vcpu_write_state(get(), kind, buf, len);
     }
 };
@@ -51,3 +52,5 @@ public:
 using unowned_vcpu = unowned<vcpu>;
 
 } // namespace zx
+
+#endif  // LIB_ZX_VCPU_H_

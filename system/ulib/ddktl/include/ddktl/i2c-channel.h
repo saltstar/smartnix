@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -7,10 +10,15 @@
 
 namespace ddk {
 
-class I2cChannel : public I2cProtocolProxy {
+class I2cChannel : public I2cProtocolClient {
 public:
+    I2cChannel() {}
+
     I2cChannel(const i2c_protocol_t* proto)
-        : I2cProtocolProxy(proto) {}
+        : I2cProtocolClient(proto) {}
+
+    I2cChannel(zx_device_t* parent)
+        : I2cProtocolClient(parent) {}
 
     ~I2cChannel() = default;
 

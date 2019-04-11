@@ -20,31 +20,33 @@
 #include <zircon/process.h>
 #include <zircon/syscalls.h>
 
+#include <utility>
+
 namespace {
 
 struct RamNandOp {
-    nand_op_t op;
+    nand_operation_t op;
+    nand_queue_callback completion_cb;
+    void* cookie;
     list_node_t node;
 };
 
 zx_status_t Unlink(void* ctx, fidl_txn_t* txn)  {
     NandDevice* device = reinterpret_cast<NandDevice*>(ctx);
     zx_status_t status = device->Unlink();
-    return zircon_nand_RamNandUnlink_reply(txn, status);
+    return fuchsia_hardware_nand_RamNandUnlink_reply(txn, status);
 }
 
-zircon_nand_RamNand_ops_t fidl_ops = {
-    .Unlink = Unlink
-};
+fuchsia_hardware_nand_RamNand_ops_t fidl_ops = {.Unlink = Unlink};
 
-static_assert(ZBI_PARTITION_NAME_LEN == zircon_nand_NAME_LEN, "bad fidl name");
-static_assert(ZBI_PARTITION_GUID_LEN == zircon_nand_GUID_LEN, "bad fidl guid");
+static_assert(ZBI_PARTITION_NAME_LEN == fuchsia_hardware_nand_NAME_LEN, "bad fidl name");
+static_assert(ZBI_PARTITION_GUID_LEN == fuchsia_hardware_nand_GUID_LEN, "bad fidl guid");
 
-uint32_t GetNumPartitions(const zircon_nand_RamNandInfo& info) {
-    return fbl::min(info.partition_map.partition_count, zircon_nand_MAX_PARTITIONS);
+uint32_t GetNumPartitions(const fuchsia_hardware_nand_RamNandInfo& info) {
+    return fbl::min(info.partition_map.partition_count, fuchsia_hardware_nand_MAX_PARTITIONS);
 }
 
-void ExtractNandConfig(const zircon_nand_RamNandInfo& info, nand_config_t* config) {
+void ExtractNandConfig(const fuchsia_hardware_nand_RamNandInfo& info, nand_config_t* config) {
     config->bad_block_config.type = kAmlogicUboot;
 
     uint32_t extra_count = 0;
@@ -67,7 +69,7 @@ void ExtractNandConfig(const zircon_nand_RamNandInfo& info, nand_config_t* confi
     config->extra_partition_config_count = extra_count;
 }
 
-fbl::Array<char> ExtractPartitionMap(const zircon_nand_RamNandInfo& info) {
+fbl::Array<char> ExtractPartitionMap(const fuchsia_hardware_nand_RamNandInfo& info) {
     uint32_t num_partitions = GetNumPartitions(info);
     uint32_t dest_partitions = num_partitions;
     for (uint32_t i = 0; i < num_partitions; i++) {
@@ -119,8 +121,7 @@ NandDevice::~NandDevice() {
             if (!nand_op) {
                 break;
             }
-            nand_op_t* operation = &nand_op->op;
-            operation->completion_cb(operation, ZX_ERR_BAD_STATE);
+            nand_op->completion_cb(nand_op->cookie, ZX_ERR_BAD_STATE, &nand_op->op);
         }
     }
 
@@ -130,8 +131,8 @@ NandDevice::~NandDevice() {
     DdkRemove();
 }
 
-zx_status_t NandDevice::Bind(const zircon_nand_RamNandInfo& info) {
-    char name[zircon_nand_NAME_LEN];
+zx_status_t NandDevice::Bind(const fuchsia_hardware_nand_RamNandInfo& info) {
+    char name[fuchsia_hardware_nand_NAME_LEN];
     zx_status_t status = Init(name, zx::vmo(info.vmo));
     if (status != ZX_OK) {
         return status;
@@ -175,7 +176,7 @@ zx_status_t NandDevice::Init(char name[NAME_MAX], zx::vmo vmo) {
     zx_status_t status;
     const bool use_vmo = vmo.is_valid();
     if (use_vmo) {
-        vmo_ = fbl::move(vmo);
+        vmo_ = std::move(vmo);
 
         uint64_t size;
         status = vmo_.get_size(&size);
@@ -223,7 +224,7 @@ zx_status_t NandDevice::DdkMessage(fidl_msg_t* msg, fidl_txn_t* txn) {
             return ZX_ERR_BAD_STATE;
         }
     }
-    return zircon_nand_RamNand_dispatch(this, txn, msg, &fidl_ops);
+    return fuchsia_hardware_nand_RamNand_dispatch(this, txn, msg, &fidl_ops);
 }
 
 zx_status_t NandDevice::Unlink()  {
@@ -231,24 +232,25 @@ zx_status_t NandDevice::Unlink()  {
     return ZX_OK;
 }
 
-void NandDevice::Query(zircon_nand_Info* info_out, size_t* nand_op_size_out) {
+void NandDevice::NandQuery(fuchsia_hardware_nand_Info* info_out, size_t* nand_op_size_out) {
     *info_out = params_;
     *nand_op_size_out = sizeof(RamNandOp);
 }
 
-void NandDevice::Queue(nand_op_t* operation) {
+void NandDevice::NandQueue(nand_operation_t* operation, nand_queue_callback completion_cb,
+                           void* cookie) {
     uint32_t max_pages = params_.NumPages();
     switch (operation->command) {
     case NAND_OP_READ:
     case NAND_OP_WRITE: {
         if (operation->rw.offset_nand >= max_pages || !operation->rw.length ||
             (max_pages - operation->rw.offset_nand) < operation->rw.length) {
-            operation->completion_cb(operation, ZX_ERR_OUT_OF_RANGE);
+            completion_cb(cookie, ZX_ERR_OUT_OF_RANGE, operation);
             return;
         }
         if (operation->rw.data_vmo == ZX_HANDLE_INVALID &&
             operation->rw.oob_vmo == ZX_HANDLE_INVALID) {
-            operation->completion_cb(operation, ZX_ERR_BAD_HANDLE);
+            completion_cb(cookie, ZX_ERR_BAD_HANDLE, operation);
             return;
         }
         break;
@@ -257,25 +259,25 @@ void NandDevice::Queue(nand_op_t* operation) {
         if (!operation->erase.num_blocks ||
             operation->erase.first_block >= params_.num_blocks ||
             params_.num_blocks - operation->erase.first_block < operation->erase.num_blocks) {
-            operation->completion_cb(operation, ZX_ERR_OUT_OF_RANGE);
+            completion_cb(cookie, ZX_ERR_OUT_OF_RANGE, operation);
             return;
         }
         break;
 
     default:
-        operation->completion_cb(operation, ZX_ERR_NOT_SUPPORTED);
+        completion_cb(cookie, ZX_ERR_NOT_SUPPORTED, operation);
         return;
     }
 
-    if (AddToList(operation)) {
+    if (AddToList(operation, completion_cb, cookie)) {
         sync_completion_signal(&wake_signal_);
     } else {
-        operation->completion_cb(operation, ZX_ERR_BAD_STATE);
+        completion_cb(cookie, ZX_ERR_BAD_STATE, operation);
     }
 }
 
-zx_status_t NandDevice::GetFactoryBadBlockList(uint32_t* bad_blocks, uint32_t bad_block_len,
-                                               uint32_t* num_bad_blocks) {
+zx_status_t NandDevice::NandGetFactoryBadBlockList(uint32_t* bad_blocks, size_t bad_block_len,
+                                                   size_t* num_bad_blocks) {
     *num_bad_blocks = 0;
     return ZX_OK;
 }
@@ -285,29 +287,32 @@ void NandDevice::Kill() {
     dead_ = true;
 }
 
-bool NandDevice::AddToList(nand_op_t* operation) {
+bool NandDevice::AddToList(nand_operation_t* operation, nand_queue_callback completion_cb,
+                           void* cookie) {
     fbl::AutoLock lock(&lock_);
     bool is_dead = dead_;
     if (!dead_) {
         RamNandOp* nand_op = reinterpret_cast<RamNandOp*>(operation);
+        nand_op->completion_cb = completion_cb;
+        nand_op->cookie = cookie;
         list_add_tail(&txn_list_, &nand_op->node);
     }
     return !is_dead;
 }
 
-bool NandDevice::RemoveFromList(nand_op_t** operation) {
+bool NandDevice::RemoveFromList(nand_operation_t** operation) {
     fbl::AutoLock lock(&lock_);
     bool is_dead = dead_;
     if (!dead_) {
         RamNandOp* nand_op = list_remove_head_type(&txn_list_, RamNandOp, node);
-        *operation = reinterpret_cast<nand_op_t*>(nand_op);
+        *operation = reinterpret_cast<nand_operation_t*>(nand_op);
     }
     return !is_dead;
 }
 
 int NandDevice::WorkerThread() {
     for (;;) {
-        nand_op_t* operation;
+        nand_operation_t* operation;
         for (;;) {
             if (!RemoveFromList(&operation)) {
                 return 0;
@@ -339,7 +344,8 @@ int NandDevice::WorkerThread() {
             ZX_DEBUG_ASSERT(false);  // Unexpected.
         }
 
-        operation->completion_cb(operation, status);
+        auto *op = reinterpret_cast<RamNandOp*>(operation);
+        op->completion_cb(op->cookie, status, operation);
     }
 }
 
@@ -348,7 +354,7 @@ int NandDevice::WorkerThreadStub(void* arg) {
     return device->WorkerThread();
 }
 
-zx_status_t NandDevice::ReadWriteData(nand_op_t* operation) {
+zx_status_t NandDevice::ReadWriteData(nand_operation_t* operation) {
     if (operation->rw.data_vmo == ZX_HANDLE_INVALID) {
         return ZX_OK;
     }
@@ -376,7 +382,7 @@ zx_status_t NandDevice::ReadWriteData(nand_op_t* operation) {
     return zx_vmo_read(operation->rw.data_vmo, addr, vmo_addr, length);
 }
 
-zx_status_t NandDevice::ReadWriteOob(nand_op_t* operation) {
+zx_status_t NandDevice::ReadWriteOob(nand_operation_t* operation) {
     if (operation->rw.oob_vmo == ZX_HANDLE_INVALID) {
         return ZX_OK;
     }
@@ -395,7 +401,7 @@ zx_status_t NandDevice::ReadWriteOob(nand_op_t* operation) {
     return zx_vmo_read(operation->rw.oob_vmo, addr, vmo_addr, length);
 }
 
-zx_status_t NandDevice::Erase(nand_op_t* operation) {
+zx_status_t NandDevice::Erase(nand_operation_t* operation) {
     ZX_DEBUG_ASSERT(operation->command == NAND_OP_ERASE);
 
     uint32_t block_size = params_.page_size * params_.pages_per_block;

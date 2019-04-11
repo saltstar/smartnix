@@ -1,5 +1,9 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <float.h>
+#include <limits>
 #include <math.h>
 #include <string.h>
 
@@ -7,47 +11,48 @@
 
 #include <cobalt-client/cpp/histogram-internal.h>
 #include <cobalt-client/cpp/metric-options.h>
-#include <fbl/limits.h>
-#include <fuchsia/cobalt/c/fidl.h>
 
 namespace cobalt_client {
 namespace internal {
 namespace {
 
-double GetLinearBucketValue(uint32_t bucket_index, const HistogramOptions& options) {
+double GetLinearBucketValue(uint32_t bucket_index, uint32_t bucket_count,
+                            const HistogramOptions& options) {
     if (bucket_index == 0) {
         return -DBL_MAX;
     }
     return options.scalar * (bucket_index - 1) + options.offset;
 }
 
-double GetExponentialBucketValue(uint32_t bucket_index, const HistogramOptions& options) {
+double GetExponentialBucketValue(uint32_t bucket_index, uint32_t bucket_count,
+                                 const HistogramOptions& options) {
     if (bucket_index == 0) {
         return -DBL_MAX;
     }
     return options.scalar * pow(options.base, bucket_index - 1) + options.offset;
 }
 
-uint32_t GetLinearBucket(double value, const HistogramOptions& options, double max_value) {
+uint32_t GetLinearBucket(double value, uint32_t bucket_count, const HistogramOptions& options,
+                         double max_value) {
     if (value < options.offset) {
         return 0;
     } else if (value >= max_value) {
-        return options.bucket_count + 1;
+        return bucket_count - 1;
     }
     double unshifted_bucket = (value - options.offset) / options.scalar;
-    ZX_DEBUG_ASSERT(unshifted_bucket >= fbl::numeric_limits<uint32_t>::min());
-    ZX_DEBUG_ASSERT(unshifted_bucket <= fbl::numeric_limits<uint32_t>::max());
+    ZX_DEBUG_ASSERT(unshifted_bucket >= std::numeric_limits<uint32_t>::min());
+    ZX_DEBUG_ASSERT(unshifted_bucket <= std::numeric_limits<uint32_t>::max());
     return static_cast<uint32_t>(unshifted_bucket) + 1;
 }
 
-uint32_t GetExponentialBucket(double value, const HistogramOptions& options, double max_value) {
+uint32_t GetExponentialBucket(double value, uint32_t bucket_count, const HistogramOptions& options,
+                              double max_value) {
     if (value < options.scalar + options.offset) {
         return 0;
     } else if (value >= max_value) {
-        return options.bucket_count + 1;
+        return bucket_count - 1;
     }
 
-    // Use bigger size double to perform the calculations to avoid precision errors near boundaries.
     double diff = value - options.offset;
     uint32_t unshifted_bucket = 0;
     // Only use the formula if the difference is positive.
@@ -55,137 +60,145 @@ uint32_t GetExponentialBucket(double value, const HistogramOptions& options, dou
         unshifted_bucket =
             static_cast<uint32_t>(floor((log2(diff) - log2(options.scalar)) / log2(options.base)));
     }
-    ZX_DEBUG_ASSERT(unshifted_bucket <= options.bucket_count + 1);
+    ZX_DEBUG_ASSERT(unshifted_bucket <= bucket_count + 1);
 
-    double lower_bound = GetExponentialBucketValue(unshifted_bucket + 1, options);
+    double lower_bound = GetExponentialBucketValue(unshifted_bucket + 1, bucket_count, options);
     if (lower_bound > value) {
         --unshifted_bucket;
     }
     return unshifted_bucket + 1;
 }
 
-void LoadExponential(HistogramOptions* options) {
-    options->max_value =
-        options->scalar * pow(options->base, options->bucket_count) + options->offset;
-    options->map_fn = [](double val, const HistogramOptions& options) {
-        return internal::GetExponentialBucket(val, options, options.max_value);
+void LoadExponential(uint32_t bucket_count, HistogramOptions* options) {
+    options->max_value = options->scalar * pow(options->base, bucket_count) + options->offset;
+    options->map_fn = [](double val, uint32_t bucket_count, const HistogramOptions& options) {
+        return internal::GetExponentialBucket(val, bucket_count, options, options.max_value);
     };
     options->reverse_map_fn = internal::GetExponentialBucketValue;
 }
 
-void LoadLinear(HistogramOptions* options) {
-    options->max_value =
-        static_cast<double>(options->scalar * options->bucket_count + options->offset);
-    options->map_fn = [](double val, const HistogramOptions& options) {
-        return internal::GetLinearBucket(val, options, options.max_value);
+void LoadLinear(uint32_t bucket_count, HistogramOptions* options) {
+    options->max_value = static_cast<double>(options->scalar * bucket_count + options->offset);
+    options->map_fn = [](double val, uint32_t bucket_count, const HistogramOptions& options) {
+        return internal::GetLinearBucket(val, bucket_count, options, options.max_value);
     };
     options->reverse_map_fn = internal::GetLinearBucketValue;
 }
 
 } // namespace
 
-BaseHistogram::BaseHistogram(uint32_t num_buckets) {
-    buckets_.reserve(num_buckets);
-    for (uint32_t i = 0; i < num_buckets; ++i) {
-        buckets_.push_back(BaseCounter());
+void InitBucketBuffer(HistogramBucket* buckets, uint32_t bucket_count) {
+    for (uint32_t i = 0; i < bucket_count; ++i) {
+        buckets[i].count = 0;
+        buckets[i].index = i;
     }
 }
 
-BaseHistogram::BaseHistogram(BaseHistogram&& other) = default;
-
-RemoteHistogram::RemoteHistogram(uint32_t num_buckets, const RemoteMetricInfo& metric_info,
-                                 RemoteHistogram::EventBuffer buffer)
-    : BaseHistogram(num_buckets), buffer_(fbl::move(buffer)), metric_info_(metric_info) {
-    bucket_buffer_.reserve(num_buckets);
-    for (uint32_t i = 0; i < num_buckets; ++i) {
-        HistogramBucket bucket;
-        bucket.count = 0;
-        bucket.index = i;
-        bucket_buffer_.push_back(bucket);
-    }
-    auto* buckets = buffer_.mutable_event_data();
-    buckets->set_data(bucket_buffer_.get());
-    buckets->set_count(bucket_buffer_.size());
+void InitLazily(const MetricOptions& options, HistogramBucket* buckets, uint32_t num_buckets,
+                RemoteMetricInfo* metric_info) {
+    ZX_DEBUG_ASSERT(!options.IsLazy());
+    *metric_info = RemoteMetricInfo::From(options);
+    InitBucketBuffer(buckets, num_buckets);
 }
 
-RemoteHistogram::RemoteHistogram(RemoteHistogram&& other)
-    : BaseHistogram(fbl::move(other)), bucket_buffer_(fbl::move(other.bucket_buffer_)),
-      buffer_(fbl::move(other.buffer_)), metric_info_(other.metric_info_) {}
-
-bool RemoteHistogram::Flush(const RemoteHistogram::FlushFn& flush_handler) {
-    if (!buffer_.TryBeginFlush()) {
-        return false;
-    }
-
+bool HistogramFlush(const RemoteMetricInfo& metric_info, Logger* logger,
+                    BaseCounter<uint64_t>* buckets, HistogramBucket* bucket_buffer,
+                    uint32_t num_buckets) {
     // Sets every bucket back to 0, not all buckets will be at the same instant, but
     // eventual consistency in the backend is good enough.
-    for (uint32_t bucket_index = 0; bucket_index < bucket_buffer_.size(); ++bucket_index) {
-        bucket_buffer_[bucket_index].count = buckets_[bucket_index].Exchange();
+    for (uint32_t bucket_index = 0; bucket_index < num_buckets; ++bucket_index) {
+        bucket_buffer[bucket_index].count = buckets[bucket_index].Exchange();
     }
-
-    flush_handler(metric_info_, buffer_, fbl::BindMember(&buffer_, &EventBuffer::CompleteFlush));
-    return true;
+    return logger->Log(metric_info, bucket_buffer, num_buckets);
 }
+
+void HistogramUndoFlush(BaseCounter<uint64_t>* buckets, HistogramBucket* bucket_buffer,
+                        uint32_t num_buckets) {
+    for (uint32_t bucket_index = 0; bucket_index < num_buckets; ++bucket_index) {
+        buckets[bucket_index].Increment(bucket_buffer[bucket_index].count);
+    }
+}
+
 } // namespace internal
 
 HistogramOptions::HistogramOptions(const HistogramOptions&) = default;
 
-HistogramOptions HistogramOptions::Exponential(uint32_t bucket_count, uint32_t base,
-                                               uint32_t scalar, int64_t offset) {
+HistogramOptions HistogramOptions::Exponential(uint32_t bucket_count, int64_t max) {
+    return Exponential(bucket_count, 0, max);
+}
+
+HistogramOptions HistogramOptions::Exponential(uint32_t bucket_count, int64_t min, int64_t max) {
+    ZX_DEBUG_ASSERT_MSG(min < max, "min must be smaller than max.");
+    // 2^bucket - 1 is the lower bound of the overflow bucket.
+    uint64_t overflow_limit = (1 << bucket_count) - 1;
+    uint64_t range = max - min;
+    uint32_t scalar = 1;
+
+    // If max is past the overflow limit we need to scale up, and the minimum is 1.
+    if (range - overflow_limit > 0) {
+        scalar = static_cast<uint32_t>(range / overflow_limit);
+        if (range % overflow_limit != 0) {
+            scalar++;
+        }
+    }
+    ZX_DEBUG_ASSERT_MSG(2 * range >= scalar * overflow_limit,
+                        "range is too small for the number of buckets.");
+
+    return CustomizedExponential(bucket_count, 2, scalar, min);
+}
+
+HistogramOptions HistogramOptions::CustomizedExponential(uint32_t bucket_count, uint32_t base,
+                                                         uint32_t scalar, int64_t min) {
     HistogramOptions options;
-    options.bucket_count = bucket_count;
-    options.base = base;
-    options.scalar = scalar;
-    options.offset = static_cast<double>(offset - scalar);
     options.type = Type::kExponential;
-    internal::LoadExponential(&options);
+    options.base = static_cast<double>(base);
+    options.scalar = static_cast<double>(scalar);
+    options.offset = static_cast<double>(min - scalar);
+    internal::LoadExponential(bucket_count, &options);
     return options;
 }
 
-HistogramOptions HistogramOptions::Linear(uint32_t bucket_count, uint32_t scalar, int64_t offset) {
+HistogramOptions HistogramOptions::Linear(uint32_t bucket_count, int64_t max) {
+    return Linear(bucket_count, 0, max);
+}
+
+HistogramOptions HistogramOptions::Linear(uint32_t bucket_count, int64_t min, int64_t max) {
+    ZX_DEBUG_ASSERT_MSG(min < max, "min must be smaller than max.");
+    uint64_t range = max - min;
+    ZX_DEBUG_ASSERT_MSG(range >= bucket_count, "range is too small for the number of buckets.");
+    uint64_t scalar = range / bucket_count;
+    if (range % bucket_count != 0) {
+        scalar++;
+    }
+    ZX_DEBUG_ASSERT_MSG(scalar <= std::numeric_limits<uint32_t>::max(), "scalar overflow\n");
+    return CustomizedLinear(bucket_count, static_cast<uint32_t>(scalar), min);
+}
+
+HistogramOptions HistogramOptions::CustomizedLinear(uint32_t bucket_count, uint32_t step_size,
+                                                    int64_t min) {
     HistogramOptions options;
-    options.bucket_count = bucket_count;
-    options.scalar = scalar;
-    options.offset = static_cast<double>(offset);
+    options.scalar = static_cast<double>(step_size);
+    options.offset = static_cast<double>(min);
     options.type = Type::kLinear;
-    internal::LoadLinear(&options);
+    internal::LoadLinear(bucket_count, &options);
     return options;
 }
 
-Histogram::Histogram(HistogramOptions* options, internal::RemoteHistogram* remote_histogram)
-    : options_(options), remote_histogram_(remote_histogram) {}
+bool HistogramOptions::IsValid() const {
+    switch (type) {
+    case Type::kExponential:
+        if (base == 0) {
+            return false;
+        }
+        __FALLTHROUGH;
+    case Type::kLinear:
+        if (scalar == 0) {
+            return false;
+        }
+        break;
+    }
 
-Histogram::Histogram(const Histogram&) = default;
-Histogram::Histogram(Histogram&&) = default;
-Histogram& Histogram::operator=(const Histogram&) = default;
-Histogram& Histogram::operator=(Histogram&&) = default;
-Histogram::~Histogram() = default;
-
-template <typename ValueType>
-void Histogram::Add(ValueType value, Histogram::Count times) {
-    double dbl_value = static_cast<double>(value);
-    uint32_t bucket = options_->map_fn(dbl_value, *options_);
-    remote_histogram_->IncrementCount(bucket, times);
+    return true;
 }
-
-template <typename ValueType>
-Histogram::Count Histogram::GetRemoteCount(ValueType value) const {
-    double dbl_value = static_cast<double>(value);
-    uint32_t bucket = options_->map_fn(dbl_value, *options_);
-    return remote_histogram_->GetCount(bucket);
-}
-
-// Supported template instantiations.
-template void Histogram::Add<double>(double, Histogram::Count);
-template void Histogram::Add<int32_t>(int32_t, Histogram::Count);
-template void Histogram::Add<uint32_t>(uint32_t, Histogram::Count);
-template void Histogram::Add<int64_t>(int64_t, Histogram::Count);
-template void Histogram::Add<uint64_t>(uint64_t, Histogram::Count);
-
-template Histogram::Count Histogram::GetRemoteCount<double>(double) const;
-template Histogram::Count Histogram::GetRemoteCount<int32_t>(int32_t) const;
-template Histogram::Count Histogram::GetRemoteCount<uint32_t>(uint32_t) const;
-template Histogram::Count Histogram::GetRemoteCount<int64_t>(int64_t) const;
-template Histogram::Count Histogram::GetRemoteCount<uint64_t>(uint64_t) const;
 
 } // namespace cobalt_client

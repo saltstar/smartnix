@@ -474,7 +474,7 @@ zx_status_t sys_object_get_info(zx_handle_t handle, uint32_t topic,
             stats.timer_ints = cpu->stats.timer_ints;
             stats.timers = cpu->stats.timers;
             stats.page_faults = cpu->stats.page_faults;
-            stats.exceptions = 0; // deprecated, use "k counters" for now.
+            stats.exceptions = 0; // deprecated, use "kcounter" command for now.
             stats.syscalls = cpu->stats.syscalls;
             stats.reschedule_ipis = cpu->stats.reschedule_ipis;
             stats.generic_ipis = cpu->stats.generic_ipis;
@@ -574,7 +574,7 @@ zx_status_t sys_object_get_info(zx_handle_t handle, uint32_t topic,
             return status;
 
         zx_info_handle_count_t info = {
-            .handle_count = Handle::Count(fbl::move(dispatcher))};
+            .handle_count = Handle::Count(ktl::move(dispatcher))};
 
         return single_record_result(
             _buffer, buffer_size, _actual, _avail, &info, sizeof(info));
@@ -670,42 +670,6 @@ zx_status_t sys_object_get_property(zx_handle_t handle_value, uint32_t property,
         uintptr_t value = process->aspace()->vdso_base_address();
         return _value.reinterpret<uintptr_t>().copy_to_user(value);
     }
-    case ZX_PROP_SOCKET_RX_BUF_MAX: {
-        if (size < sizeof(size_t))
-            return ZX_ERR_BUFFER_TOO_SMALL;
-        auto socket = DownCastDispatcher<SocketDispatcher>(&dispatcher);
-        if (!socket)
-            return ZX_ERR_WRONG_TYPE;
-        size_t value = socket->ReceiveBufferMax();
-        return _value.reinterpret<size_t>().copy_to_user(value);
-    }
-    case ZX_PROP_SOCKET_RX_BUF_SIZE: {
-        if (size < sizeof(size_t))
-            return ZX_ERR_BUFFER_TOO_SMALL;
-        auto socket = DownCastDispatcher<SocketDispatcher>(&dispatcher);
-        if (!socket)
-            return ZX_ERR_WRONG_TYPE;
-        size_t value = socket->ReceiveBufferSize();
-        return _value.reinterpret<size_t>().copy_to_user(value);
-    }
-    case ZX_PROP_SOCKET_TX_BUF_MAX: {
-        if (size < sizeof(size_t))
-            return ZX_ERR_BUFFER_TOO_SMALL;
-        auto socket = DownCastDispatcher<SocketDispatcher>(&dispatcher);
-        if (!socket)
-            return ZX_ERR_WRONG_TYPE;
-        size_t value = socket->TransmitBufferMax();
-        return _value.reinterpret<size_t>().copy_to_user(value);
-    }
-    case ZX_PROP_SOCKET_TX_BUF_SIZE: {
-        if (size < sizeof(size_t))
-            return ZX_ERR_BUFFER_TOO_SMALL;
-        auto socket = DownCastDispatcher<SocketDispatcher>(&dispatcher);
-        if (!socket)
-            return ZX_ERR_WRONG_TYPE;
-        size_t value = socket->TransmitBufferSize();
-        return _value.reinterpret<size_t>().copy_to_user(value);
-    }
     case ZX_PROP_SOCKET_RX_THRESHOLD: {
         if (size < sizeof(size_t))
             return ZX_ERR_BUFFER_TOO_SMALL;
@@ -723,17 +687,6 @@ zx_status_t sys_object_get_property(zx_handle_t handle_value, uint32_t property,
             return ZX_ERR_WRONG_TYPE;
         size_t value = socket->GetWriteThreshold();
         return _value.reinterpret<size_t>().copy_to_user(value);
-    }
-    case ZX_PROP_CHANNEL_TX_MSG_MAX: {
-        if (size < sizeof(size_t)) {
-            return ZX_ERR_BUFFER_TOO_SMALL;
-        }
-        auto channel = DownCastDispatcher<ChannelDispatcher>(&dispatcher);
-        if (channel == nullptr) {
-            return ZX_ERR_WRONG_TYPE;
-        }
-        size_t depth = channel->TxMessageMax();
-        return _value.reinterpret<size_t>().copy_to_user(depth);
     }
     default:
         return ZX_ERR_INVALID_ARGS;
@@ -922,17 +875,17 @@ zx_status_t sys_object_get_child(zx_handle_t handle, uint64_t koid,
         auto thread = process->LookupThreadById(koid);
         if (!thread)
             return ZX_ERR_NOT_FOUND;
-        return out->make(fbl::move(thread), rights);
+        return out->make(ktl::move(thread), rights);
     }
 
     auto job = DownCastDispatcher<JobDispatcher>(&dispatcher);
     if (job) {
         auto child = job->LookupJobById(koid);
         if (child)
-            return out->make(fbl::move(child), rights);
+            return out->make(ktl::move(child), rights);
         auto proc = job->LookupProcessById(koid);
         if (proc)
-            return out->make(fbl::move(proc), rights);
+            return out->make(ktl::move(proc), rights);
         return ZX_ERR_NOT_FOUND;
     }
 

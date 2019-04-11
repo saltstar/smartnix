@@ -1,5 +1,9 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-#pragma once
+#ifndef HID_PARSER_PARSER_H_
+#define HID_PARSER_PARSER_H_
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -12,71 +16,75 @@ namespace hid {
 // structure. When not needed it can be freed via FreeDeviceDescriptor().
 //
 // The DeviceDescriptor data is organized at the first level by the
-// array |report[rep_count]| in which each entry points to the first
-// field of each report and how many fields are expected on each report.
+// three arrays which correspond to the feature fields for the input,
+// output, and feature reports. Input, ouput, and feature reports each
+// have their own length and fields: they are logically connected only
+// because they share a report_id. The arrays of report features are of
+// length {type}_count. Eg: the input_fields array has input_size ReportField
+// structures.
 //
-// report[0].first_field --->  ReportField
+// report[0].input_fields --->  ReportField
 //                              +report_id
-//                              +field_type
+//                              +field_type == kInput
+//                              +attr
 //                              +col -------> Collection
 //                                            +type
 //                                            +parent ---> Collection
-//                             1
+//
 // The structure describes all the information returned by the device;
 // no information present in the original stream is lost.
 //
-// When using it to parse reports sent by the device, two scenarios
-// are important:
-//   1 -  |rep_count| is 1 and report[0]->report_id is 0:
-//      in this case the reports don't have a report id tag and the
-//      first byte in the stream contains the first field.
-//   2 - report[0]->report_id is not 0:
-//      in this case each report first byte is the report_id tag
-//      and must be matched to properly decode the report.
-//
-// Once the right starting ReportField has been matched then extracting
-// each field is done by inspecting bit_sz and flags and using |next|
-// to move to the following field. Reaching |next| == null means the
-// end of the report.
+// The attr field of the ReportField contains all information to parse
+// a report sent by the device. The ExtractUint functions will use the
+// offset in the attribute to extract the necessary data.
 //
 // An example will enlighten. Assume |report| array as follows,
 // with most fields omitted for brevity:
 //
 //    report[0]
-//    .first_field--> [0] report_id:      1
-//                        usage           button,1
-//                        flags           data,var
-//                        bit_sz          1
+//    .input_fields---> [0] report_id:      1
+//                          usage           button,1
+//                          flags           data,var
+//                          bit_sz          1
+//                          // For descriptors that have more than 1 report,
+//                          // the first 8 bits are always the report id
+//                          offset          8
 //
-//                    [1] report_id:      1
-//                        usage           button,2
-//                        flags           data,var
-//                        bit_sz          1
+//                      [1] report_id:      1
+//                          usage           button,2
+//                          flags           data,var
+//                          bit_sz          1
+//                          offset          9
 //
-//                    [2] report_id:      1
-//                        usage           button,none
-//                        flags           const
-//                        bit_sz          6
+//                      [2] report_id:      1
+//                          usage           button,none
+//                          flags           const
+//                          bit_sz          6
+//                          offset          10
 //    report[1]
-//    .first_field--> [3] report_id:      3
-//                        usage           desktop,X
-//                        flags           data,var
-//                        bit_sz          8
+//    .input_fields---> [3] report_id:      3
+//                          usage           desktop,X
+//                          flags           data,var
+//                          bit_sz          8
+//                          offset          8
 //
-//                    [4] report_id:      3
-//                        usage           desktop,Y
-//                        flags           data,var
-//                        bit_sz          8
+//                      [4] report_id:      3
+//                          usage           desktop,Y
+//                          flags           data,var
+//                          bit_sz          8
+//                          offset          16
 //    report[2]
-//    .first_field--> [5] report_id:      4
-//                        usage           desktop,wheel
-//                        flags           data,var
-//                        bit_sz          5
+//    .input_fields---> [5] report_id:      4
+//                          usage           desktop,wheel
+//                          flags           data,var
+//                          bit_sz          5
+//                          offset          8
 //
-//                    [6] report_id:      4
-//                        usage           desktop,none
-//                        flags           const
-//                        bit_sz          3
+//                      [6] report_id:      4
+//                          usage           desktop,none
+//                          flags           const
+//                          bit_sz          3
+//                          offset          13
 //
 // Now given the following report stream, with byte-order
 // left to right:
@@ -106,8 +114,12 @@ namespace hid {
 //       6a is Y-coord/desktop  (8-bits)
 //
 //
+// Input, Output, and Feature reports are all sent over unique channels, which
+// is how they are distingushed. This is important because they can share the
+// same report id.
 
 // Logical minimum and maximum per hid spec.
+// Please note that if min >= 0, max is actually an unsigned uint32_t.
 struct MinMax {
     int32_t min;
     int32_t max;
@@ -146,33 +158,33 @@ enum NodeType : uint32_t {
 
 enum FieldTypeFlags : uint32_t {
     // Indicates if field can be modfied. Constant often means is padding.
-    kData               = 1 << 0,
-    kConstant           = 1 << 1,
+    kData = 1 << 0,
+    kConstant = 1 << 1,
     // The field is either an array or scalar. If it is an array only
     // the kData|kConstant and kAbsolute|kRelative flags are valid.
-    kArray              = 1 << 2,
-    kScalar             = 1 << 3,
+    kArray = 1 << 2,
+    kScalar = 1 << 3,
     // Value is absolute wrt to a fixed origin or not.
-    kAbsolute           = 1 << 4,
-    kRelative           = 1 << 5,
+    kAbsolute = 1 << 4,
+    kRelative = 1 << 5,
     // Whether the data rolls over wrt to the logical min/max.
-    kNoWrap             = 1 << 6,
-    kWrap               = 1 << 7,
+    kNoWrap = 1 << 6,
+    kWrap = 1 << 7,
     // Data has been pre-processed, for example dead-zone.
-    kLinear             = 1 << 8,
-    kNonLinear          = 1 << 9,
+    kLinear = 1 << 8,
+    kNonLinear = 1 << 9,
     // Value returns to a preset value when the user is not interacting with control.
-    kPreferredState     = 1 << 10,
-    kNoPreferred        = 1 << 11,
+    kPreferredState = 1 << 10,
+    kNoPreferred = 1 << 11,
     // If the control can enter a state when it does not report data.
-    kNoNullPosition     = 1 << 12,
-    kNullState          = 1 << 13,
+    kNoNullPosition = 1 << 12,
+    kNullState = 1 << 13,
     // Output-only: can the value be modified without host interaction.
-    kNonVolatile        = 1 << 14,
-    kVolatile           = 1 << 15,
+    kNonVolatile = 1 << 14,
+    kVolatile = 1 << 15,
     // Data is a fixed size stream.
-    kBitField           = 1 << 16,
-    kBufferedBytes      = 1 << 17,
+    kBitField = 1 << 16,
+    kBufferedBytes = 1 << 17,
 };
 
 // TODO(cpu): consider repurposing the kData| kArray | kNonLinear to indicate
@@ -182,7 +194,7 @@ enum FieldTypeFlags : uint32_t {
 struct Collection {
     CollectionType type;
     Usage usage;
-    Collection* parent;            // Enclosing collection or null.
+    Collection* parent; // Enclosing collection or null.
 };
 
 struct Attributes {
@@ -191,6 +203,7 @@ struct Attributes {
     MinMax logc_mm;
     MinMax phys_mm;
     uint8_t bit_sz;
+    uint32_t offset;
 };
 
 struct ReportField {
@@ -203,7 +216,27 @@ struct ReportField {
 
 struct ReportDescriptor {
     uint8_t report_id;
+
+    size_t input_byte_sz;
+    size_t input_count;
+    ReportField* input_fields;
+
+    size_t output_byte_sz;
+    size_t output_count;
+    ReportField* output_fields;
+
+    size_t feature_byte_sz;
+    size_t feature_count;
+    ReportField* feature_fields;
+
+    // TODO(dgilhooley) - Remove all of these fields below, they
+    // were created before input, output, feature fields and are now
+    // depreciated.
+
+    // This is the byte_sz of the input fields only
+    size_t byte_sz;
     size_t count;
+    // The array of all fields (input, output, and feature)
     ReportField* first_field;
 };
 
@@ -213,24 +246,24 @@ struct DeviceDescriptor {
 };
 
 enum ParseResult : uint32_t {
-    kParseOk                 = 0,
-    kParseNoMemory           = 1,
-    kParseMoreNeeded         = 2,
-    kParseUnsuported         = 3,
-    kParseInvalidTag         = 4,
-    kParseInvalidItemType    = 5,
-    kParseInvalidItemValue   = 6,
-    kParseUsageLimit         = 7,
-    kParseInvalidRange       = 8,
-    kParseOverflow           = 9,
-    kParseLeftovers          = 10,
-    kParseUnexpectedCol      = 11,
-    kParseUnexectedItem      = 12,
-    kParseInvalidUsage       = 13,
-    kParseMissingUsage       = 14,
-    kParserMissingPage       = 15,
-    kParserUnexpectedPop     = 16,
-    kParserInvalidID         = 17
+    kParseOk = 0,
+    kParseNoMemory = 1,
+    kParseMoreNeeded = 2,
+    kParseUnsuported = 3,
+    kParseInvalidTag = 4,
+    kParseInvalidItemType = 5,
+    kParseInvalidItemValue = 6,
+    kParseUsageLimit = 7,
+    kParseInvalidRange = 8,
+    kParseOverflow = 9,
+    kParseLeftovers = 10,
+    kParseUnexpectedCol = 11,
+    kParseUnexectedItem = 12,
+    kParseInvalidUsage = 13,
+    kParseMissingUsage = 14,
+    kParserMissingPage = 15,
+    kParserUnexpectedPop = 16,
+    kParserInvalidID = 17
 };
 
 ParseResult ParseReportDescriptor(
@@ -244,5 +277,24 @@ ReportField* GetFirstInputField(const DeviceDescriptor* dev_desc,
 
 Collection* GetAppCollection(const ReportField* field);
 
+// Helper for creating Usage constants.
+template <typename P, typename U>
+constexpr Usage USAGE(P page, U usage) {
+    return Usage{static_cast<uint16_t>(page), static_cast<uint32_t>(usage)};
+}
 
-}  // namespace hid
+} // namespace hid
+
+inline bool operator==(hid::Usage a, hid::Usage b) {
+    return (a.page == b.page) && (a.usage == b.usage);
+}
+
+inline bool operator!=(hid::Usage a, hid::Usage b) {
+    return (a.page != b.page) || (a.usage != b.usage);
+}
+
+inline bool operator==(hid::MinMax a, hid::MinMax b) {
+    return (a.min == b.min) && (a.max == b.max);
+}
+
+#endif // HID_PARSER_PARSER_H_

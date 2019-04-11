@@ -1,9 +1,14 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <zircon/device/intel-hda.h>
 #include <lib/fdio/io.h>
 
 #include <fbl/algorithm.h>
 #include <intel-hda/utils/intel-hda-registers.h>
+
+#include <utility>
 
 #include "intel_hda_controller.h"
 
@@ -106,7 +111,7 @@ zx_status_t IntelHDAController::Enumerate() {
             return ZX_ERR_NO_MEMORY;
         }
 
-        if (!controllers_.insert_or_find(fbl::move(dev)))
+        if (!controllers_.insert_or_find(std::move(dev)))
             return ZX_ERR_INTERNAL;
 
         return ZX_OK;

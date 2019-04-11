@@ -2,12 +2,13 @@
 #include "device_context.h"
 
 #include <fbl/auto_call.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 #include <kernel/range_check.h>
+#include <ktl/move.h>
+#include <new>
 #include <trace.h>
 #include <vm/vm.h>
 #include <vm/vm_object_paged.h>
-#include <zxcpp/new.h>
 
 #include "hw.h"
 #include "iommu_impl.h"
@@ -72,7 +73,7 @@ zx_status_t DeviceContext::InitCommon() {
     if (region_pool == nullptr) {
         return ZX_ERR_NO_MEMORY;
     }
-    status = region_alloc_.SetRegionPool(fbl::move(region_pool));
+    status = region_alloc_.SetRegionPool(ktl::move(region_pool));
     if (status != ZX_OK) {
         return status;
     }
@@ -87,7 +88,7 @@ zx_status_t DeviceContext::InitCommon() {
 
 zx_status_t DeviceContext::Create(ds::Bdf bdf, uint32_t domain_id, IommuImpl* parent,
                                   volatile ds::ContextEntry* context_entry,
-                                  fbl::unique_ptr<DeviceContext>* device) {
+                                  ktl::unique_ptr<DeviceContext>* device) {
     ds::ContextEntry entry;
     entry.ReadFrom(context_entry);
 
@@ -95,7 +96,7 @@ zx_status_t DeviceContext::Create(ds::Bdf bdf, uint32_t domain_id, IommuImpl* pa
     ASSERT(!entry.present());
 
     fbl::AllocChecker ac;
-    fbl::unique_ptr<DeviceContext> dev(new (&ac) DeviceContext(bdf, domain_id, parent,
+    ktl::unique_ptr<DeviceContext> dev(new (&ac) DeviceContext(bdf, domain_id, parent,
                                                                context_entry));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
@@ -116,13 +117,13 @@ zx_status_t DeviceContext::Create(ds::Bdf bdf, uint32_t domain_id, IommuImpl* pa
 
     entry.WriteTo(context_entry);
 
-    *device = fbl::move(dev);
+    *device = ktl::move(dev);
     return ZX_OK;
 }
 
 zx_status_t DeviceContext::Create(ds::Bdf bdf, uint32_t domain_id, IommuImpl* parent,
                                   volatile ds::ExtendedContextEntry* context_entry,
-                                  fbl::unique_ptr<DeviceContext>* device) {
+                                  ktl::unique_ptr<DeviceContext>* device) {
 
     ds::ExtendedContextEntry entry;
     entry.ReadFrom(context_entry);
@@ -131,7 +132,7 @@ zx_status_t DeviceContext::Create(ds::Bdf bdf, uint32_t domain_id, IommuImpl* pa
     ASSERT(!entry.present());
 
     fbl::AllocChecker ac;
-    fbl::unique_ptr<DeviceContext> dev(new (&ac) DeviceContext(bdf, domain_id,
+    ktl::unique_ptr<DeviceContext> dev(new (&ac) DeviceContext(bdf, domain_id,
                                                                parent, context_entry));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
@@ -165,7 +166,7 @@ zx_status_t DeviceContext::Create(ds::Bdf bdf, uint32_t domain_id, IommuImpl* pa
 
     entry.WriteTo(context_entry);
 
-    *device = fbl::move(dev);
+    *device = ktl::move(dev);
     return ZX_OK;
 }
 
@@ -218,7 +219,7 @@ zx_status_t DeviceContext::SecondLevelMapDiscontiguous(const fbl::RefPtr<VmObjec
         return ZX_OK;
     };
 
-    fbl::unique_ptr<const RegionAllocator::Region> region;
+    RegionAllocator::Region::UPtr region;
     zx_status_t status = region_alloc_.GetRegion(size, min_contig, region);
     if (status != ZX_OK) {
         return status;
@@ -246,7 +247,7 @@ zx_status_t DeviceContext::SecondLevelMapDiscontiguous(const fbl::RefPtr<VmObjec
         const size_t kNumEntriesPerLookup = 32;
         size_t chunk_size = fbl::min(remaining, kNumEntriesPerLookup * PAGE_SIZE);
         paddr_t paddrs[kNumEntriesPerLookup] = {};
-        status = vmo->Lookup(offset, chunk_size, 0, lookup_fn, &paddrs);
+        status = vmo->Lookup(offset, chunk_size, lookup_fn, &paddrs);
         if (status != ZX_OK) {
             return status;
         }
@@ -269,7 +270,7 @@ zx_status_t DeviceContext::SecondLevelMapDiscontiguous(const fbl::RefPtr<VmObjec
     *virt_paddr = region->base;
     *mapped_len = size;
 
-    allocated_regions_.push_back(fbl::move(region), &ac);
+    allocated_regions_.push_back(ktl::move(region), &ac);
     // Check shouldn't be able to fail, since we reserved the capacity already
     ASSERT(ac.check());
 
@@ -294,13 +295,13 @@ zx_status_t DeviceContext::SecondLevelMapContiguous(const fbl::RefPtr<VmObject>&
     // contiguous, we can just extrapolate the rest of the addresses from the
     // first.
     paddr_t paddr = UINT64_MAX;
-    zx_status_t status = vmo->Lookup(offset, PAGE_SIZE, 0, lookup_fn, &paddr);
+    zx_status_t status = vmo->Lookup(offset, PAGE_SIZE, lookup_fn, &paddr);
     if (status != ZX_OK) {
         return status;
     }
     DEBUG_ASSERT(paddr != UINT64_MAX);
 
-    fbl::unique_ptr<const RegionAllocator::Region> region;
+    RegionAllocator::Region::UPtr region;
     uint64_t min_contig = minimum_contiguity();
     status = region_alloc_.GetRegion(size, min_contig, region);
     if (status != ZX_OK) {
@@ -326,7 +327,7 @@ zx_status_t DeviceContext::SecondLevelMapContiguous(const fbl::RefPtr<VmObject>&
     *virt_paddr = region->base;
     *mapped_len = map_len * PAGE_SIZE;
 
-    allocated_regions_.push_back(fbl::move(region), &ac);
+    allocated_regions_.push_back(ktl::move(region), &ac);
     // Check shouldn't be able to fail, since we reserved the capacity already
     ASSERT(ac.check());
 
@@ -341,7 +342,7 @@ zx_status_t DeviceContext::SecondLevelMapIdentity(paddr_t base, size_t size, uin
 
     uint flags = perms_to_arch_mmu_flags(perms);
 
-    fbl::unique_ptr<const RegionAllocator::Region> region;
+    RegionAllocator::Region::UPtr region;
     zx_status_t status = region_alloc_.GetRegion({ base, size }, region);
     if (status != ZX_OK) {
         return status;
@@ -363,7 +364,7 @@ zx_status_t DeviceContext::SecondLevelMapIdentity(paddr_t base, size_t size, uin
     }
     ASSERT(mapped == map_len);
 
-    allocated_regions_.push_back(fbl::move(region), &ac);
+    allocated_regions_.push_back(ktl::move(region), &ac);
     ASSERT(ac.check());
     return ZX_OK;
 }

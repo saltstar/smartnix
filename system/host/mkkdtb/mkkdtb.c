@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 /* mkkdtb - packages kernel file and dtb in kdtb format, required by some
             bootloaders instead of just appending dtb to end of kernel.

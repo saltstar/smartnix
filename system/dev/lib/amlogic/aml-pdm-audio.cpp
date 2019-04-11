@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 #include <ddk/debug.h>
-#include <fbl/limits.h>
+#include <limits>
 #include <soc/aml-common/aml-pdm-audio.h>
+#include <utility>
 
 // Filter configurations
 //mode 1 lpf1
@@ -64,15 +65,15 @@ fbl::unique_ptr<AmlPdmDevice> AmlPdmDevice::Create(ddk::MmioBuffer pdm_mmio,
                                                    uint32_t sysclk_div,
                                                    uint32_t dclk_div,
                                                    aml_toddr_t toddr_dev) {
-    //A and B FRDDR have 128 lines in fifo, C has 256
-    uint32_t fifo_depth = 128;
+    // TODDR A has 256 64-bit lines in the FIFO, B and C have 128.
+    uint32_t fifo_depth = 128 * 8; // in bytes.
     if (toddr_dev == TODDR_A) {
-        fifo_depth = 256;
+        fifo_depth = 256 * 8;
     }
 
     fbl::AllocChecker ac;
     auto pdm = fbl::unique_ptr<AmlPdmDevice>(
-        new (&ac) AmlPdmDevice(fbl::move(pdm_mmio), fbl::move(audio_mmio),
+        new (&ac) AmlPdmDevice(std::move(pdm_mmio), std::move(audio_mmio),
                                pdm_clk_src, sysclk_div, dclk_div,
                                toddr_dev, fifo_depth));
     if (!ac.check()) {
@@ -93,11 +94,11 @@ void AmlPdmDevice::InitRegs() {
                         (16 << 3) |     //lsb position of data out of pdm
                         (0x04 << 0),    //select pdm as data source
                         GetToddrOffset(TODDR_CTRL0_OFFS));
-    audio_mmio_.Write32(((fifo_depth_ / 2) << 16) | //trigger ddr when fifo half full
-                        (0x02 << 8),                //STATUS2 source is ddr position
+    audio_mmio_.Write32(((fifo_depth_ / 8 / 2) << 16) | //trigger ddr when fifo half full
+                        (0x02 << 8),                    //STATUS2 source is ddr position
                         GetToddrOffset(TODDR_CTRL1_OFFS));
 
-    //*To keep things simple, we are using the same clock sourse for both the
+    //*To keep things simple, we are using the same clock source for both the
     // pdm sysclk and dclk.  Sysclk needs to be ~100-200MHz per AmLogic recommendations.
     // dclk is osr*fs
     //*Sysclk must be configured, enabled, and PDM audio clock gated prior to
@@ -119,11 +120,7 @@ void AmlPdmDevice::InitRegs() {
     //Enable cts_pdm_clk gate (clock gate within pdm module)
     pdm_mmio_.SetBits32(0x01, PDM_CLKG_CTRL);
 
-    //Enable Ch 0/1
-    pdm_mmio_.Write32((0x01 << 29) |    // 24bit output mode
-                          (0x03 << 8) | // Take Ch 0/1 out of reset
-                          (0x03 << 0)   // Enable Ch 0/1
-                      ,
+    pdm_mmio_.Write32((0x01 << 29), // 24bit output mode
                       PDM_CTRL);
 
     //This sets the number of sysclk cycles between edge of dclk and when
@@ -207,11 +204,11 @@ void AmlPdmDevice::AudioClkDis(uint32_t audio_blk_mask) {
 zx_status_t AmlPdmDevice::SetBuffer(zx_paddr_t buf, size_t len) {
     //Ensure ring buffer resides in lower memory (dma pointers are 32-bit)
     //    and len is at least 8 (size of each dma operation)
-    if (((buf + len - 1) > fbl::numeric_limits<uint32_t>::max()) || (len < 8)) {
+    if (((buf + len - 1) > std::numeric_limits<uint32_t>::max()) || (len < 8)) {
         return ZX_ERR_INVALID_ARGS;
     }
 
-    //Write32 the start and end pointers.  Each fetch is 64-bits, so end poitner
+    //Write32 the start and end pointers.  Each fetch is 64-bits, so end pointer
     //    is pointer to the last 64-bit fetch (inclusive)
     audio_mmio_.Write32(static_cast<uint32_t>(buf), GetToddrOffset(TODDR_START_ADDR_OFFS));
     audio_mmio_.Write32(static_cast<uint32_t>(buf), GetToddrOffset(TODDR_INIT_ADDR_OFFS));
@@ -224,9 +221,15 @@ zx_status_t AmlPdmDevice::SetBuffer(zx_paddr_t buf, size_t len) {
 void AmlPdmDevice::PdmInDisable() {
     pdm_mmio_.ClearBits32((1 << 31) | (1 << 16), PDM_CTRL);
 }
+
 // Enables the pdm to clock data
 void AmlPdmDevice::PdmInEnable() {
     pdm_mmio_.SetBits32((1 << 31) | (1 << 16), PDM_CTRL);
+}
+
+// Takes channels out of reset and enables them.
+void AmlPdmDevice::ConfigPdmIn(uint8_t mask) {
+    pdm_mmio_.ModifyBits<uint32_t>((mask << 8) | (mask << 0), (0xff << 8) | (0xff << 0), PDM_CTRL);
 }
 
 void AmlPdmDevice::TODDREnable() {

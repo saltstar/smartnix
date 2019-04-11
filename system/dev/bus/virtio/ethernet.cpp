@@ -25,6 +25,8 @@
 #include <zircon/status.h>
 #include <zircon/types.h>
 
+#include <utility>
+
 #include "ring.h"
 #include "trace.h"
 
@@ -42,11 +44,12 @@ const size_t kBacklog = 32;
 // Specifies the maximum transfer unit we support and the maximum layer 1
 // Ethernet packet header length.
 const size_t kVirtioMtu = 1500;
-const size_t kL1EthHdrLen = 26;
+const size_t kEthHeaderSizeBytes = 14;
+const size_t kEthFrameSize = kVirtioMtu + kEthHeaderSizeBytes;
 
 // Other constants determined by the values above and the memory architecture.
 // The goal here is to allocate single-page I/O buffers.
-const size_t kFrameSize = sizeof(virtio_net_hdr_t) + kL1EthHdrLen + kVirtioMtu;
+const size_t kFrameSize = sizeof(virtio_net_hdr_t) + kEthFrameSize;
 const size_t kFramesInBuf = PAGE_SIZE / kFrameSize;
 const size_t kNumIoBufs = fbl::round_up(kBacklog * 2, kFramesInBuf) / kFramesInBuf;
 
@@ -96,9 +99,9 @@ void virtio_net_stop(void* ctx) {
     eth->Stop();
 }
 
-zx_status_t virtio_net_start(void* ctx, ethmac_ifc_t* ifc, void* cookie) {
+zx_status_t virtio_net_start(void* ctx, const ethmac_ifc_t* ifc) {
     virtio::EthernetDevice* eth = static_cast<virtio::EthernetDevice*>(ctx);
-    return eth->Start(ifc, cookie);
+    return eth->Start(ifc);
 }
 
 zx_status_t virtio_net_queue_tx(void* ctx, uint32_t options, ethmac_netbuf_t* netbuf) {
@@ -106,7 +109,8 @@ zx_status_t virtio_net_queue_tx(void* ctx, uint32_t options, ethmac_netbuf_t* ne
     return eth->QueueTx(options, netbuf);
 }
 
-static zx_status_t virtio_set_param(void* ctx, uint32_t param, int32_t value, void* data) {
+static zx_status_t virtio_set_param(void* ctx, uint32_t param, int32_t value, const void* data,
+                                    size_t data_size) {
     return ZX_ERR_NOT_SUPPORTED;
 }
 
@@ -137,7 +141,7 @@ zx_status_t InitBuffers(const zx::bti& bti, fbl::unique_ptr<io_buffer_t[]>* out)
             return rc;
         }
     }
-    *out = fbl::move(bufs);
+    *out = std::move(bufs);
     return ZX_OK;
 }
 
@@ -182,8 +186,8 @@ uint8_t* GetFrameData(io_buffer_t* bufs, uint16_t ring_id, uint16_t desc_id, siz
 } // namespace
 
 EthernetDevice::EthernetDevice(zx_device_t* bus_device, zx::bti bti, fbl::unique_ptr<Backend> backend)
-    : Device(bus_device, fbl::move(bti), fbl::move(backend)), rx_(this), tx_(this), bufs_(nullptr),
-      unkicked_(0), ifc_(nullptr), cookie_(nullptr) {
+    : Device(bus_device, std::move(bti), std::move(backend)), rx_(this), tx_(this), bufs_(nullptr),
+      unkicked_(0), ifc_({nullptr, nullptr}) {
 }
 
 EthernetDevice::~EthernetDevice() {
@@ -274,7 +278,7 @@ zx_status_t EthernetDevice::Init() {
     args.name = "virtio-net";
     args.ctx = this;
     args.ops = &kDeviceOps;
-    args.proto_id = ZX_PROTOCOL_ETHERNET_IMPL;
+    args.proto_id = ZX_PROTOCOL_ETHMAC;
     args.proto_ops = &kProtoOps;
     if ((rc = device_add(bus_device_, &args, &device_)) != ZX_OK) {
         zxlogf(ERROR, "failed to add device: %s\n", zx_status_get_string(rc));
@@ -296,8 +300,8 @@ void EthernetDevice::Release() {
 }
 
 void EthernetDevice::ReleaseLocked() {
-    ifc_ = nullptr;
-    ReleaseBuffers(fbl::move(bufs_));
+    ifc_.ops = nullptr;
+    ReleaseBuffers(std::move(bufs_));
     Device::Release();
 }
 
@@ -306,7 +310,7 @@ void EthernetDevice::IrqRingUpdate() {
     // Lock to prevent changes to ifc_.
     {
         fbl::AutoLock lock(&state_lock_);
-        if (!ifc_) {
+        if (!ifc_.ops) {
             return;
         }
         // Ring::IrqRingUpdate will call this lambda on each rx buffer filled by
@@ -318,15 +322,24 @@ void EthernetDevice::IrqRingUpdate() {
             desc_t* desc = rx_.DescFromIndex(id);
 
             // Transitional driver does not merge rx buffers.
-            assert(used_elem->len < desc->len);
+            if ((desc->flags & VRING_DESC_F_NEXT) != 0) {
+                zxlogf(ERROR, "dropping rx packet; do not support descriptor chaining");
+                while((desc->flags & VRING_DESC_F_NEXT)) {
+                    uint16_t next_id = desc->next;
+                    rx_.FreeDesc(id);
+                    id = next_id;
+                    desc = rx_.DescFromIndex(id);
+                }
+                return;
+            }
+            assert(used_elem->len <= desc->len);
             uint8_t* data = GetFrameData(bufs_.get(), kRxId, id, virtio_hdr_len_);
             size_t len = used_elem->len - virtio_hdr_len_;
             LTRACEF("Receiving %zu bytes:\n", len);
             LTRACE_DO(hexdump8_ex(data, len, 0));
 
             // Pass the data up the stack to the generic Ethernet driver
-            ifc_->recv(cookie_, data, len, 0);
-            assert((desc->flags & VRING_DESC_F_NEXT) == 0);
+            ethmac_ifc_recv(&ifc_, data, len, 0);
             LTRACE_DO(virtio_dump_desc(desc));
             rx_.FreeDesc(id);
         });
@@ -352,13 +365,13 @@ void EthernetDevice::IrqRingUpdate() {
 void EthernetDevice::IrqConfigChange() {
     LTRACE_ENTRY;
     fbl::AutoLock lock(&state_lock_);
-    if (!ifc_) {
+    if (!ifc_.ops) {
         return;
     }
 
     // Re-read our configuration
     CopyDeviceConfig(&config_, sizeof(config_));
-    ifc_->status(cookie_, (config_.status & VIRTIO_NET_S_LINK_UP) ? ETHMAC_STATUS_ONLINE : 0);
+    ethmac_ifc_status(&ifc_, (config_.status & VIRTIO_NET_S_LINK_UP) ? ETHMAC_STATUS_ONLINE : 0);
 }
 
 zx_status_t EthernetDevice::Query(uint32_t options, ethmac_info_t* info) {
@@ -370,6 +383,7 @@ zx_status_t EthernetDevice::Query(uint32_t options, ethmac_info_t* info) {
     if (info) {
         // TODO(aarongreen): Add info->features = GetFeatures();
         info->mtu = kVirtioMtu;
+        info->netbuf_size = sizeof(ethmac_netbuf_t);
         memcpy(info->mac, config_.mac, sizeof(info->mac));
     }
     return ZX_OK;
@@ -378,31 +392,30 @@ zx_status_t EthernetDevice::Query(uint32_t options, ethmac_info_t* info) {
 void EthernetDevice::Stop() {
     LTRACE_ENTRY;
     fbl::AutoLock lock(&state_lock_);
-    ifc_ = nullptr;
+    ifc_.ops = nullptr;
 }
 
-zx_status_t EthernetDevice::Start(ethmac_ifc_t* ifc, void* cookie) {
+zx_status_t EthernetDevice::Start(const ethmac_ifc_t* ifc) {
     LTRACE_ENTRY;
     if (!ifc) {
         return ZX_ERR_INVALID_ARGS;
     }
     fbl::AutoLock lock(&state_lock_);
-    if (!bufs_ || ifc_) {
+    if (!bufs_ || ifc_.ops) {
         return ZX_ERR_BAD_STATE;
     }
-    ifc_ = ifc;
-    cookie_ = cookie;
-    ifc_->status(cookie_, (config_.status & VIRTIO_NET_S_LINK_UP) ? ETHMAC_STATUS_ONLINE : 0);
+    ifc_ = *ifc;
+    ethmac_ifc_status(&ifc_, (config_.status & VIRTIO_NET_S_LINK_UP) ? ETHMAC_STATUS_ONLINE : 0);
     return ZX_OK;
 }
 
 zx_status_t EthernetDevice::QueueTx(uint32_t options, ethmac_netbuf_t* netbuf) {
     LTRACE_ENTRY;
-    void* data = netbuf->data;
-    size_t length = netbuf->len;
+    const void* data = netbuf->data_buffer;
+    size_t length = netbuf->data_size;
     // First, validate the packet
-    if (!data || length > virtio_hdr_len_ + kVirtioMtu) {
-        LTRACEF("dropping packet; invalid packet\n");
+    if (!data || length > kEthFrameSize) {
+        zxlogf(ERROR, "dropping packet; invalid packet\n");
         return ZX_ERR_INVALID_ARGS;
     }
 
@@ -426,7 +439,7 @@ zx_status_t EthernetDevice::QueueTx(uint32_t options, ethmac_netbuf_t* netbuf) {
         desc = tx_.AllocDescChain(1, &id);
     }
     if (!desc) {
-        LTRACEF("dropping packet; out of descriptors\n");
+        zxlogf(ERROR, "dropping packet; out of descriptors\n");
         return ZX_ERR_NO_RESOURCES;
     }
 

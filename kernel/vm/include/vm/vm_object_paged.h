@@ -17,6 +17,7 @@
 #include <lib/user_copy/user_ptr.h>
 #include <list.h>
 #include <stdint.h>
+#include <vm/page_source.h>
 #include <vm/pmm.h>
 #include <vm/vm.h>
 #include <vm/vm_aspace.h>
@@ -36,6 +37,15 @@ public:
                               uint32_t options,
                               uint64_t size, fbl::RefPtr<VmObject>* vmo);
 
+    // Gets the raw VmObjectPaged pointer, or null if the VmObject is not paged.
+    static VmObjectPaged* AsVmObjectPaged(const fbl::RefPtr<VmObject>& vmo) {
+        if (vmo->is_paged()) {
+            return static_cast<VmObjectPaged*>(vmo.get());
+        } else {
+            return nullptr;
+        }
+    }
+
     // Create a VMO backed by a contiguous range of physical memory.  The
     // returned vmo has all of its pages committed, and does not allow
     // decommitting them.
@@ -43,6 +53,9 @@ public:
                                         uint8_t alignment_log2, fbl::RefPtr<VmObject>* vmo);
 
     static zx_status_t CreateFromROData(const void* data, size_t size, fbl::RefPtr<VmObject>* vmo);
+
+    static zx_status_t CreateExternal(fbl::RefPtr<PageSource> src,
+                                      uint64_t size, fbl::RefPtr<VmObject>* vmo);
 
     zx_status_t Resize(uint64_t size) override;
     zx_status_t ResizeLocked(uint64_t size) override TA_REQ(lock_);
@@ -57,22 +70,22 @@ public:
 
     size_t AllocatedPagesInRange(uint64_t offset, uint64_t len) const override;
 
-    zx_status_t CommitRange(uint64_t offset, uint64_t len, uint64_t* committed) override;
-    zx_status_t DecommitRange(uint64_t offset, uint64_t len, uint64_t* decommitted) override;
+    zx_status_t CommitRange(uint64_t offset, uint64_t len) override;
+    zx_status_t DecommitRange(uint64_t offset, uint64_t len) override;
 
     zx_status_t Pin(uint64_t offset, uint64_t len) override;
     void Unpin(uint64_t offset, uint64_t len) override;
 
     zx_status_t Read(void* ptr, uint64_t offset, size_t len) override;
     zx_status_t Write(const void* ptr, uint64_t offset, size_t len) override;
-    zx_status_t Lookup(uint64_t offset, uint64_t len, uint pf_flags,
+    zx_status_t Lookup(uint64_t offset, uint64_t len,
                        vmo_lookup_fn_t lookup_fn, void* context) override;
 
     zx_status_t ReadUser(user_out_ptr<void> ptr, uint64_t offset, size_t len) override;
     zx_status_t WriteUser(user_in_ptr<const void> ptr, uint64_t offset, size_t len) override;
 
-    zx_status_t LookupUser(uint64_t offset, uint64_t len, user_inout_ptr<paddr_t> buffer,
-                           size_t buffer_size) override;
+    zx_status_t TakePages(uint64_t offset, uint64_t len, VmPageSpliceList* pages) override;
+    zx_status_t SupplyPages(uint64_t offset, uint64_t len, VmPageSpliceList* pages) override;
 
     void Dump(uint depth, bool verbose) override;
 
@@ -82,7 +95,7 @@ public:
     zx_status_t SyncCache(const uint64_t offset, const uint64_t len) override;
 
     zx_status_t GetPageLocked(uint64_t offset, uint pf_flags, list_node* free_list,
-                              vm_page_t**, paddr_t*) override
+                              PageRequest* page_request, vm_page_t**, paddr_t*) override
         // Calls a Locked method of the parent, which confuses analysis.
         TA_NO_THREAD_SAFETY_ANALYSIS;
 
@@ -98,13 +111,20 @@ public:
     uint32_t GetMappingCachePolicy() const override;
     zx_status_t SetMappingCachePolicy(const uint32_t cache_policy) override;
 
-    // maximum size of a VMO is one page less than the full 64bit range
-    static const uint64_t MAX_SIZE = ROUNDDOWN(UINT64_MAX, PAGE_SIZE);
+    void DetachSource() override {
+        DEBUG_ASSERT(page_source_);
+        page_source_->Detach();
+    }
+
+    // The size is clamped to allow VmPageList to use a one-past-the-end for
+    // VmPageListNode offsets.
+    static const uint64_t MAX_SIZE = ROUNDDOWN(UINT64_MAX, VmPageListNode::kPageFanOut * PAGE_SIZE);
 
 private:
     // private constructor (use Create())
     VmObjectPaged(
-        uint32_t options, uint32_t pmm_alloc_flags, uint64_t size, fbl::RefPtr<VmObject> parent);
+        uint32_t options, uint32_t pmm_alloc_flags, uint64_t size,
+        fbl::RefPtr<VmObject> parent, fbl::RefPtr<PageSource> page_source);
 
     // private destructor, only called from refptr
     ~VmObjectPaged() override;
@@ -130,8 +150,15 @@ private:
     zx_status_t PinLocked(uint64_t offset, uint64_t len) TA_REQ(lock_);
     void UnpinLocked(uint64_t offset, uint64_t len) TA_REQ(lock_);
 
+    fbl::RefPtr<PageSource> GetRootPageSourceLocked()
+        // Walks the clone chain to get the root page source, which confuses analysis.
+        TA_NO_THREAD_SAFETY_ANALYSIS;
+
     // internal check if any pages in a range are pinned
     bool AnyPagesPinnedLocked(uint64_t offset, size_t len) TA_REQ(lock_);
+
+    // see AllocatedPagesInRange
+    size_t AllocatedPagesInRangeLocked(uint64_t offset, uint64_t len) const TA_REQ(lock_);
 
     // internal read/write routine that takes a templated copy function to help share some code
     template <typename T>
@@ -146,6 +173,9 @@ private:
     uint64_t parent_offset_ TA_GUARDED(lock_) = 0;
     uint32_t pmm_alloc_flags_ TA_GUARDED(lock_) = PMM_ALLOC_FLAG_ANY;
     uint32_t cache_policy_ TA_GUARDED(lock_) = ARCH_MMU_FLAG_CACHED;
+
+    // The page source, if any.
+    const fbl::RefPtr<PageSource> page_source_;
 
     // a tree of pages
     VmPageList page_list_ TA_GUARDED(lock_);

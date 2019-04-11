@@ -3,9 +3,9 @@
 // found in the LICENSE file.
 
 #include <ddk/debug.h>
-#include <ddk/usb/usb.h>
 #include <ddk/metadata.h>
-#include <zircon/hw/usb-audio.h>
+#include <usb/usb.h>
+#include <zircon/hw/usb/audio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -373,23 +373,25 @@ static zx_status_t usb_composite_bind(void* ctx, zx_device_t* parent) {
     }
     memcpy(&comp->usb, &usb, sizeof(comp->usb));
 
-    size_t actual;
-    status = device_get_metadata(parent, DEVICE_METADATA_PRIVATE, &comp->bti_handle,
-                                 sizeof(comp->bti_handle), &actual);
-    if (status != ZX_OK) {
-        zxlogf(ERROR, "usb_composite_bind: device_get_metadata failed: %d\n", status);
-        return ZX_OK;
-    }
-
     list_initialize(&comp->children);
 
     mtx_init(&comp->interface_mutex, mtx_plain);
 
     usb_get_device_descriptor(&usb, &comp->device_desc);
 
+    uint8_t configuration = usb_get_configuration(&comp->usb);
     size_t config_length;
-    status = usb_get_configuration_descriptor(&comp->usb, usb_get_configuration(&comp->usb),
-                                              &comp->config_desc, &config_length);
+    status = usb_get_configuration_descriptor_length(&comp->usb, configuration, &config_length);
+    if (status != ZX_OK) {
+        return status;
+    }
+    comp->config_desc = malloc(config_length);
+    if (!comp->config_desc) {
+        return ZX_ERR_NO_MEMORY;
+    }
+    size_t actual;
+    status = usb_get_configuration_descriptor(&comp->usb, configuration,
+                                              comp->config_desc, config_length, &actual);
     if (status != ZX_OK) {
         goto error_exit;
     }

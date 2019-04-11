@@ -1,6 +1,11 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <lib/async/cpp/task.h>
 #include <lib/async/cpp/time.h>
+
+#include <utility>
 
 namespace async {
 namespace internal {
@@ -91,7 +96,7 @@ zx_status_t TaskBase::Cancel() {
 }
 
 Task::Task(Handler handler)
-    : TaskBase(&Task::CallHandler), handler_(fbl::move(handler)) {}
+    : TaskBase(&Task::CallHandler), handler_(std::move(handler)) {}
 
 Task::~Task() = default;
 
@@ -101,7 +106,7 @@ void Task::CallHandler(async_dispatcher_t* dispatcher, async_task_t* task, zx_st
 }
 
 TaskClosure::TaskClosure(fbl::Closure handler)
-    : TaskBase(&TaskClosure::CallHandler), handler_(fbl::move(handler)) {}
+    : TaskBase(&TaskClosure::CallHandler), handler_(std::move(handler)) {}
 
 TaskClosure::~TaskClosure() = default;
 

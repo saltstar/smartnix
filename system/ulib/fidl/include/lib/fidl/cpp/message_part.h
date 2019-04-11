@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef LIB_FIDL_CPP_MESSAGE_PART_H_
 #define LIB_FIDL_CPP_MESSAGE_PART_H_
@@ -21,6 +24,9 @@ namespace fidl {
 template<typename T>
 class MessagePart {
 public:
+    using value_type = T;
+    using const_iterator = const T*;
+
     // A message part with no storage.
     MessagePart() : data_(nullptr), capacity_(0u), actual_(0u) {}
 
@@ -79,6 +85,8 @@ public:
     T* end() { return data_ + actual_; }
     const T* end() const { return data_ + actual_; }
     const T* cend() const { return data_ + actual_; }
+
+    size_t size() const { return actual_; }
 
 private:
     T* data_;

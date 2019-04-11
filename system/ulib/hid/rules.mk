@@ -20,9 +20,15 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/keymaps.c \
     $(LOCAL_DIR)/paradise.c \
     $(LOCAL_DIR)/samsung.c \
+    $(LOCAL_DIR)/ltr-578als.c \
+    $(LOCAL_DIR)/bma253.c \
+    $(LOCAL_DIR)/ft6336.c \
 
 MODULE_EXPORT := so
 MODULE_SO_NAME := hid
+
+MODULE_STATIC_LIBS := \
+    system/ulib/ddk \
 
 MODULE_LIBS := \
     system/ulib/zircon \
@@ -30,6 +36,6 @@ MODULE_LIBS := \
     system/ulib/c
 
 MODULE_FIDL_LIBS := \
-    system/fidl/zircon-input \
+    system/fidl/fuchsia-hardware-input \
 
 include make/module.mk

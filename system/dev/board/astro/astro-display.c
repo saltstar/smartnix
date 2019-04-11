@@ -5,7 +5,7 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 
 #include <soc/aml-s905d2/s905d2-gpio.h>
 #include <soc/aml-s905d2/s905d2-hw.h>
@@ -15,6 +15,11 @@
 #include "astro.h"
 
 static const pbus_mmio_t display_mmios[] = {
+    {
+        // VBUS/VPU
+        .base = S905D2_VPU_BASE,
+        .length = S905D2_VPU_LENGTH,
+    },
     {
         // DSI Host Controller
         .base = S905D2_MIPI_DSI_BASE,
@@ -31,11 +36,6 @@ static const pbus_mmio_t display_mmios[] = {
         .length = S905D2_HIU_LENGTH,
     },
     {
-        // VBUS/VPU
-        .base = S905D2_VPU_BASE,
-        .length = S905D2_VPU_LENGTH,
-    },
-    {
         // AOBUS
         .base = S905D2_AOBUS_BASE,
         .length = S905D2_AOBUS_LENGTH,
@@ -50,6 +50,10 @@ static const pbus_mmio_t display_mmios[] = {
 static const pbus_irq_t display_irqs[] = {
     {
         .irq = S905D2_VIU1_VSYNC_IRQ,
+        .mode = ZX_INTERRUPT_MODE_EDGE_HIGH,
+    },
+    {
+        .irq = S905D2_RDMA_DONE,
         .mode = ZX_INTERRUPT_MODE_EDGE_HIGH,
     },
 };

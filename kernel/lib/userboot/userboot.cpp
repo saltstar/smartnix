@@ -12,6 +12,7 @@
 #include <kernel/cmdline.h>
 #include <vm/vm_object_paged.h>
 #include <lib/console.h>
+#include <lib/counters.h>
 #include <lib/vdso.h>
 #include <lk/init.h>
 #include <mexec.h>
@@ -81,7 +82,7 @@ public:
 
             // Map the vDSO right after it.
             *vdso_base = vmar->vmar()->base() + RoDso::size();
-            status = vdso_->Map(fbl::move(vmar), RoDso::size());
+            status = vdso_->Map(ktl::move(vmar), RoDso::size());
         }
         return status;
     }
@@ -102,14 +103,14 @@ static zx_status_t get_vmo_handle(fbl::RefPtr<VmObject> vmo, bool readonly,
     zx_rights_t rights;
     fbl::RefPtr<Dispatcher> dispatcher;
     zx_status_t result = VmObjectDispatcher::Create(
-        fbl::move(vmo), &dispatcher, &rights);
+        ktl::move(vmo), &dispatcher, &rights);
     if (result == ZX_OK) {
         if (disp_ptr)
             *disp_ptr = fbl::RefPtr<VmObjectDispatcher>::Downcast(dispatcher);
         if (readonly)
             rights &= ~ZX_RIGHT_WRITE;
         if (ptr)
-            *ptr = Handle::Make(fbl::move(dispatcher), rights).release();
+            *ptr = Handle::Make(ktl::move(dispatcher), rights).release();
     }
     return result;
 }
@@ -120,7 +121,7 @@ static zx_status_t get_job_handle(Handle** ptr) {
     zx_status_t result = JobDispatcher::Create(
         0u, GetRootJobDispatcher(), &dispatcher, &rights);
     if (result == ZX_OK)
-        *ptr = Handle::Make(fbl::move(dispatcher), rights).release();
+        *ptr = Handle::Make(ktl::move(dispatcher), rights).release();
     return result;
 }
 
@@ -139,7 +140,7 @@ static zx_status_t get_resource_handle(Handle** ptr) {
 // it, returning the handle to the other side.
 static zx_status_t make_bootstrap_channel(
     fbl::RefPtr<ProcessDispatcher> process,
-    fbl::unique_ptr<MessagePacket> msg,
+    MessagePacketPtr msg,
     zx_handle_t* out) {
     HandleOwner user_channel_handle;
     fbl::RefPtr<ChannelDispatcher> kernel_channel;
@@ -150,17 +151,17 @@ static zx_status_t make_bootstrap_channel(
         zx_status_t status = ChannelDispatcher::Create(&mpd0, &mpd1, &rights);
         if (status != ZX_OK)
             return status;
-        user_channel_handle = Handle::Make(fbl::move(mpd0), rights);
+        user_channel_handle = Handle::Make(ktl::move(mpd0), rights);
         kernel_channel = DownCastDispatcher<ChannelDispatcher>(&mpd1);
     }
 
     // Here it goes!
-    zx_status_t status = kernel_channel->Write(ZX_KOID_INVALID, fbl::move(msg));
+    zx_status_t status = kernel_channel->Write(ZX_KOID_INVALID, ktl::move(msg));
     if (status != ZX_OK)
         return status;
 
     zx_handle_t hv = process->MapHandleToValue(user_channel_handle);
-    process->AddHandle(fbl::move(user_channel_handle));
+    process->AddHandle(ktl::move(user_channel_handle));
 
     *out = hv;
     return ZX_OK;
@@ -180,6 +181,8 @@ enum bootstrap_handle_index {
 #if ENABLE_ENTROPY_COLLECTOR_TEST
     BOOTSTRAP_ENTROPY_FILE,
 #endif
+    BOOTSTRAP_KCOUNTDESC,
+    BOOTSTRAP_KCOUNTERS,
     BOOTSTRAP_HANDLES
 };
 
@@ -189,7 +192,7 @@ struct bootstrap_message {
     char cmdline[CMDLINE_MAX];
 };
 
-static fbl::unique_ptr<MessagePacket> prepare_bootstrap_message() {
+static MessagePacketPtr prepare_bootstrap_message() {
     const size_t data_size =
         offsetof(struct bootstrap_message, cmdline) +
         __kernel_cmdline_size;
@@ -206,6 +209,14 @@ static fbl::unique_ptr<MessagePacket> prepare_bootstrap_message() {
     msg->header.environ_num = static_cast<uint32_t>(__kernel_cmdline_count);
     msg->header.handle_info_off =
         offsetof(struct bootstrap_message, handle_info);
+
+    // Note indices for PA_VMO_KERNEL_FILE must be densely-packed since bootsvc
+    // just iterates up from 0 seeing if that info value is in the list, rather
+    // than iterating over the list checking for PA_VMO_KERNEL_FILE with any
+    // index.  The index is not otherwise meaningful: the VMO name identifies
+    // the kernel file being exported.
+    int kernel_file_idx = 0;
+
     for (int i = 0; i < BOOTSTRAP_HANDLES; ++i) {
         uint32_t info = 0;
         switch (static_cast<bootstrap_handle_index>(i)) {
@@ -234,13 +245,13 @@ static fbl::unique_ptr<MessagePacket> prepare_bootstrap_message() {
             info = PA_HND(PA_VMAR_ROOT, 0);
             break;
         case BOOTSTRAP_CRASHLOG:
-            info = PA_HND(PA_VMO_KERNEL_FILE, 0);
-            break;
 #if ENABLE_ENTROPY_COLLECTOR_TEST
         case BOOTSTRAP_ENTROPY_FILE:
-            info = PA_HND(PA_VMO_KERNEL_FILE, 1);
-            break;
 #endif
+        case BOOTSTRAP_KCOUNTDESC:
+        case BOOTSTRAP_KCOUNTERS:
+            info = PA_HND(PA_VMO_KERNEL_FILE, kernel_file_idx++);
+            break;
         case BOOTSTRAP_HANDLES:
             __builtin_unreachable();
         }
@@ -248,7 +259,7 @@ static fbl::unique_ptr<MessagePacket> prepare_bootstrap_message() {
     }
     memcpy(msg->cmdline, __kernel_cmdline, __kernel_cmdline_size);
 
-    fbl::unique_ptr<MessagePacket> packet;
+    MessagePacketPtr packet;
     uint32_t num_handles = BOOTSTRAP_HANDLES;
     zx_status_t status =
         MessagePacket::Create(msg, static_cast<uint32_t>(data_size), num_handles, &packet);
@@ -275,7 +286,7 @@ static zx_status_t crashlog_to_vmo(fbl::RefPtr<VmObject>* out) {
     platform_recover_crashlog(size, crashlog_vmo.get(), clog_to_vmo);
     crashlog_vmo->set_name(CRASHLOG_VMO_NAME, sizeof(CRASHLOG_VMO_NAME) - 1);
     mexec_stash_crashlog(crashlog_vmo);
-    *out = fbl::move(crashlog_vmo);
+    *out = ktl::move(crashlog_vmo);
     return ZX_OK;
 }
 
@@ -305,7 +316,7 @@ static zx_status_t attempt_userboot() {
     // Prepare the bootstrap message packet.  This puts its data (the
     // kernel command line) in place, and allocates space for its handles.
     // We'll fill in the handles as we create things.
-    fbl::unique_ptr<MessagePacket> msg = prepare_bootstrap_message();
+    MessagePacketPtr msg = prepare_bootstrap_message();
     if (!msg)
         return ZX_ERR_NO_MEMORY;
 
@@ -341,6 +352,35 @@ static zx_status_t attempt_userboot() {
     if (status != ZX_OK)
         return status;
 
+    fbl::RefPtr<VmObject> kcountdesc_vmo;
+    status = VmObjectPaged::CreateFromROData(CounterDesc().VmoData(),
+                                             CounterDesc().VmoDataSize(),
+                                             &kcountdesc_vmo);
+    if (status != ZX_OK) {
+        return status;
+    }
+    kcountdesc_vmo->set_name(counters::DescriptorVmo::kVmoName,
+                             sizeof(counters::DescriptorVmo::kVmoName) - 1);
+    status = get_vmo_handle(ktl::move(kcountdesc_vmo), true, nullptr,
+                            &handles[BOOTSTRAP_KCOUNTDESC]);
+    if (status != ZX_OK) {
+        return status;
+    }
+    fbl::RefPtr<VmObject> kcounters_vmo;
+    status = VmObjectPaged::CreateFromROData(CounterArena().VmoData(),
+                                             CounterArena().VmoDataSize(),
+                                             &kcounters_vmo);
+    if (status != ZX_OK) {
+        return status;
+    }
+    kcounters_vmo->set_name(counters::kArenaVmoName,
+                             sizeof(counters::kArenaVmoName) - 1);
+    status = get_vmo_handle(ktl::move(kcounters_vmo), true, nullptr,
+                            &handles[BOOTSTRAP_KCOUNTERS]);
+    if (status != ZX_OK) {
+        return status;
+    }
+
     fbl::RefPtr<Dispatcher> proc_disp;
     fbl::RefPtr<VmAddressRegionDispatcher> vmar;
     zx_rights_t rights, vmar_rights;
@@ -374,7 +414,7 @@ static zx_status_t attempt_userboot() {
     // Map the stack anywhere.
     fbl::RefPtr<VmMapping> stack_mapping;
     status = vmar->Map(0,
-                       fbl::move(stack_vmo), 0, stack_size,
+                       ktl::move(stack_vmo), 0, stack_size,
                        ZX_VM_PERM_READ | ZX_VM_PERM_WRITE,
                        &stack_mapping);
     if (status != ZX_OK)
@@ -399,7 +439,7 @@ static zx_status_t attempt_userboot() {
 
     // All the handles are in place, so we can send the bootstrap message.
     zx_handle_t hv;
-    status = make_bootstrap_channel(proc, fbl::move(msg), &hv);
+    status = make_bootstrap_channel(proc, ktl::move(msg), &hv);
     if (status != ZX_OK)
         return status;
 

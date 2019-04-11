@@ -5,9 +5,11 @@
 #include <ddk/debug.h>
 #include <fbl/string_buffer.h>
 #include <fbl/string_piece.h>
-#include <fbl/type_support.h>
+#include <fbl/vector.h>
 #include <lib/zx/vmo.h>
 #include <tee-client-api/tee-client-types.h>
+
+#include <utility>
 
 #include "optee-client.h"
 #include "optee-smc.h"
@@ -24,7 +26,7 @@ constexpr const char kTaFileExtension[] = ".ta";
 constexpr size_t kTaPathLength = kUuidNameLength + (sizeof(kTaFileExtension) - 1u);
 
 template <typename SRC_T, typename DST_T>
-static constexpr typename fbl::enable_if<
+static constexpr typename std::enable_if<
     fbl::is_unsigned_integer<SRC_T>::value &&
     fbl::is_unsigned_integer<DST_T>::value>::type
 SplitInto32BitParts(SRC_T src, DST_T* dst_hi, DST_T* dst_lo) {
@@ -37,7 +39,7 @@ SplitInto32BitParts(SRC_T src, DST_T* dst_hi, DST_T* dst_lo) {
 }
 
 template <typename SRC_T, typename DST_T>
-static constexpr typename fbl::enable_if<
+static constexpr typename std::enable_if<
     fbl::is_unsigned_integer<SRC_T>::value &&
     fbl::is_unsigned_integer<DST_T>::value>::type
 JoinFrom32BitParts(SRC_T src_hi, SRC_T src_lo, DST_T* dst) {
@@ -87,24 +89,54 @@ static fbl::StringBuffer<kTaPathLength> BuildTaPath(const TEEC_UUID& ta_uuid) {
 
     return buf;
 }
+
+static zx_status_t ConvertOpteeToZxResult(uint32_t optee_return_code, uint32_t optee_return_origin,
+                                          fuchsia_hardware_tee_Result* zx_result) {
+    ZX_DEBUG_ASSERT(zx_result != nullptr);
+
+    // Do a quick check of the return origin to make sure we can map it to one
+    // of our FIDL values. If none match, return a communication error instead.
+    switch (optee_return_origin) {
+    case TEEC_ORIGIN_COMMS:
+        zx_result->return_code = optee_return_code;
+        zx_result->return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        break;
+    case TEEC_ORIGIN_TEE:
+        zx_result->return_code = optee_return_code;
+        zx_result->return_origin = fuchsia_hardware_tee_ReturnOrigin_TRUSTED_OS;
+        break;
+    case TEEC_ORIGIN_TRUSTED_APP:
+        zx_result->return_code = optee_return_code;
+        zx_result->return_origin = fuchsia_hardware_tee_ReturnOrigin_TRUSTED_APPLICATION;
+        break;
+    default:
+        zxlogf(ERROR, "optee: optee returned an invalid return origin (%" PRIu32 ")\n",
+               optee_return_origin);
+        zx_result->return_code = TEEC_ERROR_COMMUNICATION;
+        zx_result->return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        return ZX_ERR_INTERNAL;
+    }
+    return ZX_OK;
+}
+
 }; // namespace
 
 namespace optee {
 
-zircon_tee_Device_ops_t OpteeClient::kFidlOps = {
+fuchsia_hardware_tee_Device_ops_t OpteeClient::kFidlOps = {
     .GetOsInfo =
         [](void* ctx, fidl_txn_t* txn) {
             return reinterpret_cast<OpteeClient*>(ctx)->GetOsInfo(txn);
         },
     .OpenSession =
-        [](void* ctx, const zircon_tee_Uuid* trusted_app,
-           const zircon_tee_ParameterSet* parameter_set, fidl_txn_t* txn) {
+        [](void* ctx, const fuchsia_hardware_tee_Uuid* trusted_app,
+           const fuchsia_hardware_tee_ParameterSet* parameter_set, fidl_txn_t* txn) {
             return reinterpret_cast<OpteeClient*>(ctx)->OpenSession(trusted_app, parameter_set,
                                                                     txn);
         },
     .InvokeCommand =
         [](void* ctx, uint32_t session_id, uint32_t command_id,
-           const zircon_tee_ParameterSet* parameter_set, fidl_txn_t* txn) {
+           const fuchsia_hardware_tee_ParameterSet* parameter_set, fidl_txn_t* txn) {
             return reinterpret_cast<OpteeClient*>(ctx)->InvokeCommand(session_id, command_id,
                                                                       parameter_set, txn);
         },
@@ -121,6 +153,22 @@ zx_status_t OpteeClient::DdkClose(uint32_t flags) {
 
 void OpteeClient::DdkRelease() {
     // devmgr has given up ownership, so we must clean ourself up.
+    //
+    // Try and cleanly close all sessions
+    fbl::Vector<uint32_t> session_ids;
+    session_ids.reserve(open_sessions_.size());
+    for (const OpteeSession& session : open_sessions_) {
+        session_ids.push_back(session.id);
+    }
+
+    for (uint32_t id : session_ids) {
+        // Regardless of CloseSession response, continue closing all other sessions
+        __UNUSED zx_status_t status = CloseSession(id);
+    }
+
+    // Clear memory list, which releases all memory blocks back to their respective pools
+    allocated_shared_memory_.clear();
+
     delete this;
 }
 
@@ -132,85 +180,110 @@ zx_status_t OpteeClient::DdkMessage(fidl_msg_t* msg, fidl_txn_t* txn) {
         // closed by devhost once the unbind is complete.
         return ZX_ERR_PEER_CLOSED;
     }
-    return zircon_tee_Device_dispatch(this, txn, msg, &kFidlOps);
+    return fuchsia_hardware_tee_Device_dispatch(this, txn, msg, &kFidlOps);
 }
 
 zx_status_t OpteeClient::GetOsInfo(fidl_txn_t* txn) const {
     return controller_->GetOsInfo(txn);
 }
 
-zx_status_t OpteeClient::OpenSession(const zircon_tee_Uuid* trusted_app,
-                                     const zircon_tee_ParameterSet* parameter_set,
+zx_status_t OpteeClient::OpenSession(const fuchsia_hardware_tee_Uuid* trusted_app,
+                                     const fuchsia_hardware_tee_ParameterSet* parameter_set,
                                      fidl_txn_t* txn) {
     constexpr uint32_t kInvalidSession = 0;
 
     ZX_DEBUG_ASSERT(trusted_app != nullptr);
     ZX_DEBUG_ASSERT(parameter_set != nullptr);
 
-    zircon_tee_Result result = {};
+    fuchsia_hardware_tee_Result result = {};
 
     Uuid ta_uuid{*trusted_app};
 
-    OpenSessionMessage message{controller_->driver_pool(),
-                               ta_uuid,
-                               *parameter_set};
+    OpenSessionMessage message{controller_->driver_pool(), controller_->client_pool(),
+                               ta_uuid, *parameter_set};
 
     if (!message.is_valid()) {
         result.return_code = TEEC_ERROR_COMMUNICATION;
-        result.return_origin = zircon_tee_ReturnOrigin_COMMUNICATION;
-        return zircon_tee_DeviceOpenSession_reply(txn, kInvalidSession, &result);
+        result.return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        return fuchsia_hardware_tee_DeviceOpenSession_reply(txn, kInvalidSession, &result);
     }
 
     uint32_t call_code = controller_->CallWithMessage(
         message, fbl::BindMember(this, &OpteeClient::HandleRpc));
     if (call_code != kReturnOk) {
         result.return_code = TEEC_ERROR_COMMUNICATION;
-        result.return_origin = zircon_tee_ReturnOrigin_COMMUNICATION;
-        return zircon_tee_DeviceOpenSession_reply(txn, kInvalidSession, &result);
+        result.return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        return fuchsia_hardware_tee_DeviceOpenSession_reply(txn, kInvalidSession, &result);
     }
 
     zxlogf(SPEW, "optee: OpenSession returned 0x%" PRIx32 " 0x%" PRIx32 " 0x%" PRIx32 "\n",
            call_code, message.return_code(), message.return_origin());
-    // TODO(rjascani): Add session id to tracking struct to ensure closure
-    result.return_code = message.return_code();
-    result.return_origin = message.return_origin();
-    return zircon_tee_DeviceOpenSession_reply(txn, message.session_id(), &result);
+
+    if (ConvertOpteeToZxResult(message.return_code(), message.return_origin(), &result) != ZX_OK) {
+        return fuchsia_hardware_tee_DeviceOpenSession_reply(txn, kInvalidSession, &result);
+    }
+
+    if (message.CreateOutputParameterSet(&result.parameter_set) != ZX_OK) {
+        // Since we failed to parse the output parameters, let's close the session and report error.
+        // It is okay that the session id is not in the session list.
+        CloseSession(message.session_id());
+        result.return_code = TEEC_ERROR_COMMUNICATION;
+        result.return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        return fuchsia_hardware_tee_DeviceOpenSession_reply(txn, kInvalidSession, &result);
+    }
+
+    open_sessions_.insert(fbl::make_unique<OpteeSession>(message.session_id()));
+
+    return fuchsia_hardware_tee_DeviceOpenSession_reply(txn, message.session_id(), &result);
 }
 
-zx_status_t OpteeClient::InvokeCommand(uint32_t session_id,
-                                       uint32_t command_id,
-                                       const zircon_tee_ParameterSet* parameter_set,
+zx_status_t OpteeClient::InvokeCommand(uint32_t session_id, uint32_t command_id,
+                                       const fuchsia_hardware_tee_ParameterSet* parameter_set,
                                        fidl_txn_t* txn) {
     ZX_DEBUG_ASSERT(parameter_set != nullptr);
 
-    zircon_tee_Result result = {};
+    fuchsia_hardware_tee_Result result = {};
 
-    InvokeCommandMessage message{controller_->driver_pool(), session_id,
-                                 command_id, *parameter_set};
+    if (!open_sessions_.find(session_id).IsValid()) {
+        result.return_code = TEEC_ERROR_BAD_STATE;
+        result.return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        return fuchsia_hardware_tee_DeviceInvokeCommand_reply(txn, &result);
+    }
+
+    InvokeCommandMessage message{controller_->driver_pool(), controller_->client_pool(),
+                                 session_id, command_id, *parameter_set};
 
     if (!message.is_valid()) {
         result.return_code = TEEC_ERROR_COMMUNICATION;
-        result.return_origin = zircon_tee_ReturnOrigin_COMMUNICATION;
-        return zircon_tee_DeviceInvokeCommand_reply(txn, &result);
+        result.return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        return fuchsia_hardware_tee_DeviceInvokeCommand_reply(txn, &result);
     }
 
     uint32_t call_code = controller_->CallWithMessage(
         message, fbl::BindMember(this, &OpteeClient::HandleRpc));
     if (call_code != kReturnOk) {
         result.return_code = TEEC_ERROR_COMMUNICATION;
-        result.return_origin = zircon_tee_ReturnOrigin_COMMUNICATION;
-        return zircon_tee_DeviceInvokeCommand_reply(txn, &result);
+        result.return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        return fuchsia_hardware_tee_DeviceInvokeCommand_reply(txn, &result);
     }
 
     zxlogf(SPEW, "optee: InvokeCommand returned 0x%" PRIx32 " 0x%" PRIx32 " 0x%" PRIx32 "\n",
            call_code, message.return_code(), message.return_origin());
-    result.return_code = message.return_code();
-    result.return_origin = message.return_origin();
-    return zircon_tee_DeviceInvokeCommand_reply(txn, &result);
+
+    if (ConvertOpteeToZxResult(message.return_code(), message.return_origin(), &result) != ZX_OK) {
+        return fuchsia_hardware_tee_DeviceInvokeCommand_reply(txn, &result);
+    }
+
+    if (message.CreateOutputParameterSet(&result.parameter_set) != ZX_OK) {
+        result.return_code = TEEC_ERROR_COMMUNICATION;
+        result.return_origin = fuchsia_hardware_tee_ReturnOrigin_COMMUNICATION;
+        return fuchsia_hardware_tee_DeviceInvokeCommand_reply(txn, &result);
+    }
+
+    return fuchsia_hardware_tee_DeviceInvokeCommand_reply(txn, &result);
 }
 
-zx_status_t OpteeClient::CloseSession(uint32_t session_id,
-                                      fidl_txn_t* txn) {
+zx_status_t OpteeClient::CloseSession(uint32_t session_id) {
     CloseSessionMessage message{controller_->driver_pool(), session_id};
 
     if (!message.is_valid()) {
@@ -220,10 +293,23 @@ zx_status_t OpteeClient::CloseSession(uint32_t session_id,
     uint32_t call_code = controller_->CallWithMessage(
         message, fbl::BindMember(this, &OpteeClient::HandleRpc));
 
+    if (call_code == kReturnOk) {
+        open_sessions_.erase(session_id);
+    }
+
     zxlogf(SPEW, "optee: CloseSession returned %" PRIx32 " %" PRIx32 " %" PRIx32 "\n",
            call_code, message.return_code(), message.return_origin());
+    return ZX_OK;
+}
 
-    return zircon_tee_DeviceCloseSession_reply(txn);
+zx_status_t OpteeClient::CloseSession(uint32_t session_id,
+                                      fidl_txn_t* txn) {
+    zx_status_t status = CloseSession(session_id);
+    if (status != ZX_OK) {
+        return status;
+    }
+
+    return fuchsia_hardware_tee_DeviceCloseSession_reply(txn);
 }
 
 template <typename SharedMemoryPoolTraits>
@@ -252,7 +338,7 @@ zx_status_t OpteeClient::AllocateSharedMemory(size_t size,
     *out_phys_addr = sh_mem->paddr();
 
     // Track the new piece of allocated SharedMemory in the list
-    allocated_shared_memory_.push_back(fbl::move(sh_mem));
+    allocated_shared_memory_.push_back(std::move(sh_mem));
 
     // TODO(godtamit): Move away from memory addresses as memory identifiers
     //
@@ -407,14 +493,14 @@ zx_status_t OpteeClient::HandleRpcCommand(const RpcFunctionExecuteCommandsArgs& 
 
     switch (message.command()) {
     case RpcMessage::Command::kLoadTa: {
-        LoadTaRpcMessage load_ta_msg(fbl::move(message));
+        LoadTaRpcMessage load_ta_msg(std::move(message));
         if (!load_ta_msg.is_valid()) {
             return ZX_ERR_INVALID_ARGS;
         }
         return HandleRpcCommandLoadTa(&load_ta_msg);
     }
     case RpcMessage::Command::kAccessFileSystem: {
-        FileSystemRpcMessage fs_msg(fbl::move(message));
+        FileSystemRpcMessage fs_msg(std::move(message));
         if (!fs_msg.is_valid()) {
             return ZX_ERR_INVALID_ARGS;
         }
@@ -430,14 +516,14 @@ zx_status_t OpteeClient::HandleRpcCommand(const RpcFunctionExecuteCommandsArgs& 
         zxlogf(ERROR, "optee: RPC command to suspend recognized but not implemented\n");
         return ZX_ERR_NOT_SUPPORTED;
     case RpcMessage::Command::kAllocateMemory: {
-        AllocateMemoryRpcMessage alloc_mem_msg(fbl::move(message));
+        AllocateMemoryRpcMessage alloc_mem_msg(std::move(message));
         if (!alloc_mem_msg.is_valid()) {
             return ZX_ERR_INVALID_ARGS;
         }
         return HandleRpcCommandAllocateMemory(&alloc_mem_msg);
     }
     case RpcMessage::Command::kFreeMemory: {
-        FreeMemoryRpcMessage free_mem_msg(fbl::move(message));
+        FreeMemoryRpcMessage free_mem_msg(std::move(message));
         if (!free_mem_msg.is_valid()) {
             return ZX_ERR_INVALID_ARGS;
         }

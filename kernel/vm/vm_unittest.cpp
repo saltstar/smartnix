@@ -3,6 +3,7 @@
 #include <err.h>
 #include <fbl/alloc_checker.h>
 #include <fbl/array.h>
+#include <ktl/move.h>
 #include <lib/unittest/unittest.h>
 #include <vm/physmap.h>
 #include <vm/vm.h>
@@ -23,7 +24,7 @@ static bool pmm_smoke_test() {
 
     zx_status_t status = pmm_alloc_page(0, &page, &pa);
     ASSERT_EQ(ZX_OK, status, "pmm_alloc single page");
-    ASSERT_NE(nullptr, page, "pmm_alloc single page");
+    ASSERT_NONNULL(page, "pmm_alloc single page");
     ASSERT_NE(0u, pa, "pmm_alloc single page");
 
     vm_page_t* page2 = paddr_to_vm_page(pa);
@@ -33,17 +34,17 @@ static bool pmm_smoke_test() {
     END_TEST;
 }
 
-// Allocates a bunch of pages then frees them.
-static bool pmm_large_alloc_test() {
+// Allocates more than one page and frees them
+static bool pmm_multi_alloc_test() {
     BEGIN_TEST;
     list_node list = LIST_INITIAL_VALUE(list);
 
-    static const size_t alloc_count = 1024;
+    static const size_t alloc_count = 16;
 
-    auto count = pmm_alloc_pages(alloc_count, 0, &list);
-    EXPECT_EQ(alloc_count, count, "pmm_alloc_pages a bunch of pages count");
+    zx_status_t status = pmm_alloc_pages(alloc_count, 0, &list);
+    EXPECT_EQ(ZX_OK, status, "pmm_alloc_pages a few pages");
     EXPECT_EQ(alloc_count, list_length(&list),
-              "pmm_alloc_pages a bunch of pages list count");
+              "pmm_alloc_pages a few pages list count");
 
     pmm_free(&list);
     END_TEST;
@@ -74,7 +75,7 @@ static bool pmm_alloc_contiguous_one_test() {
     zx_status_t status = pmm_alloc_contiguous(count, 0, PAGE_SIZE_SHIFT, &pa, &list);
     ASSERT_EQ(ZX_OK, status, "pmm_alloc_contiguous returned failure\n");
     ASSERT_EQ(count, list_length(&list), "pmm_alloc_contiguous list size is wrong");
-    ASSERT_NE(nullptr, paddr_to_physmap(pa), "");
+    ASSERT_NONNULL(paddr_to_physmap(pa), "");
     pmm_free(&list);
     END_TEST;
 }
@@ -147,7 +148,7 @@ static bool vmm_alloc_smoke_test() {
     auto err = kaspace->Alloc(
         "test", alloc_size, &ptr, 0, 0, kArchRwFlags);
     ASSERT_EQ(ZX_OK, err, "VmAspace::Alloc region of memory");
-    ASSERT_NE(nullptr, ptr, "VmAspace::Alloc region of memory");
+    ASSERT_NONNULL(ptr, "VmAspace::Alloc region of memory");
 
     // fill with known pattern and test
     if (!fill_and_test(ptr, alloc_size)) {
@@ -173,7 +174,7 @@ static bool vmm_alloc_contiguous_smoke_test() {
                                         alloc_size, &ptr, 0,
                                         VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
     ASSERT_EQ(ZX_OK, err, "VmAspace::AllocContiguous region of memory");
-    ASSERT_NE(nullptr, ptr, "VmAspace::AllocContiguous region of memory");
+    ASSERT_NONNULL(ptr, "VmAspace::AllocContiguous region of memory");
 
     // fill with known pattern and test
     if (!fill_and_test(ptr, alloc_size)) {
@@ -206,7 +207,7 @@ static bool multiple_regions_test() {
     static const size_t alloc_size = 16 * 1024;
 
     fbl::RefPtr<VmAspace> aspace = VmAspace::Create(0, "test aspace");
-    ASSERT_NE(nullptr, aspace, "VmAspace::Create pointer");
+    ASSERT_NONNULL(aspace, "VmAspace::Create pointer");
 
     vmm_aspace_t* old_aspace = get_current_thread()->aspace;
     vmm_set_active_aspace(reinterpret_cast<vmm_aspace_t*>(aspace.get()));
@@ -214,7 +215,7 @@ static bool multiple_regions_test() {
     // allocate region 0
     zx_status_t err = aspace->Alloc("test0", alloc_size, &ptr, 0, 0, kArchRwFlags);
     ASSERT_EQ(ZX_OK, err, "VmAspace::Alloc region of memory");
-    ASSERT_NE(nullptr, ptr, "VmAspace::Alloc region of memory");
+    ASSERT_NONNULL(ptr, "VmAspace::Alloc region of memory");
 
     // fill with known pattern and test
     if (!fill_and_test(ptr, alloc_size)) {
@@ -224,7 +225,7 @@ static bool multiple_regions_test() {
     // allocate region 1
     err = aspace->Alloc("test1", 16384, &ptr, 0, 0, kArchRwFlags);
     ASSERT_EQ(ZX_OK, err, "VmAspace::Alloc region of memory");
-    ASSERT_NE(nullptr, ptr, "VmAspace::Alloc region of memory");
+    ASSERT_NONNULL(ptr, "VmAspace::Alloc region of memory");
 
     // fill with known pattern and test
     if (!fill_and_test(ptr, alloc_size)) {
@@ -234,7 +235,7 @@ static bool multiple_regions_test() {
     // allocate region 2
     err = aspace->Alloc("test2", 16384, &ptr, 0, 0, kArchRwFlags);
     ASSERT_EQ(ZX_OK, err, "VmAspace::Alloc region of memory");
-    ASSERT_NE(nullptr, ptr, "VmAspace::Alloc region of memory");
+    ASSERT_NONNULL(ptr, "VmAspace::Alloc region of memory");
 
     // fill with known pattern and test
     if (!fill_and_test(ptr, alloc_size)) {
@@ -341,6 +342,17 @@ static bool vmo_create_test() {
     END_TEST;
 }
 
+static bool vmo_create_maximum_size() {
+    BEGIN_TEST;
+    fbl::RefPtr<VmObject> vmo;
+    zx_status_t status = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, 0u, 0xffffffffffff0000, &vmo);
+    EXPECT_EQ(status, ZX_OK, "should be ok\n");
+
+    status = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, 0u, 0xffffffffffff1000, &vmo);
+    EXPECT_EQ(status, ZX_ERR_OUT_OF_RANGE, "should be too large\n");
+    END_TEST;
+}
+
 // Creates a vm object, commits memory.
 static bool vmo_commit_test() {
     BEGIN_TEST;
@@ -350,10 +362,10 @@ static bool vmo_commit_test() {
     ASSERT_EQ(status, ZX_OK, "vmobject creation\n");
     ASSERT_TRUE(vmo, "vmobject creation\n");
 
-    uint64_t committed;
-    auto ret = vmo->CommitRange(0, alloc_size, &committed);
+    auto ret = vmo->CommitRange(0, alloc_size);
     ASSERT_EQ(ZX_OK, ret, "committing vm object\n");
-    EXPECT_EQ(ROUNDUP_PAGE_SIZE(alloc_size), committed,
+    EXPECT_EQ(ROUNDUP_PAGE_SIZE(alloc_size),
+              PAGE_SIZE * vmo->AllocatedPages(),
               "committing vm object\n");
     END_TEST;
 }
@@ -381,8 +393,7 @@ static bool vmo_pin_test() {
     status = vmo->Pin(0, alloc_size);
     EXPECT_EQ(ZX_ERR_NOT_FOUND, status, "pinning uncommitted range\n");
 
-    uint64_t n;
-    status = vmo->CommitRange(PAGE_SIZE, 3 * PAGE_SIZE, &n);
+    status = vmo->CommitRange(PAGE_SIZE, 3 * PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "committing range\n");
 
     status = vmo->Pin(0, alloc_size);
@@ -395,19 +406,19 @@ static bool vmo_pin_test() {
     status = vmo->Pin(PAGE_SIZE, 3 * PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "pinning committed range\n");
 
-    status = vmo->DecommitRange(PAGE_SIZE, 3 * PAGE_SIZE, &n);
+    status = vmo->DecommitRange(PAGE_SIZE, 3 * PAGE_SIZE);
     EXPECT_EQ(ZX_ERR_BAD_STATE, status, "decommitting pinned range\n");
-    status = vmo->DecommitRange(PAGE_SIZE, PAGE_SIZE, &n);
+    status = vmo->DecommitRange(PAGE_SIZE, PAGE_SIZE);
     EXPECT_EQ(ZX_ERR_BAD_STATE, status, "decommitting pinned range\n");
-    status = vmo->DecommitRange(3 * PAGE_SIZE, PAGE_SIZE, &n);
+    status = vmo->DecommitRange(3 * PAGE_SIZE, PAGE_SIZE);
     EXPECT_EQ(ZX_ERR_BAD_STATE, status, "decommitting pinned range\n");
 
     vmo->Unpin(PAGE_SIZE, 3 * PAGE_SIZE);
 
-    status = vmo->DecommitRange(PAGE_SIZE, 3 * PAGE_SIZE, &n);
+    status = vmo->DecommitRange(PAGE_SIZE, 3 * PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "decommitting unpinned range\n");
 
-    status = vmo->CommitRange(PAGE_SIZE, 3 * PAGE_SIZE, &n);
+    status = vmo->CommitRange(PAGE_SIZE, 3 * PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "committing range\n");
     status = vmo->Pin(PAGE_SIZE, 3 * PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "pinning committed range\n");
@@ -433,8 +444,7 @@ static bool vmo_multiple_pin_test() {
     ASSERT_EQ(status, ZX_OK, "vmobject creation\n");
     ASSERT_TRUE(vmo, "vmobject creation\n");
 
-    uint64_t n;
-    status = vmo->CommitRange(0, alloc_size, &n);
+    status = vmo->CommitRange(0, alloc_size);
     EXPECT_EQ(ZX_OK, status, "committing range\n");
 
     status = vmo->Pin(0, alloc_size);
@@ -450,23 +460,23 @@ static bool vmo_multiple_pin_test() {
     EXPECT_EQ(ZX_ERR_UNAVAILABLE, status, "page is pinned too much\n");
 
     vmo->Unpin(0, alloc_size);
-    status = vmo->DecommitRange(PAGE_SIZE, 4 * PAGE_SIZE, &n);
+    status = vmo->DecommitRange(PAGE_SIZE, 4 * PAGE_SIZE);
     EXPECT_EQ(ZX_ERR_BAD_STATE, status, "decommitting pinned range\n");
-    status = vmo->DecommitRange(5 * PAGE_SIZE, alloc_size - 5 * PAGE_SIZE, &n);
+    status = vmo->DecommitRange(5 * PAGE_SIZE, alloc_size - 5 * PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "decommitting unpinned range\n");
 
     vmo->Unpin(PAGE_SIZE, 4 * PAGE_SIZE);
-    status = vmo->DecommitRange(PAGE_SIZE, 4 * PAGE_SIZE, &n);
+    status = vmo->DecommitRange(PAGE_SIZE, 4 * PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "decommitting unpinned range\n");
 
     for (unsigned int i = 2; i < VM_PAGE_OBJECT_MAX_PIN_COUNT; ++i) {
         vmo->Unpin(0, PAGE_SIZE);
     }
-    status = vmo->DecommitRange(0, PAGE_SIZE, &n);
+    status = vmo->DecommitRange(0, PAGE_SIZE);
     EXPECT_EQ(ZX_ERR_BAD_STATE, status, "decommitting unpinned range\n");
 
     vmo->Unpin(0, PAGE_SIZE);
-    status = vmo->DecommitRange(0, PAGE_SIZE, &n);
+    status = vmo->DecommitRange(0, PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "decommitting unpinned range\n");
 
     END_TEST;
@@ -481,10 +491,10 @@ static bool vmo_odd_size_commit_test() {
     ASSERT_EQ(status, ZX_OK, "vmobject creation\n");
     ASSERT_TRUE(vmo, "vmobject creation\n");
 
-    uint64_t committed;
-    auto ret = vmo->CommitRange(0, alloc_size, &committed);
+    auto ret = vmo->CommitRange(0, alloc_size);
     EXPECT_EQ(ZX_OK, ret, "committing vm object\n");
-    EXPECT_EQ(ROUNDUP_PAGE_SIZE(alloc_size), committed,
+    EXPECT_EQ(ROUNDUP_PAGE_SIZE(alloc_size),
+              PAGE_SIZE * vmo->AllocatedPages(),
               "committing vm object\n");
     END_TEST;
 }
@@ -533,7 +543,7 @@ static bool vmo_create_contiguous_test() {
         *last_pa = pa;
         return ZX_OK;
     };
-    status = vmo->Lookup(0, alloc_size, 0, lookup_func, &last_pa);
+    status = vmo->Lookup(0, alloc_size, lookup_func, &last_pa);
     EXPECT_EQ(status, ZX_OK, "vmo lookup\n");
 
     END_TEST;
@@ -549,12 +559,11 @@ static bool vmo_contiguous_decommit_test() {
     ASSERT_EQ(status, ZX_OK, "vmobject creation\n");
     ASSERT_TRUE(vmo, "vmobject creation\n");
 
-    uint64_t n;
-    status = vmo->DecommitRange(PAGE_SIZE, 4 * PAGE_SIZE, &n);
+    status = vmo->DecommitRange(PAGE_SIZE, 4 * PAGE_SIZE);
     ASSERT_EQ(status, ZX_ERR_NOT_SUPPORTED, "decommit fails due to pinned pages\n");
-    status = vmo->DecommitRange(0, 4 * PAGE_SIZE, &n);
+    status = vmo->DecommitRange(0, 4 * PAGE_SIZE);
     ASSERT_EQ(status, ZX_ERR_NOT_SUPPORTED, "decommit fails due to pinned pages\n");
-    status = vmo->DecommitRange(alloc_size - PAGE_SIZE, PAGE_SIZE, &n);
+    status = vmo->DecommitRange(alloc_size - PAGE_SIZE, PAGE_SIZE);
     ASSERT_EQ(status, ZX_ERR_NOT_SUPPORTED, "decommit fails due to pinned pages\n");
 
     // Make sure all pages are still present and contiguous
@@ -567,7 +576,7 @@ static bool vmo_contiguous_decommit_test() {
         *last_pa = pa;
         return ZX_OK;
     };
-    status = vmo->Lookup(0, alloc_size, 0, lookup_func, &last_pa);
+    status = vmo->Lookup(0, alloc_size, lookup_func, &last_pa);
     ASSERT_EQ(status, ZX_OK, "vmo lookup\n");
 
     END_TEST;
@@ -634,7 +643,7 @@ static bool vmo_dropped_ref_test() {
 
     auto ka = VmAspace::kernel_aspace();
     void* ptr;
-    auto ret = ka->MapObjectInternal(fbl::move(vmo), "test", 0, alloc_size, &ptr,
+    auto ret = ka->MapObjectInternal(ktl::move(vmo), "test", 0, alloc_size, &ptr,
                                      0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
     ASSERT_EQ(ret, ZX_OK, "mapping object");
 
@@ -919,40 +928,40 @@ static bool vmo_lookup_test() {
         (*pages_seen)++;
         return ZX_OK;
     };
-    status = vmo->Lookup(0, alloc_size, 0, lookup_fn, &pages_seen);
+    status = vmo->Lookup(0, alloc_size, lookup_fn, &pages_seen);
     EXPECT_EQ(ZX_ERR_NO_MEMORY, status, "lookup on uncommitted pages\n");
     EXPECT_EQ(0u, pages_seen, "lookup on uncommitted pages\n");
     pages_seen = 0;
 
-    uint64_t committed;
-    status = vmo->CommitRange(PAGE_SIZE, PAGE_SIZE, &committed);
+    status = vmo->CommitRange(PAGE_SIZE, PAGE_SIZE);
     EXPECT_EQ(ZX_OK, status, "committing vm object\n");
-    EXPECT_EQ(static_cast<size_t>(PAGE_SIZE), committed, "committing vm object\n");
+    EXPECT_EQ(static_cast<size_t>(1), vmo->AllocatedPages(),
+               "committing vm object\n");
 
     // Should fail, since first page isn't mapped
-    status = vmo->Lookup(0, alloc_size, 0, lookup_fn, &pages_seen);
+    status = vmo->Lookup(0, alloc_size, lookup_fn, &pages_seen);
     EXPECT_EQ(ZX_ERR_NO_MEMORY, status, "lookup on partially committed pages\n");
     EXPECT_EQ(0u, pages_seen, "lookup on partially committed pages\n");
     pages_seen = 0;
 
     // Should fail, but see the mapped page
-    status = vmo->Lookup(PAGE_SIZE, alloc_size - PAGE_SIZE, 0, lookup_fn, &pages_seen);
+    status = vmo->Lookup(PAGE_SIZE, alloc_size - PAGE_SIZE, lookup_fn, &pages_seen);
     EXPECT_EQ(ZX_ERR_NO_MEMORY, status, "lookup on partially committed pages\n");
     EXPECT_EQ(1u, pages_seen, "lookup on partially committed pages\n");
     pages_seen = 0;
 
     // Should succeed
-    status = vmo->Lookup(PAGE_SIZE, PAGE_SIZE, 0, lookup_fn, &pages_seen);
+    status = vmo->Lookup(PAGE_SIZE, PAGE_SIZE, lookup_fn, &pages_seen);
     EXPECT_EQ(ZX_OK, status, "lookup on partially committed pages\n");
     EXPECT_EQ(1u, pages_seen, "lookup on partially committed pages\n");
     pages_seen = 0;
 
     // Commit the rest
-    status = vmo->CommitRange(0, alloc_size, &committed);
+    status = vmo->CommitRange(0, alloc_size);
     EXPECT_EQ(ZX_OK, status, "committing vm object\n");
-    EXPECT_EQ(alloc_size - PAGE_SIZE, committed, "committing vm object\n");
+    EXPECT_EQ(alloc_size, PAGE_SIZE * vmo->AllocatedPages(), "committing vm object\n");
 
-    status = vmo->Lookup(0, alloc_size, 0, lookup_fn, &pages_seen);
+    status = vmo->Lookup(0, alloc_size, lookup_fn, &pages_seen);
     EXPECT_EQ(ZX_OK, status, "lookup on partially committed pages\n");
     EXPECT_EQ(alloc_size / PAGE_SIZE, pages_seen, "lookup on partially committed pages\n");
 
@@ -1035,15 +1044,283 @@ static bool arch_noncontiguous_map() {
     END_TEST;
 }
 
+// Basic test that checks adding/removing a page
+static bool vmpl_add_remove_page_test() {
+    BEGIN_TEST;
+
+    VmPageList pl;
+    vm_page_t test_page{};
+    pl.AddPage(&test_page, 0);
+
+    EXPECT_EQ(&test_page, pl.GetPage(0), "unexpected page\n");
+
+    vm_page* remove_page;
+    EXPECT_TRUE(pl.RemovePage(0, &remove_page), "remove failure\n");
+    EXPECT_EQ(&test_page, remove_page, "unexpected page\n");
+
+    END_TEST;
+}
+
+// Test for freeing a range of pages
+static bool vmpl_free_pages_test() {
+    BEGIN_TEST;
+
+    vm_page_t* first_page = nullptr;
+    vm_page_t* last_page = nullptr;
+
+    VmPageList pl;
+    constexpr uint32_t kCount = 3 * VmPageListNode::kPageFanOut;
+    for (uint32_t i = 0; i < kCount; i++) {
+        paddr_t pa;
+        vm_page_t* page;
+
+        zx_status_t status = pmm_alloc_page(0, &page, &pa);
+        ASSERT_EQ(ZX_OK, status, "pmm_alloc single page");
+        ASSERT_NONNULL(page, "pmm_alloc single page");
+        ASSERT_NE(0u, pa, "pmm_alloc single page");
+
+        pl.AddPage(page, i * PAGE_SIZE);
+
+        if (i == 0) {
+            first_page = page;
+        } else if (i == kCount - 1) {
+            last_page = page;
+        }
+    }
+
+    pl.FreePages(PAGE_SIZE, (kCount - 1) * PAGE_SIZE);
+
+    for (uint32_t i = 0; i < kCount; i++) {
+        vm_page* remove_page;
+        bool res = pl.RemovePage(i * PAGE_SIZE, &remove_page);
+        if (i == 0) {
+            EXPECT_TRUE(res, "missing page\n");
+            EXPECT_EQ(first_page, remove_page, "unexpected page\n");
+        } else if (i == kCount - 1) {
+            EXPECT_TRUE(res, "missing page\n");
+            EXPECT_EQ(last_page, remove_page, "unexpected page\n");
+        } else {
+            EXPECT_FALSE(res, "extra page\n");
+        }
+    }
+
+    END_TEST;
+}
+
+// Tests freeing the last page in a list
+static bool vmpl_free_pages_last_page_test() {
+    BEGIN_TEST;
+
+    paddr_t pa;
+    vm_page_t* page;
+
+    zx_status_t status = pmm_alloc_page(0, &page, &pa);
+    ASSERT_EQ(ZX_OK, status, "pmm_alloc single page");
+    ASSERT_NONNULL(page, "pmm_alloc single page");
+    ASSERT_NE(0u, pa, "pmm_alloc single page");
+
+    VmPageList pl;
+    pl.AddPage(page, 0);
+
+    EXPECT_EQ(page, pl.GetPage(0), "unexpected page\n");
+
+    pl.FreePages(0, PAGE_SIZE);
+    EXPECT_TRUE(pl.IsEmpty(), "not empty\n");
+
+    END_TEST;
+}
+
+static bool vmpl_near_last_offset_free() {
+    BEGIN_TEST;
+
+    for (uint64_t addr = 0xfffffffffff00000; addr != 0; addr += 0x1000) {
+        paddr_t pa;
+        vm_page_t* page;
+
+        zx_status_t status = pmm_alloc_page(0, &page, &pa);
+        ASSERT_EQ(ZX_OK, status, "pmm_alloc single page");
+        ASSERT_NONNULL(page, "pmm_alloc single page");
+        ASSERT_NE(0u, pa, "pmm_alloc single page");
+
+        VmPageList pl;
+        if (pl.AddPage(page, addr) == ZX_OK) {
+            EXPECT_EQ(page, pl.GetPage(addr), "unexpected page\n");
+            pl.FreeAllPages();
+            EXPECT_TRUE(pl.IsEmpty(), "non-empty list\n");
+        } else {
+            pmm_free_page(page);
+        }
+    }
+
+    vm_page_t test_page{};
+    VmPageList pl2;
+    EXPECT_EQ(pl2.AddPage(&test_page, 0xffffffffffff0000), ZX_ERR_OUT_OF_RANGE,
+              "unexpected offset addable\n");
+
+    END_TEST;
+}
+
+// Tests taking a page from the start of a VmPageListNode
+static bool vmpl_take_single_page_even_test() {
+    BEGIN_TEST;
+
+    VmPageList pl;
+    vm_page_t test_page{};
+    vm_page_t test_page2{};
+    pl.AddPage(&test_page, 0);
+    pl.AddPage(&test_page2, PAGE_SIZE);
+
+    VmPageSpliceList splice = pl.TakePages(0, PAGE_SIZE);
+
+    EXPECT_EQ(&test_page, splice.Pop(), "wrong page\n");
+    EXPECT_TRUE(splice.IsDone(), "extra page\n");
+    EXPECT_NULL(pl.GetPage(0), "duplicate page\n");
+
+    vm_page* remove_page;
+    EXPECT_TRUE(pl.RemovePage(PAGE_SIZE, &remove_page), "remove failure\n");
+    EXPECT_EQ(&test_page2, remove_page, "unexpected page\n");
+
+    END_TEST;
+}
+
+// Tests taking a page from the middle of a VmPageListNode
+static bool vmpl_take_single_page_odd_test() {
+    BEGIN_TEST;
+
+    VmPageList pl;
+    vm_page_t test_page{};
+    vm_page_t test_page2{};
+    pl.AddPage(&test_page, 0);
+    pl.AddPage(&test_page2, PAGE_SIZE);
+
+    VmPageSpliceList splice = pl.TakePages(PAGE_SIZE, PAGE_SIZE);
+
+    EXPECT_EQ(&test_page2, splice.Pop(), "wrong page\n");
+    EXPECT_TRUE(splice.IsDone(), "extra page\n");
+    EXPECT_NULL(pl.GetPage(PAGE_SIZE), "duplicate page\n");
+
+    vm_page* remove_page;
+    EXPECT_TRUE(pl.RemovePage(0, &remove_page), "remove failure\n");
+    EXPECT_EQ(&test_page, remove_page, "unexpected page\n");
+
+    END_TEST;
+}
+
+// Tests taking all the pages from a range of VmPageListNodes
+static bool vmpl_take_all_pages_test() {
+    BEGIN_TEST;
+
+    VmPageList pl;
+    constexpr uint32_t kCount = 3 * VmPageListNode::kPageFanOut;
+    vm_page_t test_pages[VmPageListNode::kPageFanOut] = {};
+    for (uint32_t i = 0; i < kCount; i++) {
+        pl.AddPage(test_pages + i, i * PAGE_SIZE);
+    }
+
+    VmPageSpliceList splice = pl.TakePages(0, kCount * PAGE_SIZE);
+    EXPECT_TRUE(pl.IsEmpty(), "non-empty list\n");
+
+    for (uint32_t i = 0; i < kCount; i++) {
+        EXPECT_EQ(test_pages + i, splice.Pop(), "wrong page\n");
+    }
+    EXPECT_TRUE(splice.IsDone(), "extra pages\n");
+
+    END_TEST;
+}
+
+// Tests taking the middle pages from a range of VmPageListNodes
+static bool vmpl_take_middle_pages_test() {
+    BEGIN_TEST;
+
+    VmPageList pl;
+    constexpr uint32_t kCount = 3 * VmPageListNode::kPageFanOut;
+    vm_page_t test_pages[VmPageListNode::kPageFanOut] = {};
+    for (uint32_t i = 0; i < kCount; i++) {
+        pl.AddPage(test_pages + i, i * PAGE_SIZE);
+    }
+
+    constexpr uint32_t kTakeOffset = VmPageListNode::kPageFanOut - 1;
+    constexpr uint32_t kTakeCount = VmPageListNode::kPageFanOut + 2;
+    VmPageSpliceList splice = pl.TakePages(kTakeOffset * PAGE_SIZE, kTakeCount * PAGE_SIZE);
+    EXPECT_FALSE(pl.IsEmpty(), "non-empty list\n");
+
+    for (uint32_t i = 0; i < kCount; i++) {
+        if (kTakeOffset <= i && i < kTakeOffset + kTakeCount) {
+            EXPECT_EQ(test_pages + i, splice.Pop(), "wrong page\n");
+        } else {
+            vm_page* remove_page;
+            EXPECT_TRUE(pl.RemovePage(i * PAGE_SIZE, &remove_page), "remove failure\n");
+            EXPECT_EQ(test_pages + i, remove_page, "wrong page\n");
+        }
+    }
+    EXPECT_TRUE(splice.IsDone(), "extra pages\n");
+
+    END_TEST;
+}
+
+// Tests that gaps are preserved in the list
+static bool vmpl_take_gap_test() {
+    BEGIN_TEST;
+
+    VmPageList pl;
+    constexpr uint32_t kCount = VmPageListNode::kPageFanOut;
+    constexpr uint32_t kGapSize = 2;
+    vm_page_t test_pages[VmPageListNode::kPageFanOut] = {};
+    for (uint32_t i = 0; i < kCount; i++) {
+        uint64_t offset = (i * (kGapSize + 1)) * PAGE_SIZE;
+        pl.AddPage(test_pages + i, offset);
+    }
+
+    constexpr uint32_t kListStart = PAGE_SIZE;
+    constexpr uint32_t kListLen = (kCount * (kGapSize + 1) - 2) * PAGE_SIZE;
+    VmPageSpliceList splice = pl.TakePages(kListStart, kListLen);
+
+    vm_page* page;
+    EXPECT_TRUE(pl.RemovePage(0, &page), "wrong page\n");
+    EXPECT_EQ(test_pages, page, "wrong page\n");
+    EXPECT_FALSE(pl.RemovePage(kListLen, &page), "wrong page\n");
+
+    for (uint64_t offset = kListStart; offset < kListStart + kListLen; offset += PAGE_SIZE) {
+        auto page_idx = offset / PAGE_SIZE;
+        if (page_idx % (kGapSize + 1) == 0) {
+            EXPECT_EQ(test_pages + (page_idx / (kGapSize + 1)), splice.Pop(), "wrong page\n");
+        } else {
+            EXPECT_NULL(splice.Pop(), "wrong page\n");
+        }
+    }
+    EXPECT_TRUE(splice.IsDone(), "extra pages\n");
+
+    END_TEST;
+}
+
+// Tests that cleaning up a splice list doesn't blow up
+static bool vmpl_take_cleanup_test() {
+    BEGIN_TEST;
+
+    paddr_t pa;
+    vm_page_t* page;
+
+    zx_status_t status = pmm_alloc_page(0, &page, &pa);
+    ASSERT_EQ(ZX_OK, status, "pmm_alloc single page");
+    ASSERT_NONNULL(page, "pmm_alloc single page");
+    ASSERT_NE(0u, pa, "pmm_alloc single page");
+
+    page->state = VM_PAGE_STATE_OBJECT;
+    page->object.pin_count = 0;
+
+    VmPageList pl;
+    pl.AddPage(page, 0);
+
+    VmPageSpliceList splice = pl.TakePages(0, PAGE_SIZE);
+    EXPECT_TRUE(!splice.IsDone(), "missing page\n");
+
+    END_TEST;
+}
+
 // Use the function name as the test name
 #define VM_UNITTEST(fname) UNITTEST(#fname, fname)
 
 UNITTEST_START_TESTCASE(vm_tests)
-VM_UNITTEST(pmm_smoke_test)
-// runs the system out of memory, uncomment for debugging
-//VM_UNITTEST(pmm_large_alloc_test)
-//VM_UNITTEST(pmm_oversized_alloc_test)
-VM_UNITTEST(pmm_alloc_contiguous_one_test)
 VM_UNITTEST(vmm_alloc_smoke_test)
 VM_UNITTEST(vmm_alloc_contiguous_smoke_test)
 VM_UNITTEST(multiple_regions_test)
@@ -1054,6 +1331,7 @@ VM_UNITTEST(vmm_alloc_contiguous_zero_size_fails)
 VM_UNITTEST(vmaspace_create_smoke_test)
 VM_UNITTEST(vmaspace_alloc_smoke_test)
 VM_UNITTEST(vmo_create_test)
+VM_UNITTEST(vmo_create_maximum_size)
 VM_UNITTEST(vmo_pin_test)
 VM_UNITTEST(vmo_multiple_pin_test)
 VM_UNITTEST(vmo_commit_test)
@@ -1072,4 +1350,25 @@ VM_UNITTEST(vmo_lookup_test)
 VM_UNITTEST(arch_noncontiguous_map)
 // Uncomment for debugging
 // VM_UNITTEST(dump_all_aspaces)  // Run last
-UNITTEST_END_TESTCASE(vm_tests, "vmtests", "Virtual memory tests");
+UNITTEST_END_TESTCASE(vm_tests, "vm", "Virtual memory tests");
+
+UNITTEST_START_TESTCASE(pmm_tests)
+VM_UNITTEST(pmm_smoke_test)
+VM_UNITTEST(pmm_alloc_contiguous_one_test)
+VM_UNITTEST(pmm_multi_alloc_test)
+// runs the system out of memory, uncomment for debugging
+//VM_UNITTEST(pmm_oversized_alloc_test)
+UNITTEST_END_TESTCASE(pmm_tests, "pmm", "Physical memory manager tests");
+
+UNITTEST_START_TESTCASE(vm_page_list_tests)
+VM_UNITTEST(vmpl_add_remove_page_test)
+VM_UNITTEST(vmpl_free_pages_test)
+VM_UNITTEST(vmpl_free_pages_last_page_test)
+VM_UNITTEST(vmpl_near_last_offset_free)
+VM_UNITTEST(vmpl_take_single_page_even_test)
+VM_UNITTEST(vmpl_take_single_page_odd_test)
+VM_UNITTEST(vmpl_take_all_pages_test)
+VM_UNITTEST(vmpl_take_middle_pages_test)
+VM_UNITTEST(vmpl_take_gap_test)
+VM_UNITTEST(vmpl_take_cleanup_test)
+UNITTEST_END_TESTCASE(vm_page_list_tests, "vmpl", "VmPageList tests");

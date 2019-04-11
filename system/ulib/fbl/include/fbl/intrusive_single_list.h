@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -5,6 +8,8 @@
 #include <fbl/intrusive_container_utils.h>
 #include <fbl/intrusive_pointer_traits.h>
 #include <fbl/macros.h>
+
+#include <utility>
 
 // Usage Notes:
 //
@@ -74,7 +79,7 @@
 //
 //     for (size_t i = 0; SOME_NUMBER; ++i) {
 //         unique_ptr<Foo> new_foo(new Foo(...));
-//         list.push_front(fbl::move(new_foo));
+//         list.push_front(std::move(new_foo));
 //     }
 //
 //     for (const auto& foo : list)
@@ -125,7 +130,7 @@
 //                 break;
 //         }
 //
-//         default_list.push_front(fbl::move(new_foo));
+//         default_list.push_front(std::move(new_foo));
 //     }
 //
 //     for (const auto& foo : default_list) foo.print();
@@ -546,7 +551,7 @@ public:
             }
         }
 
-        return fbl::move(ptr);
+        return std::move(ptr);
     }
 
 private:

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <algorithm>
 #include <string>
@@ -162,6 +165,25 @@ bool parse_argpack(TokenStream* ts, vector<TypeSpec>* v) {
 }
 
 bool process_comment(AbigenGenerator* parser, TokenStream& ts) {
+    if (ts.peek_next() == "!") {
+        ts.next();  // '!'
+        Requirement req;
+        for (;;) {
+            req.emplace_back(ts.next());
+            if (ts.peek_next() == std::string())
+                break;
+        }
+        parser->AppendRequirement(std::move(req));
+    } else if (ts.peek_next() == "^") {
+        ts.next();  // '^'
+        TopDescription td;
+        for (;;) {
+            td.emplace_back(ts.next());
+            if (ts.peek_next() == std::string())
+                break;
+        }
+        parser->SetTopDescription(std::move(td));
+    }
     return true;
 }
 

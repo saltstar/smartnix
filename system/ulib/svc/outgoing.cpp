@@ -1,7 +1,12 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <lib/svc/outgoing.h>
 #include <zircon/process.h>
 #include <zircon/processargs.h>
+
+#include <utility>
 
 namespace svc {
 
@@ -17,7 +22,7 @@ Outgoing::~Outgoing() = default;
 zx_status_t Outgoing::Serve(zx::channel dir_request) {
     if (!dir_request)
         return ZX_ERR_BAD_HANDLE;
-    return vfs_.ServeDirectory(root_dir_, fbl::move(dir_request));
+    return vfs_.ServeDirectory(root_dir_, std::move(dir_request));
 }
 
 zx_status_t Outgoing::ServeFromStartupInfo() {

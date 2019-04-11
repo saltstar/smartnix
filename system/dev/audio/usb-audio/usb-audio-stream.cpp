@@ -1,19 +1,22 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <audio-proto-utils/format-utils.h>
 #include <ddk/device.h>
-#include <usb/usb-request.h>
 #include <digest/digest.h>
+#include <dispatcher-pool/dispatcher-thread-pool.h>
 #include <fbl/algorithm.h>
 #include <fbl/auto_call.h>
-#include <fbl/limits.h>
 #include <lib/zx/vmar.h>
+#include <limits>
 #include <string.h>
-#include <zircon/hw/usb-audio.h>
+#include <usb/usb-request.h>
+#include <utility>
+#include <zircon/hw/usb/audio.h>
 #include <zircon/process.h>
 #include <zircon/time.h>
 #include <zircon/types.h>
-
-#include <dispatcher-pool/dispatcher-thread-pool.h>
 
 #include "usb-audio.h"
 #include "usb-audio-device.h"
@@ -37,8 +40,8 @@ UsbAudioStream::UsbAudioStream(UsbAudioDevice* parent,
     : UsbAudioStreamBase(parent->zxdev()),
       AudioStreamProtocol(ifc->direction() == Direction::Input),
       parent_(*parent),
-      ifc_(fbl::move(ifc)),
-      default_domain_(fbl::move(default_domain)),
+      ifc_(std::move(ifc)),
+      default_domain_(std::move(default_domain)),
       create_time_(zx_clock_get_monotonic()) {
     snprintf(log_prefix_, sizeof(log_prefix_),
              "UsbAud %04hx:%04hx %s-%03d",
@@ -53,7 +56,7 @@ UsbAudioStream::~UsbAudioStream() {
     ZX_DEBUG_ASSERT(allocated_req_cnt_ == free_req_cnt_);
 
     while (!list_is_empty(&free_req_)) {
-        usb_request_release(list_remove_head_type(&free_req_, usb_request_t, node));
+        usb_request_release(usb_req_list_remove_head(&free_req_, parent_.parent_req_size()));
     }
 }
 
@@ -71,7 +74,7 @@ fbl::RefPtr<UsbAudioStream> UsbAudioStream::Create(UsbAudioDevice* parent,
 
     fbl::AllocChecker ac;
     auto stream = fbl::AdoptRef(
-            new (&ac) UsbAudioStream(parent, fbl::move(ifc), fbl::move(domain)));
+            new (&ac) UsbAudioStream(parent, std::move(ifc), std::move(domain)));
     if (!ac.check()) {
         LOG_EX(ERROR, *parent,
                "Out of memory while attempting to allocate UsbAudioStream\n");
@@ -94,23 +97,19 @@ zx_status_t UsbAudioStream::Bind() {
         free_req_cnt_ = 0;
         allocated_req_cnt_ = 0;
 
+        uint64_t req_size = parent_.parent_req_size() + sizeof(usb_req_internal_t);
         for (uint32_t i = 0; i < MAX_OUTSTANDING_REQ; ++i) {
             usb_request_t* req;
             zx_status_t status = usb_request_alloc(&req, ifc_->max_req_size(),
-                                                   ifc_->ep_addr(), sizeof(usb_request_t));
+                                                   ifc_->ep_addr(), req_size);
             if (status != ZX_OK) {
                 LOG(ERROR, "Failed to allocate usb request %u/%u (size %u): %d\n",
                     i + 1, MAX_OUTSTANDING_REQ, ifc_->max_req_size(), status);
                 return status;
             }
 
-            req->cookie = this;
-            req->complete_cb = [](usb_request_t* req, void* cookie) -> void {
-                ZX_DEBUG_ASSERT(cookie != nullptr);
-                reinterpret_cast<UsbAudioStream*>(cookie)->RequestComplete(req);
-            };
-
-            list_add_head(&free_req_, &req->node);
+            status = usb_req_list_add_head(&free_req_, req, parent_.parent_req_size());
+            ZX_DEBUG_ASSERT(status == ZX_OK);
             ++free_req_cnt_;
             ++allocated_req_cnt_;
         }
@@ -131,6 +130,11 @@ zx_status_t UsbAudioStream::Bind() {
     }
 
     return status;
+}
+
+void UsbAudioStream::RequestCompleteCallback(void* ctx, usb_request_t* request) {
+    ZX_DEBUG_ASSERT(ctx != nullptr);
+    reinterpret_cast<UsbAudioStream*>(ctx)->RequestComplete(request);
 }
 
 void UsbAudioStream::ComputePersistentUniqueId() {
@@ -295,8 +299,8 @@ zx_status_t UsbAudioStream::DdkIoctl(uint32_t op,
     zx::channel client_endpoint;
     zx_status_t res = channel->Activate(&client_endpoint,
                                         default_domain_,
-                                        fbl::move(phandler),
-                                        fbl::move(chandler));
+                                        std::move(phandler),
+                                        std::move(chandler));
     if (res == ZX_OK) {
         if (privileged) {
             ZX_DEBUG_ASSERT(stream_channel_ == nullptr);
@@ -416,7 +420,7 @@ zx_status_t UsbAudioStream::OnGetStreamFormatsLocked(dispatcher::Channel* channe
     audio_proto::StreamGetFmtsResp resp = { };
 
     const auto& formats = ifc_->formats();
-    if (formats.size() > fbl::numeric_limits<uint16_t>::max()) {
+    if (formats.size() > std::numeric_limits<uint16_t>::max()) {
         LOG(ERROR, "Too many formats (%zu) to send during AUDIO_STREAM_CMD_GET_FORMATS request!\n",
             formats.size());
         return ZX_ERR_INTERNAL;
@@ -590,8 +594,8 @@ zx_status_t UsbAudioStream::OnSetStreamFormatLocked(dispatcher::Channel* channel
 
         resp.result = rb_channel_->Activate(&client_rb_channel,
                                             default_domain_,
-                                            fbl::move(phandler),
-                                            fbl::move(chandler));
+                                            std::move(phandler),
+                                            std::move(chandler));
         if (resp.result != ZX_OK) {
             rb_channel_.reset();
         }
@@ -601,7 +605,7 @@ finished:
     if (resp.result == ZX_OK) {
         // TODO(johngro): Report the actual external delay.
         resp.external_delay_nsec = 0;
-        return channel->Write(&resp, sizeof(resp), fbl::move(client_rb_channel));
+        return channel->Write(&resp, sizeof(resp), std::move(client_rb_channel));
     } else {
         return channel->Write(&resp, sizeof(resp));
     }
@@ -714,7 +718,7 @@ zx_status_t UsbAudioStream::OnGetStringLocked(dispatcher::Channel* channel,
         resp.strlen = 0;
     } else {
         size_t todo = fbl::min<size_t>(sizeof(resp.str), str->size());
-        ZX_DEBUG_ASSERT(todo <= fbl::numeric_limits<uint32_t>::max());
+        ZX_DEBUG_ASSERT(todo <= std::numeric_limits<uint32_t>::max());
 
         ::memset(resp.str, 0, sizeof(resp.str));
         if (todo) {
@@ -818,7 +822,7 @@ finished:
     zx_status_t res;
     if (resp.result == ZX_OK) {
         ZX_DEBUG_ASSERT(client_rb_handle.is_valid());
-        res = channel->Write(&resp, sizeof(resp), fbl::move(client_rb_handle));
+        res = channel->Write(&resp, sizeof(resp), std::move(client_rb_handle));
     } else {
         res = channel->Write(&resp, sizeof(resp));
     }
@@ -1091,7 +1095,7 @@ void UsbAudioStream::QueueRequestLocked() {
     }
 
     // Grab a free usb request.
-    auto req = list_remove_head_type(&free_req_, usb_request_t, node);
+    auto req = usb_req_list_remove_head(&free_req_, parent_.parent_req_size());
     ZX_DEBUG_ASSERT(req != nullptr);
     ZX_DEBUG_ASSERT(free_req_cnt_ > 0);
     --free_req_cnt_;
@@ -1118,7 +1122,11 @@ void UsbAudioStream::QueueRequestLocked() {
 
     req->header.frame = usb_frame_num_++;
     req->header.length = todo;
-    usb_request_queue(&parent_.usb_proto(), req);
+    usb_request_complete_t complete = {
+        .callback = UsbAudioStream::RequestCompleteCallback,
+        .ctx = this,
+    };
+    usb_request_queue(&parent_.usb_proto(), req, &complete);
 }
 
 void UsbAudioStream::CompleteRequestLocked(usb_request_t* req) {
@@ -1166,7 +1174,8 @@ void UsbAudioStream::CompleteRequestLocked(usb_request_t* req) {
     }
 
     // Return the transaction to the free list.
-    list_add_head(&free_req_, &req->node);
+    zx_status_t status = usb_req_list_add_head(&free_req_, req, parent_.parent_req_size());
+    ZX_DEBUG_ASSERT(status == ZX_OK);
     ++free_req_cnt_;
     ZX_DEBUG_ASSERT(free_req_cnt_ <= allocated_req_cnt_);
 }

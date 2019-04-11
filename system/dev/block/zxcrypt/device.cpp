@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -9,7 +12,6 @@
 #include <ddk/device.h>
 #include <fbl/algorithm.h>
 #include <fbl/alloc_checker.h>
-#include <fbl/atomic.h>
 #include <fbl/auto_call.h>
 #include <fbl/auto_lock.h>
 #include <fbl/unique_ptr.h>
@@ -23,6 +25,8 @@
 #include <zircon/thread_annotations.h>
 #include <zircon/types.h>
 #include <zxcrypt/volume.h>
+
+#include <utility>
 
 #include "debug.h"
 #include "device.h"
@@ -68,6 +72,8 @@ zx_status_t Device::Bind() {
                zx_status_get_string(rc));
         return rc;
     }
+    // This call to |DdkRemove| only occurs if the thread below fails to start.  Any calls to
+    // |DdkUnbind| will be a no-op as |active_| is false.
     auto cleanup = fbl::MakeAutoCall([this] { DdkRemove(); });
 
     // Launch the init thread.
@@ -84,8 +90,11 @@ zx_status_t Device::Init() {
     LOG_ENTRY();
     ZX_DEBUG_ASSERT(!info_);
     zx_status_t rc;
+    fbl::AutoLock lock(&mtx_);
 
     zxlogf(TRACE, "zxcrypt device %p initializing\n", this);
+    // This call to |DdkRemove| only occurs if the thread starts but encounters an error.  Any calls
+    // to |DdkUnbind| will be a no-op as |active_| is false.
     auto cleanup = fbl::MakeAutoCall([this]() {
         zxlogf(ERROR, "zxcrypt device %p failed to initialize\n", this);
         DdkRemove();
@@ -117,15 +126,22 @@ zx_status_t Device::Init() {
         return rc;
     }
 
-    // Get the parent device's block interface
-    block_info_t blk;
-    if ((rc = device_get_protocol(parent(), ZX_PROTOCOL_BLOCK, &info->proto)) != ZX_OK) {
-        zxlogf(ERROR, "failed to get block protocol: %s\n", zx_status_get_string(rc));
-        return rc;
+    // Get the parent device's block interface.
+    info->block_protocol = ddk::BlockProtocolClient(parent());
+    if (!info->block_protocol.is_valid()) {
+        zxlogf(ERROR, "failed to get block protocol\n");
+        return ZX_ERR_BAD_STATE;
     }
-    info->proto.ops->query(info->proto.ctx, &blk, &info->op_size);
+
+    // The Partition Protocol is optional.
+    info->partition_protocol = ddk::BlockPartitionProtocolClient(parent());
+    // The Volume Protocol is optional.
+    info->volume_protocol = ddk::BlockVolumeProtocolClient(parent());
+
 
     // Save device sizes
+    block_info_t blk;
+    info->block_protocol.Query(&blk, &info->op_size);
     info->block_size = blk.block_size;
     info->op_size += sizeof(extra_op_t);
     info->reserved_blocks = volume->reserved_blocks();
@@ -146,11 +162,7 @@ zx_status_t Device::Init() {
     info->base = reinterpret_cast<uint8_t*>(address);
 
     // Set up allocation bitmap
-    {
-        fbl::AutoLock lock(&mtx_);
-        rc = map_.Reset(Volume::kBufferSize / info->block_size);
-    }
-    if (rc != ZX_OK) {
+    if ((rc = map_.Reset(Volume::kBufferSize / info->block_size)) != ZX_OK) {
         zxlogf(ERROR, "bitmap allocation failed: %s\n", zx_status_get_string(rc));
         return rc;
     }
@@ -164,7 +176,7 @@ zx_status_t Device::Init() {
     for (size_t i = 0; i < kNumWorkers; ++i) {
         zx::port port;
         port_.duplicate(ZX_RIGHT_SAME_RIGHTS, &port);
-        if ((rc = workers_[i].Start(this, *volume, fbl::move(port))) != ZX_OK) {
+        if ((rc = workers_[i].Start(this, *volume, std::move(port))) != ZX_OK) {
             zxlogf(ERROR, "failed to start worker %zu: %s\n", i, zx_status_get_string(rc));
             return rc;
         }
@@ -174,7 +186,8 @@ zx_status_t Device::Init() {
     // |info_| now holds the pointer; it is reclaimed in |DdkRelease|.
     DeviceInfo* released __attribute__((unused)) = info.release();
 
-    // Enable the device
+    // Enable the device.  Holding the lock at function scope guarantees that |active_| becomes true
+    // if and only if |cleanup| is canceled.
     active_.store(true);
     DdkMakeVisible();
     zxlogf(TRACE, "zxcrypt device %p initialized\n", this);
@@ -186,69 +199,22 @@ zx_status_t Device::Init() {
 ////////////////////////////////////////////////////////////////
 // ddk::Device methods
 
-zx_status_t Device::DdkIoctl(uint32_t op, const void* in, size_t in_len, void* out, size_t out_len,
-                             size_t* actual) {
-    LOG_ENTRY_ARGS("op=%0x" PRIx32 ", in=%p, in_len=%zu, out=%p, out_len=%zu, actual=%p", op, in,
-                   in_len, out, out_len, actual);
-    ZX_DEBUG_ASSERT(info_);
-    zx_status_t rc;
-
-    // Modify inputs
-    switch (op) {
-    case IOCTL_BLOCK_FVM_EXTEND:
-    case IOCTL_BLOCK_FVM_SHRINK: {
-        extend_request_t mod;
-        if (!in || in_len < sizeof(mod)) {
-            zxlogf(ERROR, "bad parameter(s): in=%p, in_len=%zu\n", in, in_len);
-            return ZX_ERR_INVALID_ARGS;
-        }
-        memcpy(&mod, in, sizeof(mod));
-        mod.offset += info_->reserved_slices;
-        rc = device_ioctl(parent(), op, &mod, sizeof(mod), out, out_len, actual);
-        break;
-    }
-    case IOCTL_BLOCK_FVM_VSLICE_QUERY: {
-        query_request_t mod;
-        if (!in || in_len < sizeof(mod)) {
-            zxlogf(ERROR, "bad parameter(s): in=%p, in_len=%zu\n", in, in_len);
-            return ZX_ERR_INVALID_ARGS;
-        }
-        memcpy(&mod, in, sizeof(mod));
-        for (size_t i = 0; i < mod.count; ++i) {
-            mod.vslice_start[i] += info_->reserved_slices;
-        }
-        rc = device_ioctl(parent(), op, &mod, sizeof(mod), out, out_len, actual);
-        break;
-    }
+zx_status_t Device::DdkGetProtocol(uint32_t proto_id, void* out) {
+    auto* proto = static_cast<ddk::AnyProtocol*>(out);
+    proto->ctx = this;
+    switch (proto_id) {
+    case ZX_PROTOCOL_BLOCK_IMPL:
+        proto->ops = &block_impl_protocol_ops_;
+        return ZX_OK;
+    case ZX_PROTOCOL_BLOCK_PARTITION:
+        proto->ops = &block_partition_protocol_ops_;
+        return ZX_OK;
+    case ZX_PROTOCOL_BLOCK_VOLUME:
+        proto->ops = &block_volume_protocol_ops_;
+        return ZX_OK;
     default:
-        rc = device_ioctl(parent(), op, in, in_len, out, out_len, actual);
-        break;
+        return ZX_ERR_NOT_SUPPORTED;
     }
-    if (rc < 0) {
-        zxlogf(ERROR, "parent device returned failure for ioctl 0x%" PRIx32 ": %s\n", op,
-               zx_status_get_string(rc));
-        return rc;
-    }
-
-    // Modify outputs
-    switch (op) {
-    case IOCTL_BLOCK_GET_INFO: {
-        block_info_t* mod = static_cast<block_info_t*>(out);
-        mod->block_count -= info_->reserved_blocks;
-        if (mod->max_transfer_size > kMaxTransferSize) {
-            mod->max_transfer_size = kMaxTransferSize;
-        }
-        break;
-    }
-    case IOCTL_BLOCK_FVM_QUERY: {
-        fvm_info_t* mod = static_cast<fvm_info_t*>(out);
-        mod->vslice_count -= info_->reserved_slices;
-        break;
-    }
-    default:
-        break;
-    }
-    return ZX_OK;
 }
 
 zx_off_t Device::DdkGetSize() {
@@ -268,8 +234,13 @@ zx_off_t Device::DdkGetSize() {
 // this on demand.
 void Device::DdkUnbind() {
     LOG_ENTRY();
-    active_.store(false);
-    DdkRemove();
+    // We call |DdkRemove| exactly once after |Init| completes successfully, which is the only place
+    // |active_| becaomes true.  The lock is required to prevent |DdkUnbind| from being called
+    // during a call to |Init|.
+    fbl::AutoLock lock(&mtx_);
+    if (active_.exchange(false)) {
+        DdkRemove();
+    }
 }
 
 void Device::DdkRelease() {
@@ -318,8 +289,9 @@ void Device::BlockImplQuery(block_info_t* out_info, size_t* out_op_size) {
     LOG_ENTRY_ARGS("out_info=%p, out_op_size=%p", out_info, out_op_size);
     ZX_DEBUG_ASSERT(info_);
 
-    info_->proto.ops->query(info_->proto.ctx, out_info, out_op_size);
+    info_->block_protocol.Query(out_info, out_op_size);
     out_info->block_count -= info_->reserved_blocks;
+    out_info->max_transfer_size = fbl::min(kMaxTransferSize, out_info->max_transfer_size);
     *out_op_size = info_->op_size;
 }
 
@@ -356,6 +328,92 @@ void Device::BlockImplQueue(block_op_t* block, block_impl_queue_callback complet
     }
 }
 
+////////////////////////////////////////////////////////////////
+// ddk::PartitionProtocol methods
+
+zx_status_t Device::BlockPartitionGetGuid(guidtype_t guidtype, guid_t* out_guid) {
+    ZX_DEBUG_ASSERT(info_);
+    if (!info_->partition_protocol.is_valid()) {
+        return ZX_ERR_NOT_SUPPORTED;
+    }
+    return info_->partition_protocol.GetGuid(guidtype, out_guid);
+}
+
+zx_status_t Device::BlockPartitionGetName(char* out_name, size_t capacity) {
+    ZX_DEBUG_ASSERT(info_);
+    if (!info_->partition_protocol.is_valid()) {
+        return ZX_ERR_NOT_SUPPORTED;
+    }
+    return info_->partition_protocol.GetName(out_name, capacity);
+}
+
+////////////////////////////////////////////////////////////////
+// ddk::VolumeProtocol methods
+zx_status_t Device::BlockVolumeExtend(const slice_extent_t* extent) {
+    ZX_DEBUG_ASSERT(info_);
+    if (!info_->volume_protocol.is_valid()) {
+        return ZX_ERR_NOT_SUPPORTED;
+    }
+
+    slice_extent_t modified = *extent;
+    modified.offset += info_->reserved_slices;
+    return info_->volume_protocol.Extend(&modified);
+}
+
+zx_status_t Device::BlockVolumeShrink(const slice_extent_t* extent) {
+    ZX_DEBUG_ASSERT(info_);
+    if (!info_->volume_protocol.is_valid()) {
+        return ZX_ERR_NOT_SUPPORTED;
+    }
+
+    slice_extent_t modified = *extent;
+    modified.offset += info_->reserved_slices;
+    return info_->volume_protocol.Shrink(&modified);
+}
+
+zx_status_t Device::BlockVolumeQuery(parent_volume_info_t* out_info) {
+    ZX_DEBUG_ASSERT(info_);
+    if (!info_->volume_protocol.is_valid()) {
+        return ZX_ERR_NOT_SUPPORTED;
+    }
+    zx_status_t status = info_->volume_protocol.Query(out_info);
+    if (status != ZX_OK) {
+        return status;
+    }
+
+    out_info->virtual_slice_count -= info_->reserved_slices;
+    out_info->physical_slice_count_total -= info_->reserved_slices;
+    out_info->physical_slice_count_used -= info_->reserved_slices;
+
+    return ZX_OK;
+}
+
+zx_status_t Device::BlockVolumeQuerySlices(const uint64_t* start_list, size_t start_count,
+                                           slice_region_t* out_responses_list,
+                                           size_t responses_count, size_t* out_responses_actual) {
+    ZX_DEBUG_ASSERT(info_);
+    if (!info_->volume_protocol.is_valid()) {
+        return ZX_ERR_NOT_SUPPORTED;
+    }
+    ZX_DEBUG_ASSERT(start_count <= MAX_SLICE_QUERY_REQUESTS);
+
+    uint64_t modified_list[start_count];
+    memcpy(modified_list, start_list, start_count);
+    for (size_t i = 0; i < start_count; i++) {
+        modified_list[i] = start_list[i] + info_->reserved_slices;
+    }
+    return info_->volume_protocol.QuerySlices(modified_list, start_count, out_responses_list,
+                                              responses_count, out_responses_actual);
+}
+
+zx_status_t Device::BlockVolumeDestroy() {
+    ZX_DEBUG_ASSERT(info_);
+    if (!info_->volume_protocol.is_valid()) {
+        return ZX_ERR_NOT_SUPPORTED;
+    }
+    return info_->volume_protocol.Destroy();
+}
+
 void Device::BlockForward(block_op_t* block, zx_status_t status) {
     LOG_ENTRY_ARGS("block=%p, status=%s", block, zx_status_get_string(status));
     ZX_DEBUG_ASSERT(info_);
@@ -377,7 +435,7 @@ void Device::BlockForward(block_op_t* block, zx_status_t status) {
     }
 
     // Send the request to the parent device
-    block_impl_queue(&info_->proto, block, BlockCallback, this);
+    info_->block_protocol.Queue(block, BlockCallback, this);
 }
 
 void Device::BlockComplete(block_op_t* block, zx_status_t status) {

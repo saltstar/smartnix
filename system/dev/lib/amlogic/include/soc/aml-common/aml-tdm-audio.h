@@ -9,6 +9,8 @@
 #include <fbl/unique_ptr.h>
 #include <soc/aml-common/aml-audio-regs.h>
 
+#include <utility>
+
 class AmlTdmDevice {
 
 public:
@@ -29,10 +31,18 @@ public:
     zx_status_t SetMclkDiv(uint32_t div);
     //Configure an sclk/lclk generator block
     zx_status_t SetSclkDiv(uint32_t sdiv, uint32_t lrduty, uint32_t lrdiv);
+    // Configures the mclk pad.
+    zx_status_t SetMClkPad(aml_tdm_mclk_pad_t mclk_pad);
 
     // Configures placement of data on the tdm bus
-    void ConfigTdmOutSlot(uint8_t bit_offset, uint8_t num_slots,
-                          uint8_t bits_per_slot, uint8_t bits_per_sample);
+    void ConfigTdmOutSlot(uint8_t bit_offset, uint8_t num_slots, uint8_t bits_per_slot,
+                          uint8_t bits_per_sample, uint8_t mix_mask);
+
+    // Configures Lanes.
+    zx_status_t ConfigTdmOutLane(size_t lane, uint32_t mask);
+
+    // Configures TDM swaps.
+    void ConfigTdmOutSwaps(uint32_t swaps);
 
     // Sets the buffer/length pointers for dma engine
     //  must resize in lower 32-bits of address space
@@ -68,7 +78,7 @@ public:
     uint32_t fifo_depth() const { return fifo_depth_;};
 
 private:
-    const uint32_t fifo_depth_;
+    const uint32_t fifo_depth_;    // in bytes.
     const aml_tdm_out_t tdm_ch_;   // tdm output block used by this instance
     const aml_frddr_t frddr_ch_;   // fromddr channel used by this instance
     const aml_tdm_mclk_t mclk_ch_; // mclk channel used by this instance
@@ -88,11 +98,11 @@ private:
         clk_src_(clk_src),
         frddr_base_(GetFrddrBase(frddr)),
         tdm_base_(GetTdmBase(tdm)),
-        mmio_(fbl::move(mmio)) {};
+        mmio_(std::move(mmio)) {};
 
     ~AmlTdmDevice() = default;
 
-    /* Get the resgister block offset for our ddr block */
+    /* Get the register block offset for our ddr block */
     static zx_off_t GetFrddrBase(aml_frddr_t ch) {
         switch (ch) {
         case FRDDR_A:
@@ -129,7 +139,7 @@ private:
     void TdmOutDisable();
     void TdmOutEnable();
 
-    /* Get the resgister block offset for our ddr block */
+    /* Get the register block offset for our ddr block */
     zx_off_t GetFrddrOffset(zx_off_t off) {
         return frddr_base_ + off;
     }

@@ -1,8 +1,12 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-#include <unistd.h>
-
-#include <stdbool.h>
+#include <limits>
+#include <new>
 #include <string.h>
+#include <unistd.h>
+#include <utility>
 
 #include <ddk/device.h>
 #include <ddk/protocol/block.h>
@@ -10,13 +14,11 @@
 #include <fbl/alloc_checker.h>
 #include <fbl/auto_call.h>
 #include <fbl/auto_lock.h>
-#include <fbl/limits.h>
-#include <fbl/new.h>
 #include <fbl/ref_ptr.h>
+#include <lib/zx/fifo.h>
 #include <zircon/compiler.h>
 #include <zircon/device/block.h>
 #include <zircon/syscalls.h>
-#include <lib/zx/fifo.h>
 
 #include "server.h"
 
@@ -90,7 +92,7 @@ void InQueueAdd(zx_handle_t vmo, uint64_t length, uint64_t vmo_offset,
 
 }  // namespace
 
-IoBuffer::IoBuffer(zx::vmo vmo, vmoid_t id) : io_vmo_(fbl::move(vmo)), vmoid_(id) {}
+IoBuffer::IoBuffer(zx::vmo vmo, vmoid_t id) : io_vmo_(std::move(vmo)), vmoid_(id) {}
 
 IoBuffer::~IoBuffer() {}
 
@@ -178,7 +180,7 @@ zx_status_t BlockServer::Read(block_fifo_request_t* requests, size_t* count) {
 }
 
 zx_status_t BlockServer::FindVmoIDLocked(vmoid_t* out) {
-    for (vmoid_t i = last_id_; i < fbl::numeric_limits<vmoid_t>::max(); i++) {
+    for (vmoid_t i = last_id_; i < std::numeric_limits<vmoid_t>::max(); i++) {
         if (!tree_.find(i).IsValid()) {
             *out = i;
             last_id_ = static_cast<vmoid_t>(i + 1);
@@ -204,11 +206,11 @@ zx_status_t BlockServer::AttachVmo(zx::vmo vmo, vmoid_t* out) {
     }
 
     fbl::AllocChecker ac;
-    fbl::RefPtr<IoBuffer> ibuf = fbl::AdoptRef(new (&ac) IoBuffer(fbl::move(vmo), id));
+    fbl::RefPtr<IoBuffer> ibuf = fbl::AdoptRef(new (&ac) IoBuffer(std::move(vmo), id));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
-    tree_.insert(fbl::move(ibuf));
+    tree_.insert(std::move(ibuf));
     *out = id;
     return ZX_OK;
 }
@@ -256,11 +258,11 @@ void BlockServer::InQueueDrainer() {
         // This may be altered in the future if block devices
         // are capable of implementing hardware barriers.
         msg->op.command &= ~(BLOCK_FL_BARRIER_BEFORE | BLOCK_FL_BARRIER_AFTER);
-        bp_->ops->queue(bp_->ctx, &msg->op, BlockCompleteCb, &*msg);
+        bp_->Queue(&msg->op, BlockCompleteCb, &*msg);
     }
 }
 
-zx_status_t BlockServer::Create(block_impl_protocol_t* bp, fzl::fifo<block_fifo_request_t,
+zx_status_t BlockServer::Create(ddk::BlockProtocolClient* bp, fzl::fifo<block_fifo_request_t,
                                 block_fifo_response_t>* fifo_out, BlockServer** out) {
     fbl::AllocChecker ac;
     BlockServer* bs = new (&ac) BlockServer(bp);
@@ -287,7 +289,7 @@ zx_status_t BlockServer::Create(block_impl_protocol_t* bp, fzl::fifo<block_fifo_
         return status;
     }
 
-    bp->ops->query(bp->ctx, &bs->info_, &bs->block_op_size_);
+    bp->Query(&bs->info_, &bs->block_op_size_);
 
     // TODO(ZX-1583): Allocate BlockMsg arena based on block_op_size_.
 
@@ -295,147 +297,154 @@ zx_status_t BlockServer::Create(block_impl_protocol_t* bp, fzl::fifo<block_fifo_
     return ZX_OK;
 }
 
-void BlockServer::ProcessRequest(block_fifo_request_t* request) {
+zx_status_t BlockServer::ProcessReadWriteRequest(block_fifo_request_t* request) {
     reqid_t reqid = request->reqid;
     groupid_t group = request->group;
-    vmoid_t vmoid = request->vmoid;
 
+    // TODO(ZX-1586): Reduce the usage of this lock (only used to protect
+    // IoBuffers).
+    fbl::AutoLock server_lock(&server_lock_);
+
+    auto iobuf = tree_.find(request->vmoid);
+    if (!iobuf.IsValid()) {
+        // Operation which is not accessing a valid vmo.
+        return ZX_ERR_IO;
+    }
+
+    if ((request->length < 1) ||
+        (request->length > std::numeric_limits<uint32_t>::max())) {
+        // Operation which is too small or too large.
+        return ZX_ERR_INVALID_ARGS;
+    }
+
+    // Hack to ensure that the vmo is valid.
+    // In the future, this code will be responsible for pinning VMO pages,
+    // and the completion will be responsible for un-pinning those same pages.
+    uint32_t bsz = info_.block_size;
+    zx_status_t status = iobuf->ValidateVmoHack(bsz * request->length,
+                                                bsz * request->vmo_offset);
+    if (status != ZX_OK) {
+        return status;
+    }
+
+    BlockMsg msg;
+    if ((status = BlockMsg::Create(block_op_size_, &msg)) != ZX_OK) {
+        return status;
+    }
+    block_msg_extra_t* extra = msg.extra();
+    extra->iobuf = iobuf.CopyPointer();
+    extra->server = this;
+    extra->reqid = reqid;
+    extra->group = group;
+    msg.op()->command = OpcodeToCommand(request->opcode);
+
+    const uint32_t max_xfer = info_.max_transfer_size / bsz;
+    if (max_xfer != 0 && max_xfer < request->length) {
+        uint32_t len_remaining = request->length;
+        uint64_t vmo_offset = request->vmo_offset;
+        uint64_t dev_offset = request->dev_offset;
+
+        // If the request is larger than the maximum transfer size,
+        // split it up into a collection of smaller block messages.
+        //
+        // Once all of these smaller messages are created, splice
+        // them into the input queue together.
+        BlockMsgQueue sub_txns_queue;
+        uint32_t sub_txns = fbl::round_up(len_remaining, max_xfer) / max_xfer;
+        uint32_t sub_txn_idx = 0;
+        while (sub_txn_idx != sub_txns) {
+            // We'll be using a new BlockMsg for each sub-component.
+            if (!msg.valid()) {
+                if ((status = BlockMsg::Create(block_op_size_, &msg)) != ZX_OK) {
+                    return status;
+                }
+                block_msg_extra_t* extra = msg.extra();
+                extra->iobuf = iobuf.CopyPointer();
+                extra->server = this;
+                extra->reqid = reqid;
+                extra->group = group;
+                msg.op()->command = OpcodeToCommand(request->opcode);
+            }
+
+            uint32_t length = fbl::min(len_remaining, max_xfer);
+            len_remaining -= length;
+
+            // Only set the "AFTER" barrier on the last sub-txn.
+            msg.op()->command &= ~(sub_txn_idx == sub_txns - 1 ? 0 :
+                                   BLOCK_FL_BARRIER_AFTER);
+            // Only set the "BEFORE" barrier on the first sub-txn.
+            msg.op()->command &= ~(sub_txn_idx == 0 ? 0 :
+                                   BLOCK_FL_BARRIER_BEFORE);
+            InQueueAdd(iobuf->vmo(), length, vmo_offset, dev_offset, msg.release(),
+                       &sub_txns_queue);
+            vmo_offset += length;
+            dev_offset += length;
+            sub_txn_idx++;
+        }
+        groups_[group].CtrAdd(sub_txns - 1);
+        ZX_DEBUG_ASSERT(len_remaining == 0);
+
+        in_queue_.splice(in_queue_.end(), sub_txns_queue);
+    } else {
+        InQueueAdd(iobuf->vmo(), request->length, request->vmo_offset,
+                   request->dev_offset, msg.release(), &in_queue_);
+    }
+    return ZX_OK;
+}
+
+zx_status_t BlockServer::ProcessCloseVmoRequest(block_fifo_request_t* request) {
+    fbl::AutoLock server_lock(&server_lock_);
+
+    auto iobuf = tree_.find(request->vmoid);
+    if (!iobuf.IsValid()) {
+        // Operation which is not accessing a valid vmo
+        return ZX_ERR_IO;
+    }
+
+    // TODO(smklein): Ensure that "iobuf" is not being used by
+    // any in-flight txns.
+    tree_.erase(*iobuf);
+    return ZX_OK;
+}
+
+zx_status_t BlockServer::ProcessFlushRequest(block_fifo_request_t* request) {
+    zx_status_t status;
+    BlockMsg msg;
+    if ((status = BlockMsg::Create(block_op_size_, &msg)) != ZX_OK) {
+        return status;
+    }
+    block_msg_extra_t* extra = msg.extra();
+    extra->iobuf = nullptr;
+    extra->server = this;
+    extra->reqid = request->reqid;
+    extra->group = request->group;
+    msg.op()->command = OpcodeToCommand(request->opcode);
+    InQueueAdd(ZX_HANDLE_INVALID, 0, 0, 0, msg.release(), &in_queue_);
+    return ZX_OK;
+}
+
+void BlockServer::ProcessRequest(block_fifo_request_t* request) {
+    zx_status_t status;
     switch (request->opcode & BLOCKIO_OP_MASK) {
     case BLOCKIO_READ:
-    case BLOCKIO_WRITE: {
-        // TODO(ZX-1586): Reduce the usage of this lock (only used to protect
-        // IoBuffers).
-        fbl::AutoLock server_lock(&server_lock_);
-
-        auto iobuf = tree_.find(vmoid);
-        if (!iobuf.IsValid()) {
-            // Operation which is not accessing a valid vmo
-            TxnComplete(ZX_ERR_IO, reqid, group);
-            return;
+    case BLOCKIO_WRITE:
+        if ((status = ProcessReadWriteRequest(request)) != ZX_OK) {
+            TxnComplete(status, request->reqid, request->group);
         }
-
-        if ((request->length < 1) ||
-            (request->length > fbl::numeric_limits<uint32_t>::max())) {
-            // Operation which is too small or too large
-            TxnComplete(ZX_ERR_INVALID_ARGS, reqid, group);
-            return;
-        }
-
-        // Hack to ensure that the vmo is valid.
-        // In the future, this code will be responsible for pinning VMO pages,
-        // and the completion will be responsible for un-pinning those same pages.
-        uint32_t bsz = info_.block_size;
-        zx_status_t status = iobuf->ValidateVmoHack(bsz * request->length,
-                                                    bsz * request->vmo_offset);
-        if (status != ZX_OK) {
-            TxnComplete(status, reqid, group);
-            return;
-        }
-
-        BlockMsg msg;
-        if ((status = BlockMsg::Create(block_op_size_, &msg)) != ZX_OK) {
-            TxnComplete(status, reqid, group);
-            return;
-        }
-        block_msg_extra_t* extra = msg.extra();
-        extra->iobuf = iobuf.CopyPointer();
-        extra->server = this;
-        extra->reqid = reqid;
-        extra->group = group;
-        msg.op()->command = OpcodeToCommand(request->opcode);
-
-        const uint32_t max_xfer = info_.max_transfer_size / bsz;
-        if (max_xfer != 0 && max_xfer < request->length) {
-            uint32_t len_remaining = request->length;
-            uint64_t vmo_offset = request->vmo_offset;
-            uint64_t dev_offset = request->dev_offset;
-
-            // If the request is larger than the maximum transfer size,
-            // split it up into a collection of smaller block messages.
-            //
-            // Once all of these smaller messages are created, splice
-            // them into the input queue together.
-            BlockMsgQueue sub_txns_queue;
-            uint32_t sub_txns = fbl::round_up(len_remaining, max_xfer) / max_xfer;
-            uint32_t sub_txn_idx = 0;
-            while (sub_txn_idx != sub_txns) {
-                // We'll be using a new BlockMsg for each sub-component.
-                if (!msg.valid()) {
-                    if ((status = BlockMsg::Create(block_op_size_, &msg)) != ZX_OK) {
-                        TxnComplete(status, reqid, group);
-                        return;
-                    }
-                    block_msg_extra_t* extra = msg.extra();
-                    extra->iobuf = iobuf.CopyPointer();
-                    extra->server = this;
-                    extra->reqid = reqid;
-                    extra->group = group;
-                    msg.op()->command = OpcodeToCommand(request->opcode);
-                }
-
-                uint32_t length = fbl::min(len_remaining, max_xfer);
-                len_remaining -= length;
-
-                // Only set the "AFTER" barrier on the last sub-txn.
-                msg.op()->command &= ~(sub_txn_idx == sub_txns - 1 ? 0 :
-                                       BLOCK_FL_BARRIER_AFTER);
-                // Only set the "BEFORE" barrier on the first sub-txn.
-                msg.op()->command &= ~(sub_txn_idx == 0 ? 0 :
-                                       BLOCK_FL_BARRIER_BEFORE);
-                InQueueAdd(iobuf->vmo(), length, vmo_offset, dev_offset, msg.release(),
-                           &sub_txns_queue);
-                vmo_offset += length;
-                dev_offset += length;
-                sub_txn_idx++;
-            }
-            groups_[group].CtrAdd(sub_txns - 1);
-            ZX_DEBUG_ASSERT(len_remaining == 0);
-
-            in_queue_.splice(in_queue_.end(), sub_txns_queue);
-        } else {
-            InQueueAdd(iobuf->vmo(), request->length, request->vmo_offset,
-                       request->dev_offset, msg.release(), &in_queue_);
-        }
-
         break;
-    }
-    case BLOCKIO_CLOSE_VMO: {
-        fbl::AutoLock server_lock(&server_lock_);
-
-        auto iobuf = tree_.find(vmoid);
-        if (!iobuf.IsValid()) {
-            // Operation which is not accessing a valid vmo
-            TxnComplete(ZX_ERR_IO, reqid, group);
-            return;
-        }
-
-        // TODO(smklein): Ensure that "iobuf" is not being used by
-        // any in-flight txns.
-        tree_.erase(*iobuf);
-        TxnComplete(ZX_OK, reqid, group);
+    case BLOCKIO_CLOSE_VMO:
+        status = ProcessCloseVmoRequest(request);
+        TxnComplete(status, request->reqid, request->group);
         break;
-    }
-    case BLOCKIO_FLUSH: {
-        zx_status_t status;
-        BlockMsg msg;
-        if ((status = BlockMsg::Create(block_op_size_, &msg)) != ZX_OK) {
-            TxnComplete(status, reqid, group);
-            return;
+    case BLOCKIO_FLUSH:
+        if ((status = ProcessFlushRequest(request)) != ZX_OK) {
+            TxnComplete(status, request->reqid, request->group);
         }
-        block_msg_extra_t* extra = msg.extra();
-        extra->iobuf = nullptr;
-        extra->server = this;
-        extra->reqid = reqid;
-        extra->group = group;
-        msg.op()->command = OpcodeToCommand(request->opcode);
-        InQueueAdd(ZX_HANDLE_INVALID, 0, 0, 0, msg.release(), &in_queue_);
         break;
-    }
-    default: {
+    default:
         fprintf(stderr, "Unrecognized Block Server operation: %x\n",
                 request->opcode);
-        TxnComplete(ZX_ERR_NOT_SUPPORTED, reqid, group);
-    }
+        TxnComplete(ZX_ERR_NOT_SUPPORTED, request->reqid, request->group);
     }
 }
 
@@ -483,11 +492,11 @@ zx_status_t BlockServer::Serve() {
     }
 }
 
-BlockServer::BlockServer(block_impl_protocol_t* bp) :
+BlockServer::BlockServer(ddk::BlockProtocolClient* bp) :
     bp_(bp), block_op_size_(0), pending_count_(0), barrier_in_progress_(false),
     last_id_(VMOID_INVALID + 1) {
     size_t block_op_size;
-    bp->ops->query(bp->ctx, &info_, &block_op_size);
+    bp->Query(&info_, &block_op_size);
 }
 
 BlockServer::~BlockServer() {
@@ -502,26 +511,4 @@ void BlockServer::ShutDown() {
     zx_signals_t signals = kSignalFifoTerminated;
     zx_signals_t seen;
     fifo_.wait_one(signals, zx::time::infinite(), &seen);
-}
-
-// C declarations
-zx_status_t blockserver_create(block_impl_protocol_t* bp, zx_handle_t* fifo_out,
-                               BlockServer** out) {
-    fzl::fifo<block_fifo_request_t, block_fifo_response_t> fifo;
-    zx_status_t status = BlockServer::Create(bp, &fifo, out);
-    *fifo_out = fifo.release();
-    return status;
-}
-void blockserver_shutdown(BlockServer* bs) {
-    bs->ShutDown();
-}
-void blockserver_free(BlockServer* bs) {
-    delete bs;
-}
-zx_status_t blockserver_serve(BlockServer* bs) {
-    return bs->Serve();
-}
-zx_status_t blockserver_attach_vmo(BlockServer* bs, zx_handle_t raw_vmo, vmoid_t* out) {
-    zx::vmo vmo(raw_vmo);
-    return bs->AttachVmo(fbl::move(vmo), out);
 }

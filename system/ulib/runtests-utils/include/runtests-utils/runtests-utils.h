@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Helper functions for running test binaries and recording their results.
 
@@ -36,7 +39,7 @@ struct DumpFile {
 };
 
 // Represents data published through data sink.
-struct DataSink : public fbl::SinglyLinkedListable<fbl::unique_ptr<DataSink>> {
+struct DataSink : public fbl::SinglyLinkedListable<std::unique_ptr<DataSink>> {
     fbl::String name;            // Name of the data sink.
     fbl::Vector<DumpFile> files; // All the sink dumpfiles.
 
@@ -54,7 +57,7 @@ struct Result {
     fbl::String name; // argv[0].
     LaunchStatus launch_status;
     int64_t return_code; // Only valid if launch_status == SUCCESS or FAILED_NONZERO_RETURN_CODE.
-    using HashTable = fbl::HashTable<fbl::String, fbl::unique_ptr<DataSink>>;
+    using HashTable = fbl::HashTable<fbl::String, std::unique_ptr<DataSink>>;
     HashTable data_sinks; // Mapping from data sink name to list of files.
     // TODO(ZX-2050): Track duration of test binary.
 
@@ -73,7 +76,7 @@ struct Result {
 // |output_filename| is the name of the file to which the test binary's output
 //   will be written. May be nullptr, in which case the output will not be
 //   redirected.
-typedef fbl::unique_ptr<Result> (*RunTestFn)(const char* argv[],
+typedef std::unique_ptr<Result> (*RunTestFn)(const char* argv[],
                                              const char* output_dir,
                                              const char* output_filename);
 
@@ -115,7 +118,7 @@ fbl::String JoinPath(fbl::StringPiece parent, fbl::StringPiece child);
 // |summary_json| is the file stream to write the JSON summary to.
 //
 // Returns 0 on success, else an error code compatible with errno.
-int WriteSummaryJSON(const fbl::Vector<fbl::unique_ptr<Result>>& results,
+int WriteSummaryJSON(const fbl::Vector<std::unique_ptr<Result>>& results,
                      fbl::StringPiece output_file_basename,
                      fbl::StringPiece syslog_path,
                      FILE* summary_json);
@@ -145,14 +148,14 @@ int ResolveGlobs(const fbl::Vector<fbl::String>& globs,
 //   to stdout than otherwise.
 // |num_failed| is an output parameter which will be set to the number of test
 //   binaries that failed.
-// |results| is an output paramater to which run results will be appended.
+// |results| is an output parameter to which run results will be appended.
 //
 // Returns false if any test binary failed, true otherwise.
 bool RunTests(const RunTestFn& RunTest, const fbl::Vector<fbl::String>& test_paths,
               const fbl::Vector<fbl::String>& test_args,
               const char* output_dir, const fbl::StringPiece output_file_basename,
               signed char verbosity, int* failed_count,
-              fbl::Vector<fbl::unique_ptr<Result>>* results);
+              fbl::Vector<std::unique_ptr<Result>>* results);
 
 // Expands |dir_globs| and searches those directories for files.
 //

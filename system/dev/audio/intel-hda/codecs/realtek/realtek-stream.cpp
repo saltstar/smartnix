@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/vector.h>
 
@@ -5,6 +8,8 @@
 #include <intel-hda/utils/codec-commands.h>
 #include <intel-hda/utils/codec-state.h>
 #include <intel-hda/utils/utils.h>
+
+#include <utility>
 
 #include "debug-logging.h"
 #include "realtek-stream.h"
@@ -97,8 +102,8 @@ void RealtekStream::AddPDNotificationTgtLocked(dispatcher::Channel* channel) {
 
     if (!duplicate) {
         fbl::RefPtr<dispatcher::Channel> c(channel);
-        fbl::unique_ptr<NotifyTarget> tgt(new NotifyTarget(fbl::move(c)));
-        plug_notify_targets_.push_back(fbl::move(tgt));
+        fbl::unique_ptr<NotifyTarget> tgt(new NotifyTarget(std::move(c)));
+        plug_notify_targets_.push_back(std::move(tgt));
     }
 }
 
@@ -145,7 +150,7 @@ zx_status_t RealtekStream::RunCmdLocked(const Command& cmd) {
     VERBOSE_LOG("SEND: nid %2hu verb 0x%05x%s\n", cmd.nid, cmd.verb.val, want_response ? "*" : "");
 
     if ((res == ZX_OK) && want_response)
-        pending_cmds_.push_back(fbl::move(pending_cmd));
+        pending_cmds_.push_back(std::move(pending_cmd));
 
     return res;
 }
@@ -491,7 +496,7 @@ zx_status_t RealtekStream::FinalizeSetupLocked() {
     for (auto& format : supported_formats)
         format.min_channels = format.max_channels;
 
-    SetSupportedFormatsLocked(fbl::move(supported_formats));
+    SetSupportedFormatsLocked(std::move(supported_formats));
 
     return ZX_OK;
 }

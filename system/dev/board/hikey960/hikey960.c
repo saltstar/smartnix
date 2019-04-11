@@ -57,6 +57,11 @@ static int hikey960_start_thread(void* arg) {
         goto fail;
     }
 
+    status = hikey960_sysmem_init(hikey);
+    if (status != ZX_OK) {
+        goto fail;
+    }
+
     status = hikey960_i2c_init(hikey);
     if (status != ZX_OK) {
         goto fail;
@@ -65,7 +70,7 @@ static int hikey960_start_thread(void* arg) {
     // must be after hikey960_i2c_init
     status = hi3660_dsi_init(hikey->hi3660);
     if (status != ZX_OK) {
-        goto fail;
+        zxlogf(ERROR, "hi3660_dsi_init failed\n");
     }
 
     if ((status = hikey960_add_devices(hikey)) != ZX_OK) {

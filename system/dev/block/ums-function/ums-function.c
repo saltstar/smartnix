@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <assert.h>
 #include <stdint.h>
@@ -9,12 +12,12 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/protocol/usb-function.h>
+#include <ddk/protocol/usb/function.h>
 #include <usb/usb-request.h>
 #include <zircon/process.h>
 #include <zircon/syscalls.h>
 #include <zircon/device/usb-peripheral.h>
-#include <zircon/hw/usb-mass-storage.h>
+#include <zircon/hw/usb/ums.h>
 
 #define BLOCK_SIZE      512
 #define STORAGE_SIZE    (10 * 1024 * 1024)
@@ -86,18 +89,31 @@ typedef struct {
 
     uint8_t bulk_out_addr;
     uint8_t bulk_in_addr;
+    size_t parent_req_size;
 } usb_ums_t;
+
+static void ums_cbw_complete(void* ctx, usb_request_t* req);
+static void ums_data_complete(void* ctx, usb_request_t* req);
+static void ums_csw_complete(void* ctx, usb_request_t* req);
 
 static void ums_function_queue_data(usb_ums_t* ums, usb_request_t* req) {
     ums->data_length += req->header.length;
     req->header.ep_address = ums->current_cbw.bmCBWFlags & USB_DIR_IN ?
         ums->bulk_in_addr : ums->bulk_out_addr;
-    usb_function_queue(&ums->function, req);
+    usb_request_complete_t complete = {
+        .callback = ums_data_complete,
+        .ctx = ums,
+    };
+    usb_function_request_queue(&ums->function, req, &complete);
 }
 
 static void ums_queue_csw(usb_ums_t* ums, uint8_t status) {
     // first queue next cbw so it is ready to go
-    usb_function_queue(&ums->function, ums->cbw_req);
+    usb_request_complete_t cbw_complete = {
+        .callback = ums_cbw_complete,
+        .ctx = ums,
+    };
+    usb_function_request_queue(&ums->function, ums->cbw_req, &cbw_complete);
 
     usb_request_t* req = ums->csw_req;
     ums_csw_t* csw;
@@ -110,7 +126,11 @@ static void ums_queue_csw(usb_ums_t* ums, uint8_t status) {
     csw->bmCSWStatus = status;
 
     req->header.length = sizeof(ums_csw_t);
-    usb_function_queue(&ums->function, ums->csw_req);
+    usb_request_complete_t csw_complete = {
+        .callback = ums_csw_complete,
+        .ctx = ums,
+    };
+    usb_function_request_queue(&ums->function, ums->csw_req, &csw_complete);
 }
 
 static void ums_continue_transfer(usb_ums_t* ums) {
@@ -365,8 +385,8 @@ static void ums_handle_cbw(usb_ums_t* ums, ums_cbw_t* cbw) {
     }
 }
 
-static void ums_cbw_complete(usb_request_t* req, void* cookie) {
-    usb_ums_t* ums = cookie;
+static void ums_cbw_complete(void* ctx, usb_request_t* req) {
+    usb_ums_t* ums = ctx;
 
     zxlogf(TRACE, "ums_cbw_complete %d %ld\n", req->response.status, req->response.actual);
 
@@ -377,8 +397,8 @@ static void ums_cbw_complete(usb_request_t* req, void* cookie) {
     }
 }
 
-static void ums_data_complete(usb_request_t* req, void* cookie) {
-    usb_ums_t* ums = cookie;
+static void ums_data_complete(void* ctx, usb_request_t* req) {
+    usb_ums_t* ums = ctx;
 
     zxlogf(TRACE, "ums_data_complete %d %ld\n", req->response.status, req->response.actual);
 
@@ -403,22 +423,31 @@ static void ums_data_complete(usb_request_t* req, void* cookie) {
     }
 }
 
-static void ums_csw_complete(usb_request_t* req, void* cookie) {
+static void ums_csw_complete(void* ctx, usb_request_t* req) {
     zxlogf(TRACE, "ums_csw_complete %d %ld\n", req->response.status, req->response.actual);
 }
 
-static const usb_descriptor_header_t* ums_get_descriptors(void* ctx, size_t* out_length) {
-    *out_length = sizeof(descriptors);
-    return (const usb_descriptor_header_t *)&descriptors;
+static size_t ums_get_descriptors_size(void* ctx) {
+    return sizeof(descriptors);
 }
 
-static zx_status_t ums_control(void* ctx, const usb_setup_t* setup, void* buffer,
-                                         size_t length, size_t* out_actual) {
+static void ums_get_descriptors(void* ctx, void* buffer, size_t buffer_size, size_t* out_actual) {
+    size_t length = sizeof(descriptors);
+    if (length > buffer_size) {
+        length = buffer_size;
+    }
+    memcpy(buffer, &descriptors, length);
+    *out_actual = length;
+}
+
+static zx_status_t ums_control(void* ctx, const usb_setup_t* setup, const void* write_buffer,
+                               size_t write_size, void* out_read_buffer, size_t read_size,
+                               size_t* out_read_actual) {
     if (setup->bmRequestType == (USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE) &&
         setup->bRequest == USB_REQ_GET_MAX_LUN && setup->wValue == 0 && setup->wIndex == 0 &&
         setup->wLength >= sizeof(uint8_t)) {
-        *((uint8_t *)buffer) = 0;
-        *out_actual = sizeof(uint8_t);
+        *((uint8_t *)out_read_buffer) = 0;
+        *out_read_actual = sizeof(uint8_t);
         return ZX_OK;
     }
 
@@ -445,16 +474,21 @@ static zx_status_t ums_set_configured(void* ctx, bool configured, usb_speed_t sp
 
     if (configured && status == ZX_OK) {
         // queue first read on OUT endpoint
-        usb_function_queue(&ums->function, ums->cbw_req);
+        usb_request_complete_t cbw_complete = {
+            .callback = ums_cbw_complete,
+            .ctx = ums,
+        };
+        usb_function_request_queue(&ums->function, ums->cbw_req, &cbw_complete);
     }
     return status;
 }
 
-static zx_status_t ums_set_interface(void* ctx, unsigned interface, unsigned alt_setting) {
+static zx_status_t ums_set_interface(void* ctx, uint8_t interface, uint8_t alt_setting) {
     return ZX_ERR_NOT_SUPPORTED;
 }
 
 usb_function_interface_ops_t ums_device_ops = {
+    .get_descriptors_size = ums_get_descriptors_size,
     .get_descriptors = ums_get_descriptors,
     .control = ums_control,
     .set_configured = ums_set_configured,
@@ -508,6 +542,9 @@ zx_status_t usb_ums_bind(void* ctx, zx_device_t* parent) {
         goto fail;
     }
 
+    ums->parent_req_size = usb_function_get_request_size(&ums->function);
+    ZX_DEBUG_ASSERT(ums->parent_req_size != 0);
+
     status = usb_function_alloc_interface(&ums->function, &descriptors.intf.bInterfaceNumber);
     if (status != ZX_OK) {
         zxlogf(ERROR, "usb_ums_bind: usb_function_alloc_interface failed\n");
@@ -528,18 +565,18 @@ zx_status_t usb_ums_bind(void* ctx, zx_device_t* parent) {
     descriptors.in_ep.bEndpointAddress = ums->bulk_in_addr;
 
     status = usb_request_alloc(&ums->cbw_req, BULK_MAX_PACKET,
-                                    ums->bulk_out_addr, sizeof(usb_request_t));
+                                    ums->bulk_out_addr, ums->parent_req_size);
     if (status != ZX_OK) {
         goto fail;
     }
     // Endpoint for data_req depends on current_cbw.bmCBWFlags,
     // and will be set in ums_function_queue_data.
-    status = usb_request_alloc(&ums->data_req, DATA_REQ_SIZE, 0, sizeof(usb_request_t));
+    status = usb_request_alloc(&ums->data_req, DATA_REQ_SIZE, 0, ums->parent_req_size);
     if (status != ZX_OK) {
         goto fail;
     }
     status = usb_request_alloc(&ums->csw_req, BULK_MAX_PACKET,
-                                    ums->bulk_in_addr, sizeof(usb_request_t));
+                                    ums->bulk_in_addr, ums->parent_req_size);
     if (status != ZX_OK) {
         goto fail;
     }
@@ -556,12 +593,6 @@ zx_status_t usb_ums_bind(void* ctx, zx_device_t* parent) {
     }
 
     ums->csw_req->header.length = sizeof(ums_csw_t);
-    ums->cbw_req->complete_cb = ums_cbw_complete;
-    ums->data_req->complete_cb = ums_data_complete;
-    ums->csw_req->complete_cb = ums_csw_complete;
-    ums->cbw_req->cookie = ums;
-    ums->data_req->cookie = ums;
-    ums->csw_req->cookie = ums;
 
     device_add_args_t args = {
         .version = DEVICE_ADD_ARGS_VERSION,
@@ -576,11 +607,7 @@ zx_status_t usb_ums_bind(void* ctx, zx_device_t* parent) {
         goto fail;
     }
 
-    usb_function_interface_t intf = {
-        .ops = &ums_device_ops,
-        .ctx = ums,
-    };
-    usb_function_register(&ums->function, &intf);
+    usb_function_set_interface(&ums->function, ums, &ums_device_ops);
 
     return ZX_OK;
 

@@ -1,10 +1,13 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <audio-utils/audio-device-stream.h>
 #include <audio-utils/audio-input.h>
 #include <audio-utils/audio-output.h>
 #include <fbl/algorithm.h>
+#include <limits>
 #include <fbl/auto_call.h>
-#include <fbl/limits.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <lib/fdio/io.h>
@@ -559,7 +562,7 @@ zx_status_t AudioDeviceStream::GetBuffer(uint32_t frames, uint32_t irqs_per_ring
         return res;
     }
 
-    if ((rb_sz > fbl::numeric_limits<decltype(rb_sz_)>::max()) || (rb_sz > rb_page_sz)) {
+    if ((rb_sz > std::numeric_limits<decltype(rb_sz_)>::max()) || (rb_sz > rb_page_sz)) {
         printf("Bad ring buffer size returned by audio driver! "
                "(kernel size = %lu driver size = %lu)\n", rb_page_sz,  rb_sz);
         return ZX_ERR_INVALID_ARGS;

@@ -6,9 +6,8 @@
 
 #include <ddktl/device.h>
 #include <ddktl/mmio.h>
-#include <ddktl/protocol/i2c-impl.h>
+#include <ddktl/protocol/i2cimpl.h>
 
-#include <fbl/optional.h>
 #include <fbl/vector.h>
 
 #include <lib/zx/event.h>
@@ -16,6 +15,8 @@
 #include <lib/zx/port.h>
 
 #include <threads.h>
+
+#include <optional>
 
 #include "mt8167-i2c-regs.h"
 
@@ -25,7 +26,7 @@ class Mt8167I2c;
 using DeviceType = ddk::Device<Mt8167I2c, ddk::Unbindable>;
 
 class Mt8167I2c : public DeviceType,
-                  public ddk::I2cImplProtocol<Mt8167I2c> {
+                  public ddk::I2cImplProtocol<Mt8167I2c, ddk::base_protocol> {
 public:
     explicit Mt8167I2c(zx_device_t* parent)
         : DeviceType(parent) {}
@@ -57,7 +58,7 @@ private:
     void ShutDown();
 
     uint32_t bus_count_;
-    fbl::optional<XoRegs> xo_regs_;
+    std::optional<XoRegs> xo_regs_;
     fbl::Vector<Key> keys_;
     zx::port irq_port_;
     thrd_t irq_thread_;

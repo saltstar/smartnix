@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file
 
 #pragma once
 
@@ -58,7 +61,7 @@ struct PerformanceTestOptions {
 };
 
 struct TestInfo {
-    // Funcion that executes the test.
+    // Function that executes the test.
     fbl::Function<bool(perftest::RepeatState*, Fixture*)> test_fn;
 
     // Name of the test.

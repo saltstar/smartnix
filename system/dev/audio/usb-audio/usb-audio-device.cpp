@@ -1,9 +1,15 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
+#include <ddk/binding.h>
 #include <dispatcher-pool/dispatcher-thread-pool.h>
 #include <fbl/auto_call.h>
 #include <fbl/auto_lock.h>
 #include <fbl/intrusive_double_list.h>
 #include <string.h>
+
+#include <utility>
 
 #include "usb-audio.h"
 #include "usb-audio-device.h"
@@ -58,6 +64,9 @@ zx_status_t UsbAudioDevice::Bind() {
         LOG(ERROR, "Failed to get USB protocol thunks (status %d)\n", status);
         return status;
     }
+
+    parent_req_size_ = usb_get_request_size(&usb_proto_);
+    ZX_DEBUG_ASSERT(parent_req_size_ != 0);
 
     usb_composite_protocol_t usb_composite_proto;
     status = device_get_protocol(parent(), ZX_PROTOCOL_USB_COMPOSITE, &usb_composite_proto);
@@ -183,7 +192,7 @@ void UsbAudioDevice::Probe() {
             if (res == ZX_OK) {
                 // No need to log in case of failure, the interface class
                 // should already have done so.
-                control_ifc = fbl::move(control);
+                control_ifc = std::move(control);
             }
             break;
         }
@@ -215,7 +224,7 @@ void UsbAudioDevice::Probe() {
                         iid, iter.offset(), iter.desc_list()->size());
                 } else {
                     LOG(TRACE, "Discovered new audio streaming interface (id %u)\n", iid);
-                    aud_stream_ifcs.push_back(fbl::move(ifc));
+                    aud_stream_ifcs.push_back(std::move(ifc));
                 }
             }
             break;
@@ -250,7 +259,8 @@ void UsbAudioDevice::Probe() {
                                      &usb_proto_,
                                      midi_sink_index_++,
                                      info.ifc,
-                                     info.out_ep);
+                                     info.out_ep,
+                                     parent_req_size_);
             }
 
             if (info.in_ep != nullptr) {
@@ -260,7 +270,8 @@ void UsbAudioDevice::Probe() {
                                      &usb_proto_,
                                      midi_source_index_++,
                                      info.ifc,
-                                     info.in_ep);
+                                     info.in_ep,
+                                     parent_req_size_);
             }
 
             break;
@@ -303,7 +314,7 @@ void UsbAudioDevice::Probe() {
         // Link the path to the stream interface.
         LOG(TRACE, "Linking streaming interface id %u to audio path terminal %u\n",
                 stream_ifc->iid(), path->stream_terminal().id());
-        stream_ifc->LinkPath(fbl::move(path));
+        stream_ifc->LinkPath(std::move(path));
 
         // Log a warning if we are about to build an audio path which operates
         // in separate clock domain.  We still need to add support for this
@@ -316,7 +327,7 @@ void UsbAudioDevice::Probe() {
         }
 
         // Create a new audio stream, handing the stream interface over to it.
-        auto stream = UsbAudioStream::Create(this, fbl::move(stream_ifc));
+        auto stream = UsbAudioStream::Create(this, std::move(stream_ifc));
         if (stream == nullptr) {
             // No need to log an error, the Create method has already done so.
             continue;
@@ -490,15 +501,28 @@ void UsbAudioDevice::DdkRelease() {
     auto reference = fbl::internal::MakeRefPtrNoAdopt(this);
 }
 
+static zx_status_t usb_audio_device_bind(void* ctx, zx_device_t* device) {
+    return UsbAudioDevice::DriverBind(device);
+}
+
+static void usb_audio_driver_release(void*) {
+    dispatcher::ThreadPool::ShutdownAll();
+}
+
+static zx_driver_ops_t driver_ops = [](){
+    zx_driver_ops_t ops = {};
+    ops.version = DRIVER_OPS_VERSION;
+    ops.bind = usb_audio_device_bind;
+    ops.release = usb_audio_driver_release;
+    return ops;
+}();
+
 }  // namespace usb
 }  // namespace audio
 
-extern "C" {
-zx_status_t usb_audio_device_bind(void* ctx, zx_device_t* device) {
-    return audio::usb::UsbAudioDevice::DriverBind(device);
-}
-
-void usb_audio_driver_release(void*) {
-    dispatcher::ThreadPool::ShutdownAll();
-}
-}  // extern "C"
+ZIRCON_DRIVER_BEGIN(usb_audio, audio::usb::driver_ops, "zircon", "0.1", 4)
+    BI_ABORT_IF(NE, BIND_PROTOCOL, ZX_PROTOCOL_USB),
+    BI_ABORT_IF(NE, BIND_USB_CLASS, USB_CLASS_AUDIO),
+    BI_ABORT_IF(NE, BIND_USB_SUBCLASS, USB_SUBCLASS_AUDIO_CONTROL),
+    BI_MATCH_IF(EQ, BIND_USB_PROTOCOL, 0),
+ZIRCON_DRIVER_END(usb_audio)

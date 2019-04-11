@@ -1,8 +1,13 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <fbl/macros.h>
 #include <fbl/type_support.h>
+
+#include <utility>
 
 // RAII class to automatically call a function-like thing as it goes out of
 // scope
@@ -27,20 +32,20 @@ template <typename T>
 class AutoCall {
 public:
     constexpr explicit AutoCall(T c)
-        : call_(fbl::move(c)) {}
+        : call_(std::move(c)) {}
     ~AutoCall() {
         call();
     }
 
     // move semantics
     AutoCall(AutoCall&& c)
-        : call_(fbl::move(c.call_)), active_(c.active_) {
+        : call_(std::move(c.call_)), active_(c.active_) {
         c.cancel();
     }
 
     AutoCall& operator=(AutoCall&& c) {
         call();
-        call_ = fbl::move(c.call_);
+        call_ = std::move(c.call_);
         active_ = c.active_;
         c.cancel();
         return *this;
@@ -73,7 +78,7 @@ private:
 // specialization
 template <typename T>
 inline AutoCall<T> MakeAutoCall(T c) {
-    return AutoCall<T>(fbl::move(c));
+    return AutoCall<T>(std::move(c));
 }
 
 } // namespace fbl

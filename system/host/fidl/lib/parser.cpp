@@ -1,6 +1,11 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-#include "fidl/parser.h"
+#include <errno.h>
+
 #include "fidl/attributes.h"
+#include "fidl/parser.h"
 
 namespace fidl {
 
@@ -12,21 +17,7 @@ namespace fidl {
 #define CASE_IDENTIFIER(K) \
     Token::KindAndSubkind(Token::Kind::kIdentifier, K).combined()
 
-#define TOKEN_PRIMITIVE_TYPE_CASES                  \
-    case CASE_IDENTIFIER(Token::Subkind::kBool):    \
-    case CASE_IDENTIFIER(Token::Subkind::kInt8):    \
-    case CASE_IDENTIFIER(Token::Subkind::kInt16):   \
-    case CASE_IDENTIFIER(Token::Subkind::kInt32):   \
-    case CASE_IDENTIFIER(Token::Subkind::kInt64):   \
-    case CASE_IDENTIFIER(Token::Subkind::kUint8):   \
-    case CASE_IDENTIFIER(Token::Subkind::kUint16):  \
-    case CASE_IDENTIFIER(Token::Subkind::kUint32):  \
-    case CASE_IDENTIFIER(Token::Subkind::kUint64):  \
-    case CASE_IDENTIFIER(Token::Subkind::kFloat32): \
-    case CASE_IDENTIFIER(Token::Subkind::kFloat64)
-
 #define TOKEN_TYPE_CASES                           \
-    TOKEN_PRIMITIVE_TYPE_CASES:                    \
     case CASE_IDENTIFIER(Token::Subkind::kNone):   \
     case CASE_IDENTIFIER(Token::Subkind::kArray):  \
     case CASE_IDENTIFIER(Token::Subkind::kVector): \
@@ -70,6 +61,8 @@ Parser::Parser(Lexer* lexer, ErrorReporter* error_reporter)
         {"fifo", types::HandleSubtype::kFifo},
         {"guest", types::HandleSubtype::kGuest},
         {"timer", types::HandleSubtype::kTimer},
+        {"bti", types::HandleSubtype::kBti},
+        {"profile", types::HandleSubtype::kProfile},
     };
 
     last_token_ = Lex();
@@ -153,8 +146,14 @@ std::unique_ptr<raw::NumericLiteral> Parser::ParseNumericLiteral() {
     return std::make_unique<raw::NumericLiteral>(scope.GetSourceElement());
 }
 
-std::unique_ptr<raw::Ordinal> Parser::ParseOrdinal() {
+std::unique_ptr<raw::Ordinal> Parser::MaybeParseOrdinal() {
     ASTScope scope(this);
+
+    if (Peek().kind() != Token::Kind::kNumericLiteral) {
+        // Ordinals are currently optional.  If there is none, generate it later
+        // (once we've figured out the method name and signature).
+        return nullptr;
+    }
 
     ConsumeToken(OfKind(Token::Kind::kNumericLiteral));
     if (!Ok())
@@ -328,7 +327,7 @@ std::unique_ptr<raw::Using> Parser::ParseUsing() {
         return Fail();
 
     std::unique_ptr<raw::Identifier> maybe_alias;
-    std::unique_ptr<raw::PrimitiveType> maybe_primitive;
+    std::unique_ptr<raw::IdentifierType> maybe_type;
 
     if (MaybeConsumeToken(IdentifierOfSubkind(Token::Subkind::kAs))) {
         if (!Ok())
@@ -339,12 +338,26 @@ std::unique_ptr<raw::Using> Parser::ParseUsing() {
     } else if (MaybeConsumeToken(OfKind(Token::Kind::kEqual))) {
         if (!Ok() || using_path->components.size() != 1u)
             return Fail();
-        maybe_primitive = ParsePrimitiveType();
+        maybe_type = ParseIdentifierType();
         if (!Ok())
             return Fail();
     }
 
-    return std::make_unique<raw::Using>(scope.GetSourceElement(), std::move(using_path), std::move(maybe_alias), std::move(maybe_primitive));
+    return std::make_unique<raw::Using>(scope.GetSourceElement(), std::move(using_path), std::move(maybe_alias), std::move(maybe_type));
+}
+
+std::unique_ptr<raw::IdentifierType> Parser::ParseIdentifierType() {
+    ASTScope scope(this);
+    auto identifier = ParseCompoundIdentifier();
+    if (!Ok())
+        return Fail();
+    auto nullability = types::Nullability::kNonnullable;
+    if (MaybeConsumeToken(OfKind(Token::Kind::kQuestion))) {
+        if (!Ok())
+            return Fail();
+        nullability = types::Nullability::kNullable;
+    }
+    return std::make_unique<raw::IdentifierType>(scope.GetSourceElement(), std::move(identifier), nullability);
 }
 
 std::unique_ptr<raw::ArrayType> Parser::ParseArrayType() {
@@ -455,53 +468,6 @@ std::unique_ptr<raw::HandleType> Parser::ParseHandleType() {
     return std::make_unique<raw::HandleType>(scope.GetSourceElement(), subtype, nullability);
 }
 
-std::unique_ptr<raw::PrimitiveType> Parser::ParsePrimitiveType() {
-    types::PrimitiveSubtype subtype;
-
-    switch (Peek().combined()) {
-    case CASE_IDENTIFIER(Token::Subkind::kBool):
-        subtype = types::PrimitiveSubtype::kBool;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kInt8):
-        subtype = types::PrimitiveSubtype::kInt8;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kInt16):
-        subtype = types::PrimitiveSubtype::kInt16;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kInt32):
-        subtype = types::PrimitiveSubtype::kInt32;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kInt64):
-        subtype = types::PrimitiveSubtype::kInt64;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kUint8):
-        subtype = types::PrimitiveSubtype::kUint8;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kUint16):
-        subtype = types::PrimitiveSubtype::kUint16;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kUint32):
-        subtype = types::PrimitiveSubtype::kUint32;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kUint64):
-        subtype = types::PrimitiveSubtype::kUint64;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kFloat32):
-        subtype = types::PrimitiveSubtype::kFloat32;
-        break;
-    case CASE_IDENTIFIER(Token::Subkind::kFloat64):
-        subtype = types::PrimitiveSubtype::kFloat64;
-        break;
-    default:
-        return Fail();
-    }
-    ASTScope scope(this);
-    ConsumeToken(OfKind(Peek().kind()));
-    if (!Ok())
-        return Fail();
-    return std::make_unique<raw::PrimitiveType>(scope.GetSourceElement(), subtype);
-}
-
 std::unique_ptr<raw::RequestHandleType> Parser::ParseRequestHandleType() {
     ASTScope scope(this);
     ConsumeToken(IdentifierOfSubkind(Token::Subkind::kRequest));
@@ -528,17 +494,10 @@ std::unique_ptr<raw::RequestHandleType> Parser::ParseRequestHandleType() {
 std::unique_ptr<raw::Type> Parser::ParseType() {
     switch (Peek().combined()) {
     case CASE_TOKEN(Token::Kind::kIdentifier): {
-        ASTScope scope(this);
-        auto identifier = ParseCompoundIdentifier();
+        auto type = ParseIdentifierType();
         if (!Ok())
             return Fail();
-        auto nullability = types::Nullability::kNonnullable;
-        if (MaybeConsumeToken(OfKind(Token::Kind::kQuestion))) {
-            if (!Ok())
-                return Fail();
-            nullability = types::Nullability::kNullable;
-        }
-        return std::make_unique<raw::IdentifierType>(scope.GetSourceElement(), std::move(identifier), nullability);
+        return type;
     }
 
     case CASE_IDENTIFIER(Token::Subkind::kArray): {
@@ -571,13 +530,6 @@ std::unique_ptr<raw::Type> Parser::ParseType() {
 
     case CASE_IDENTIFIER(Token::Subkind::kRequest): {
         auto type = ParseRequestHandleType();
-        if (!Ok())
-            return Fail();
-        return type;
-    }
-
-    TOKEN_PRIMITIVE_TYPE_CASES : {
-        auto type = ParsePrimitiveType();
         if (!Ok())
             return Fail();
         return type;
@@ -641,11 +593,11 @@ Parser::ParseEnumDeclaration(std::unique_ptr<raw::AttributeList> attributes, AST
     auto identifier = ParseIdentifier();
     if (!Ok())
         return Fail();
-    std::unique_ptr<raw::PrimitiveType> subtype;
+    std::unique_ptr<raw::IdentifierType> maybe_subtype;
     if (MaybeConsumeToken(OfKind(Token::Kind::kColon))) {
         if (!Ok())
             return Fail();
-        subtype = ParsePrimitiveType();
+        maybe_subtype = ParseIdentifierType();
         if (!Ok())
             return Fail();
     }
@@ -682,7 +634,7 @@ Parser::ParseEnumDeclaration(std::unique_ptr<raw::AttributeList> attributes, AST
 
     return std::make_unique<raw::EnumDeclaration>(scope.GetSourceElement(),
                                                   std::move(attributes), std::move(identifier),
-                                                  std::move(subtype), std::move(members));
+                                                  std::move(maybe_subtype), std::move(members));
 }
 
 std::unique_ptr<raw::Parameter> Parser::ParseParameter() {
@@ -731,13 +683,14 @@ std::unique_ptr<raw::ParameterList> Parser::ParseParameterList() {
 }
 
 std::unique_ptr<raw::InterfaceMethod> Parser::ParseInterfaceMethod(std::unique_ptr<raw::AttributeList> attributes, ASTScope& scope) {
-    auto ordinal = ParseOrdinal();
+    auto ordinal = MaybeParseOrdinal();
     if (!Ok())
         return Fail();
 
     std::unique_ptr<raw::Identifier> method_name;
     std::unique_ptr<raw::ParameterList> maybe_request;
     std::unique_ptr<raw::ParameterList> maybe_response;
+    std::unique_ptr<raw::Type> maybe_error;
 
     auto parse_params = [this](std::unique_ptr<raw::ParameterList>* params_out) {
         ConsumeToken(OfKind(Token::Kind::kLeftParen));
@@ -770,6 +723,11 @@ std::unique_ptr<raw::InterfaceMethod> Parser::ParseInterfaceMethod(std::unique_p
                 return Fail();
             if (!parse_params(&maybe_response))
                 return Fail();
+            if (MaybeConsumeToken(IdentifierOfSubkind(Token::Subkind::kError))) {
+                maybe_error = ParseType();
+                if (!Ok())
+                    return Fail();
+            }
         }
     }
 
@@ -781,7 +739,8 @@ std::unique_ptr<raw::InterfaceMethod> Parser::ParseInterfaceMethod(std::unique_p
                                                   std::move(ordinal),
                                                   std::move(method_name),
                                                   std::move(maybe_request),
-                                                  std::move(maybe_response));
+                                                  std::move(maybe_response),
+                                                  std::move(maybe_error));
 }
 
 std::unique_ptr<raw::InterfaceDeclaration>
@@ -824,6 +783,8 @@ Parser::ParseInterfaceDeclaration(std::unique_ptr<raw::AttributeList> attributes
             return Done;
 
         case Token::Kind::kNumericLiteral:
+        case Token::Kind::kArrow:
+        case Token::Kind::kIdentifier:
             methods.emplace_back(ParseInterfaceMethod(std::move(attributes), scope));
             return More;
         }
@@ -909,9 +870,6 @@ Parser::ParseStructDeclaration(std::unique_ptr<raw::AttributeList> attributes, A
     if (!Ok())
         Fail();
 
-    if (members.empty())
-        return Fail();
-
     return std::make_unique<raw::StructDeclaration>(scope.GetSourceElement(),
                                                     std::move(attributes), std::move(identifier),
                                                     std::move(members));
@@ -924,7 +882,7 @@ Parser::ParseTableMember() {
     if (!Ok())
         return Fail();
 
-    auto ordinal = ParseOrdinal();
+    auto ordinal = MaybeParseOrdinal();
     if (!Ok())
         return Fail();
 
@@ -994,9 +952,6 @@ Parser::ParseTableDeclaration(std::unique_ptr<raw::AttributeList> attributes, AS
     if (!Ok())
         Fail();
 
-    if (members.empty())
-        return Fail("Tables must have at least one member");
-
     return std::make_unique<raw::TableDeclaration>(scope.GetSourceElement(),
                                                    std::move(attributes), std::move(identifier),
                                                    std::move(members));
@@ -1063,6 +1018,75 @@ Parser::ParseUnionDeclaration(std::unique_ptr<raw::AttributeList> attributes, AS
                                                    std::move(members));
 }
 
+std::unique_ptr<raw::XUnionMember> Parser::ParseXUnionMember() {
+    ASTScope scope(this);
+
+    auto attributes = MaybeParseAttributeList();
+    if (!Ok())
+        return Fail();
+
+    auto type = ParseType();
+    if (!Ok())
+        return Fail();
+
+    auto identifier = ParseIdentifier();
+    if (!Ok())
+        return Fail();
+
+    return std::make_unique<raw::XUnionMember>(scope.GetSourceElement(),
+                                               std::move(type),
+                                               std::move(identifier),
+                                               std::move(attributes));
+}
+
+std::unique_ptr<raw::XUnionDeclaration>
+Parser::ParseXUnionDeclaration(std::unique_ptr<raw::AttributeList> attributes, ASTScope& scope) {
+    std::vector<std::unique_ptr<raw::XUnionMember>> members;
+
+    ConsumeToken(IdentifierOfSubkind(Token::Subkind::kXUnion));
+    if (!Ok())
+        return Fail();
+
+    auto identifier = ParseIdentifier();
+    if (!Ok())
+        return Fail();
+
+    ConsumeToken(OfKind(Token::Kind::kLeftCurly));
+    if (!Ok())
+        return Fail();
+
+    auto parse_member = [&]() {
+        switch (Peek().combined()) {
+        default:
+            ConsumeToken(OfKind(Token::Kind::kRightCurly));
+            return Done;
+
+        case Token::Kind::kNumericLiteral: // Ordinal
+        TOKEN_ATTR_CASES:
+            // intentional fallthrough for attribute parsing
+        TOKEN_TYPE_CASES:
+            members.emplace_back(ParseXUnionMember());
+            return More;
+        }
+    };
+
+    while (parse_member() == More) {
+        if (!Ok())
+            Fail();
+
+        ConsumeToken(OfKind(Token::Kind::kSemicolon));
+        if (!Ok())
+            return Fail();
+    }
+
+    if (!Ok())
+        Fail();
+
+    return std::make_unique<raw::XUnionDeclaration>(scope.GetSourceElement(),
+                                                    std::move(attributes), std::move(identifier),
+                                                    std::move(members));
+}
+
 std::unique_ptr<raw::File> Parser::ParseFile() {
     ASTScope scope(this);
     std::vector<std::unique_ptr<raw::Using>> using_list;
@@ -1072,6 +1096,7 @@ std::unique_ptr<raw::File> Parser::ParseFile() {
     std::vector<std::unique_ptr<raw::StructDeclaration>> struct_declaration_list;
     std::vector<std::unique_ptr<raw::TableDeclaration>> table_declaration_list;
     std::vector<std::unique_ptr<raw::UnionDeclaration>> union_declaration_list;
+    std::vector<std::unique_ptr<raw::XUnionDeclaration>> xunion_declaration_list;
 
     auto attributes = MaybeParseAttributeList();
     if (!Ok())
@@ -1107,7 +1132,7 @@ std::unique_ptr<raw::File> Parser::ParseFile() {
 
     auto parse_declaration = [&const_declaration_list, &enum_declaration_list,
                               &interface_declaration_list, &struct_declaration_list,
-                              &table_declaration_list, &union_declaration_list, this]() {
+                              &table_declaration_list, &union_declaration_list, &xunion_declaration_list, this]() {
         ASTScope scope(this);
         std::unique_ptr<raw::AttributeList> attributes = MaybeParseAttributeList();
         if (!Ok())
@@ -1141,6 +1166,10 @@ std::unique_ptr<raw::File> Parser::ParseFile() {
         case CASE_IDENTIFIER(Token::Subkind::kUnion):
             union_declaration_list.emplace_back(ParseUnionDeclaration(std::move(attributes), scope));
             return More;
+
+        case CASE_IDENTIFIER(Token::Subkind::kXUnion):
+            xunion_declaration_list.emplace_back(ParseXUnionDeclaration(std::move(attributes), scope));
+            return More;
         }
     };
 
@@ -1160,7 +1189,7 @@ std::unique_ptr<raw::File> Parser::ParseFile() {
         scope.GetSourceElement(), end,
         std::move(attributes), std::move(library_name), std::move(using_list), std::move(const_declaration_list),
         std::move(enum_declaration_list), std::move(interface_declaration_list),
-        std::move(struct_declaration_list), std::move(table_declaration_list), std::move(union_declaration_list));
+        std::move(struct_declaration_list), std::move(table_declaration_list), std::move(union_declaration_list), std::move(xunion_declaration_list));
 }
 
 } // namespace fidl

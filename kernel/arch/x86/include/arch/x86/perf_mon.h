@@ -4,8 +4,6 @@
 #include <err.h>
 #include <stdint.h>
 
-#include <zircon/compiler.h>
-
 #include <fbl/ref_ptr.h>
 #include <vm/vm_object.h>
 
@@ -13,28 +11,18 @@
 
 #include <lib/zircon-internal/device/cpu-trace/intel-pm.h>
 
-__BEGIN_CDECLS
+zx_status_t arch_perfmon_get_properties(zx_x86_pmu_properties_t* state);
 
-void x86_perfmon_init(void);
+zx_status_t arch_perfmon_init();
 
-__END_CDECLS
+zx_status_t arch_perfmon_assign_buffer(uint32_t cpu, fbl::RefPtr<VmObject> vmo);
 
-#ifdef __cplusplus
+zx_status_t arch_perfmon_stage_config(zx_x86_pmu_config_t* config);
 
-zx_status_t x86_ipm_get_properties(zx_x86_ipm_properties_t* state);
+zx_status_t arch_perfmon_start();
 
-zx_status_t x86_ipm_init();
+zx_status_t arch_perfmon_stop();
 
-zx_status_t x86_ipm_assign_buffer(uint32_t cpu, fbl::RefPtr<VmObject> vmo);
-
-zx_status_t x86_ipm_stage_config(zx_x86_ipm_config_t* config);
-
-zx_status_t x86_ipm_start();
-
-zx_status_t x86_ipm_stop();
-
-zx_status_t x86_ipm_fini();
+zx_status_t arch_perfmon_fini();
 
 void apic_pmi_interrupt_handler(x86_iframe_t *frame);
-
-#endif // __cplusplus

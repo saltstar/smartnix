@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -105,7 +108,7 @@ zx_status_t ldmsg_req_decode(ldmsg_req_t* req, size_t req_len,
 
 // The appropriate size message to send for the given |rsp|.
 //
-// The size of the message depends on the the ordinal in the message's
+// The size of the message depends on the ordinal in the message's
 // header. If the ordinal is invalid, this function will return 0.
 size_t ldmsg_rsp_get_size(ldmsg_rsp_t* rsp);
 

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,27 +9,34 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include <fbl/atomic.h>
 #include <fbl/function.h>
+#include <fbl/intrusive_single_list.h>
 #include <fbl/intrusive_double_list.h>
 #include <fbl/macros.h>
 #include <fbl/ref_counted_internal.h>
 #include <fbl/ref_ptr.h>
+#include <fbl/string_piece.h>
+#include <fs/mount_channel.h>
 #include <fs/ref_counted.h>
-#include <fs/vfs.h>
 #include <lib/fdio/io.h>
-#include <lib/fdio/remoteio.h>
 #include <lib/fdio/vfs.h>
 #include <zircon/assert.h>
 #include <zircon/compiler.h>
 #include <zircon/types.h>
 
+#include <utility>
+
 #ifdef __Fuchsia__
 #include <fuchsia/io/c/fidl.h>
 #include <lib/zx/channel.h>
+
+#include <utility>
 #endif // __Fuchsia__
 
 namespace fs {
+
+class Vfs;
+typedef struct vdircookie vdircookie_t;
 
 inline bool vfs_valid_name(fbl::StringPiece name) {
     return name.length() <= NAME_MAX &&
@@ -87,17 +97,7 @@ public:
     virtual zx_status_t Serve(fs::Vfs* vfs, zx::channel channel, uint32_t flags);
 
     // Extract handle, type, and extra info from a vnode.
-    //
-    // On success, the following output parameters are set:
-    //
-    // |hnd| is an optional output extra handle representing the Vnode.
-    // |type| is an output FDIO_PROTOCOL type indicating how the
-    // handle should be interpreted.
-    // |extra| is an output buffer holding a union of extra data which
-    // may be returned by this vnode.
-    // The usage of this field is dependent on the |type|.
-    virtual zx_status_t GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                                   zxrio_node_info_t* extra);
+    virtual zx_status_t GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info);
 
     virtual zx_status_t WatchDir(Vfs* vfs, uint32_t mask, uint32_t options, zx::channel watcher);
 #endif
@@ -139,7 +139,7 @@ public:
     // since (without paging) there is no mechanism to update either
     // 1) The file by writing to the mapping, or
     // 2) The mapping by writing to the underlying file.
-    virtual zx_status_t GetVmo(int flags, zx_handle_t* out);
+    virtual zx_status_t GetVmo(int flags, zx_handle_t* out_vmo, size_t* out_size);
 
     // Syncs the vnode with its underlying storage.
     //
@@ -222,7 +222,7 @@ inline zx_status_t OpenVnode(uint32_t flags, fbl::RefPtr<Vnode>* vnode) {
     fbl::RefPtr<Vnode> redirect;
     zx_status_t status = (*vnode)->Open(flags, &redirect);
     if (status == ZX_OK && redirect != nullptr) {
-        *vnode = fbl::move(redirect);
+        *vnode = std::move(redirect);
     }
     return status;
 }
@@ -246,6 +246,26 @@ private:
     char* ptr_;
     size_t pos_;
     const size_t len_;
+};
+
+// Helper class to track outstanding operations associated to a
+// particular Vnode.
+class VnodeToken : public fbl::SinglyLinkedListable<std::unique_ptr<VnodeToken>> {
+public:
+    VnodeToken(zx_koid_t koid, fbl::RefPtr<Vnode> vnode) :
+        koid_(koid), vnode_(std::move(vnode)) {
+    }
+
+    zx_koid_t get_koid() const { return koid_; }
+    fbl::RefPtr<Vnode> get_vnode() const { return vnode_; }
+
+    // Trait implementation for fbl::HashTable
+    zx_koid_t GetKey() const { return koid_; }
+    static size_t GetHash(zx_koid_t koid) { return koid; }
+
+private:
+    zx_koid_t koid_;
+    fbl::RefPtr<Vnode> vnode_;
 };
 
 } // namespace fs

@@ -28,5 +28,13 @@ MODULE_LIBS := \
     system/ulib/zircon \
     system/ulib/c
 
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-clk \
+    system/banjo/ddk-protocol-ethernet \
+    system/banjo/ddk-protocol-ethernet-board \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-platform-device \
+
 include make/module.mk
 

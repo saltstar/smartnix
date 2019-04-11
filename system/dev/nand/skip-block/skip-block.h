@@ -8,7 +8,7 @@
 
 #include <ddk/protocol/nand.h>
 #include <ddktl/device.h>
-#include <ddktl/protocol/bad-block.h>
+#include <ddktl/protocol/badblock.h>
 #include <ddktl/protocol/nand.h>
 #include <ddktl/protocol/empty-protocol.h>
 
@@ -16,7 +16,8 @@
 #include <fbl/auto_lock.h>
 #include <fbl/macros.h>
 #include <fbl/mutex.h>
-#include <zircon/skipblock/c/fidl.h>
+#include <lib/operation/nand.h>
+#include <fuchsia/hardware/skipblock/c/fidl.h>
 #include <zircon/thread_annotations.h>
 #include <zircon/types.h>
 
@@ -24,8 +25,10 @@
 
 namespace nand {
 
-using PartitionInfo = zircon_skipblock_PartitionInfo;
-using ReadWriteOperation = zircon_skipblock_ReadWriteOperation;
+using NandOperation = nand::Operation<>;
+
+using PartitionInfo = fuchsia_hardware_skipblock_PartitionInfo;
+using ReadWriteOperation = fuchsia_hardware_skipblock_ReadWriteOperation;
 
 class SkipBlockDevice;
 using DeviceType = ddk::Device<SkipBlockDevice, ddk::GetSizable, ddk::Unbindable,
@@ -51,10 +54,9 @@ public:
     zx_status_t Write(const ReadWriteOperation& info, bool* bad_block_grown);
 
 private:
-    explicit SkipBlockDevice(zx_device_t* parent, nand_protocol_t nand_proto,
-                             bad_block_protocol_t bad_block_proto, uint32_t copy_count)
-        : DeviceType(parent), nand_proto_(nand_proto), bad_block_proto_(bad_block_proto),
-          nand_(&nand_proto_), bad_block_(&bad_block_proto_), copy_count_(copy_count) {
+    explicit SkipBlockDevice(zx_device_t* parent, ddk::NandProtocolClient nand,
+                             ddk::BadBlockProtocolClient bad_block, uint32_t copy_count)
+        : DeviceType(parent), nand_(nand), bad_block_(bad_block), copy_count_(copy_count) {
         nand_.Query(&nand_info_, &parent_op_size_);
     }
 
@@ -67,16 +69,14 @@ private:
     // Helper to validate VMO received through IOCTL.
     zx_status_t ValidateVmo(const ReadWriteOperation& op) const;
 
-    nand_protocol_t nand_proto_;
-    bad_block_protocol_t bad_block_proto_;
-    ddk::NandProtocolProxy nand_ __TA_GUARDED(lock_);
-    ddk::BadBlockProtocolProxy bad_block_ __TA_GUARDED(lock_);
+    ddk::NandProtocolClient nand_ __TA_GUARDED(lock_);
+    ddk::BadBlockProtocolClient bad_block_ __TA_GUARDED(lock_);
     LogicalToPhysicalMap block_map_ __TA_GUARDED(lock_);
     fbl::Mutex lock_;
-    zircon_nand_Info nand_info_;
+    fuchsia_hardware_nand_Info nand_info_;
     size_t parent_op_size_;
-    // Operation buffer of size parent_op_size_.
-    fbl::Array<uint8_t> nand_op_ __TA_GUARDED(lock_);
+
+    std::optional<NandOperation> nand_op_ __TA_GUARDED(lock_);
 
     const uint32_t copy_count_;
 };

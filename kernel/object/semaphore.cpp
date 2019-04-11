@@ -20,7 +20,7 @@ void Semaphore::Post() {
         waitq_.WakeOne(true, ZX_OK);
 }
 
-zx_status_t Semaphore::Wait(zx_time_t deadline) {
+zx_status_t Semaphore::Wait(const Deadline& deadline) {
     thread_t *current_thread = get_current_thread();
 
      // If there are no resources available then we need to

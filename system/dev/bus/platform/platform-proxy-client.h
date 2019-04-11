@@ -5,7 +5,7 @@
 #pragma once
 
 #include <ddktl/device.h>
-#include <ddktl/protocol/platform-proxy.h>
+#include <ddktl/protocol/platform/proxy.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/vector.h>
 #include <lib/zx/channel.h>
@@ -19,7 +19,7 @@ class ProxyClient;
 using ProxyClientType = ddk::Device<ProxyClient>;
 
 class ProxyClient : public ProxyClientType,
-                    public ddk::PlatformProxyProtocol<ProxyClient> {
+                    public ddk::PlatformProxyProtocol<ProxyClient, ddk::base_protocol> {
 public:
     explicit ProxyClient(uint32_t proto_id, zx_device_t* parent, fbl::RefPtr<PlatformProxy> proxy)
         :  ProxyClientType(parent), proto_id_(proto_id), proxy_(proxy) {}

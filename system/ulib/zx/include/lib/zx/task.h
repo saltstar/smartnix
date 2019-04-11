@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#pragma once
+#ifndef LIB_ZX_TASK_H_
+#define LIB_ZX_TASK_H_
 
 #include <lib/zx/handle.h>
 #include <lib/zx/object.h>
@@ -30,9 +31,6 @@ public:
 
     zx_status_t kill() const { return zx_task_kill(object<T>::get()); }
 
-    // Deprecated: Use the variant that takes a suspend_token.
-    zx_status_t suspend() const { return zx_task_suspend(object<T>::get()); }
-
     zx_status_t suspend(suspend_token* result) const {
         // Assume |result| must refer to a different container than |this|, due
         // to strict aliasing.
@@ -46,3 +44,5 @@ public:
 };
 
 } // namespace zx
+
+#endif  // LIB_ZX_TASK_H_

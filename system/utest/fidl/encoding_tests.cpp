@@ -4,10 +4,10 @@
 
 #include <limits.h>
 #include <stddef.h>
-
-#include <fbl/type_support.h>
+#include <memory>
 
 #include <lib/fidl/coding.h>
+#include <lib/zx/eventpair.h>
 
 #include <unittest/unittest.h>
 #include <zircon/syscalls.h>
@@ -71,6 +71,22 @@ template <typename T, size_t N>
 uint32_t ArraySize(T const (&array)[N]) {
     static_assert(sizeof(array) < UINT32_MAX, "Array is too large!");
     return sizeof(array);
+}
+
+// Check if the other end of the eventpair is valid
+bool IsPeerValid(const zx::unowned_eventpair handle) {
+    zx_signals_t observed_signals = {};
+    switch (handle->wait_one(ZX_EVENTPAIR_PEER_CLOSED,
+                             zx::deadline_after(zx::msec(1)),
+                             &observed_signals)) {
+        case ZX_ERR_TIMED_OUT:
+            // timeout implies peer-closed was not observed
+            return true;
+        case ZX_OK:
+            return (observed_signals & ZX_EVENTPAIR_PEER_CLOSED) == 0;
+        default:
+            return false;
+    }
 }
 
 bool encode_null_encode_parameters() {
@@ -160,28 +176,6 @@ bool encode_null_encode_parameters() {
     END_TEST;
 }
 
-bool encode_single_present_handle() {
-    BEGIN_TEST;
-
-    nonnullable_handle_message_layout message = {};
-    message.inline_struct.handle = dummy_handle_0;
-
-    zx_handle_t handles[1] = {};
-
-    const char* error = nullptr;
-    uint32_t actual_handles = 0u;
-    auto status = fidl_encode(&nonnullable_handle_message_type, &message, sizeof(message), handles,
-                              ArrayCount(handles), &actual_handles, &error);
-
-    EXPECT_EQ(status, ZX_OK);
-    EXPECT_NULL(error, error);
-    EXPECT_EQ(actual_handles, 1u);
-    EXPECT_EQ(handles[0], dummy_handle_0);
-    EXPECT_EQ(message.inline_struct.handle, FIDL_HANDLE_PRESENT);
-
-    END_TEST;
-}
-
 bool encode_single_present_handle_unaligned_error() {
     BEGIN_TEST;
 
@@ -208,6 +202,88 @@ bool encode_single_present_handle_unaligned_error() {
 
     EXPECT_EQ(status, ZX_ERR_INVALID_ARGS);
     EXPECT_NONNULL(error);
+
+    END_TEST;
+}
+
+bool encode_present_nonnullable_string_unaligned_error() {
+    BEGIN_TEST;
+
+    unbounded_nonnullable_string_message_layout message = {};
+    message.inline_struct.string = fidl_string_t{6, &message.data[0]};
+    memcpy(message.data, "hello!", 6);
+
+    // Copy the message to unaligned storage one byte off from true alignment
+    unbounded_nonnullable_string_message_layout message_storage[2];
+    uint8_t* unaligned_ptr = reinterpret_cast<uint8_t*>(&message_storage[0]) + 1;
+    memcpy(unaligned_ptr, &message, sizeof(message));
+    auto unaligned_msg = reinterpret_cast<unbounded_nonnullable_string_message_layout*>(
+        unaligned_ptr);
+    unaligned_msg->inline_struct.string.data = &unaligned_msg->data[0];
+
+    const char* error = nullptr;
+    uint32_t actual_handles = 0u;
+    auto status = fidl_encode(&unbounded_nonnullable_string_message_type, unaligned_msg,
+                              sizeof(message), nullptr, 0, &actual_handles, &error);
+
+    EXPECT_EQ(status, ZX_ERR_INVALID_ARGS);
+    EXPECT_NONNULL(error);
+    ASSERT_STR_STR(error, "must be aligned to FIDL_ALIGNMENT");
+
+    END_TEST;
+}
+
+bool encode_single_present_handle() {
+    BEGIN_TEST;
+
+    nonnullable_handle_message_layout message = {};
+    message.inline_struct.handle = dummy_handle_0;
+
+    zx_handle_t handles[1] = {};
+
+    const char* error = nullptr;
+    uint32_t actual_handles = 0u;
+    auto status = fidl_encode(&nonnullable_handle_message_type, &message, sizeof(message), handles,
+                              ArrayCount(handles), &actual_handles, &error);
+
+    EXPECT_EQ(status, ZX_OK);
+    EXPECT_NULL(error, error);
+    EXPECT_EQ(actual_handles, 1u);
+    EXPECT_EQ(handles[0], dummy_handle_0);
+    EXPECT_EQ(message.inline_struct.handle, FIDL_HANDLE_PRESENT);
+
+    END_TEST;
+}
+
+bool encode_too_many_bytes_specified_should_close_handles() {
+    BEGIN_TEST;
+
+    zx::eventpair ep0, ep1;
+    ASSERT_EQ(zx::eventpair::create(0, &ep0, &ep1), ZX_OK);
+
+    constexpr size_t kSizeTooBig = sizeof(nonnullable_handle_message_layout) * 2;
+    std::unique_ptr<uint8_t[]> buffer = std::make_unique<uint8_t[]>(kSizeTooBig);
+    nonnullable_handle_message_layout& message = *reinterpret_cast<nonnullable_handle_message_layout*>(buffer.get());
+    message.inline_struct.handle = ep0.get();
+
+    ASSERT_TRUE(IsPeerValid(zx::unowned_eventpair(ep1)));
+
+    zx_handle_t handles[1] = {};
+    const char* error = nullptr;
+    uint32_t actual_handles = 1234;
+    auto status = fidl_encode(&nonnullable_handle_message_type, &message, kSizeTooBig, handles,
+                              ArrayCount(handles), &actual_handles, &error);
+
+    ASSERT_EQ(status, ZX_ERR_INVALID_ARGS);
+    ASSERT_NONNULL(error, error);
+    ASSERT_EQ(actual_handles, 0);
+    ASSERT_EQ(message.inline_struct.handle, FIDL_HANDLE_PRESENT);
+    ASSERT_EQ(handles[0], ep0.get());
+    ASSERT_FALSE(IsPeerValid(zx::unowned_eventpair(ep1)));
+
+    // When the test succeeds, |ep0| is closed by the encoder.
+    zx_handle_t unused = ep0.release();
+    (void)unused;
 
     END_TEST;
 }
@@ -1743,9 +1819,14 @@ BEGIN_TEST_CASE(null_parameters)
 RUN_TEST(encode_null_encode_parameters)
 END_TEST_CASE(null_parameters)
 
+BEGIN_TEST_CASE(unaligned)
+RUN_TEST(encode_single_present_handle_unaligned_error)
+RUN_TEST(encode_present_nonnullable_string_unaligned_error)
+END_TEST_CASE(unaligned)
+
 BEGIN_TEST_CASE(handles)
 RUN_TEST(encode_single_present_handle)
-RUN_TEST(encode_single_present_handle_unaligned_error)
+RUN_TEST(encode_too_many_bytes_specified_should_close_handles)
 RUN_TEST(encode_multiple_present_handles)
 RUN_TEST(encode_single_absent_handle)
 RUN_TEST(encode_multiple_absent_handles)

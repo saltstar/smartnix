@@ -21,7 +21,7 @@
 #include <fbl/limits.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_free_ptr.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 #include <zircon/syscalls/pci.h>
 
 #include "priv.h"
@@ -301,7 +301,7 @@ zx_status_t sys_pci_init(zx_handle_t handle, user_in_ptr<const zx_pci_init_arg_t
         ASSERT(arg->addr_windows[0].base < fbl::numeric_limits<paddr_t>::max());
 
         fbl::AllocChecker ac;
-        auto addr_provider = fbl::make_unique_checked<MmioPcieAddressProvider>(&ac);
+        auto addr_provider = ktl::make_unique<MmioPcieAddressProvider>(&ac);
         if (!ac.check()) {
             TRACEF("Failed to allocate PCIe Address Provider\n");
             return ZX_ERR_NO_MEMORY;
@@ -323,7 +323,7 @@ zx_status_t sys_pci_init(zx_handle_t handle, user_in_ptr<const zx_pci_init_arg_t
             return ret;
         }
 
-        ret = pcie->SetAddressTranslationProvider(fbl::move(addr_provider));
+        ret = pcie->SetAddressTranslationProvider(ktl::move(addr_provider));
         if (ret != ZX_OK) {
             TRACEF("Failed to set Address Translation Provider, st = %d\n", ret);
             return ret;
@@ -332,13 +332,13 @@ zx_status_t sys_pci_init(zx_handle_t handle, user_in_ptr<const zx_pci_init_arg_t
         // Create a PIO address provider.
         fbl::AllocChecker ac;
 
-        auto addr_provider = fbl::make_unique_checked<PioPcieAddressProvider>(&ac);
+        auto addr_provider = ktl::make_unique<PioPcieAddressProvider>(&ac);
         if (!ac.check()) {
             TRACEF("Failed to allocate PCIe address provider\n");
             return ZX_ERR_NO_MEMORY;
         }
 
-        zx_status_t ret = pcie->SetAddressTranslationProvider(fbl::move(addr_provider));
+        zx_status_t ret = pcie->SetAddressTranslationProvider(ktl::move(addr_provider));
         if (ret != ZX_OK) {
             TRACEF("Failed to set Address Translation Provider, st = %d\n", ret);
             return ret;
@@ -351,7 +351,7 @@ zx_status_t sys_pci_init(zx_handle_t handle, user_in_ptr<const zx_pci_init_arg_t
             return ZX_ERR_INVALID_ARGS;
         }
 
-        auto addr_provider = fbl::make_unique_checked<DesignWarePcieAddressProvider>(&ac);
+        auto addr_provider = ktl::make_unique<DesignWarePcieAddressProvider>(&ac);
         if (!ac.check()) {
             TRACEF("Failed to allocate PCIe address provider\n");
             return ZX_ERR_NO_MEMORY;
@@ -381,7 +381,7 @@ zx_status_t sys_pci_init(zx_handle_t handle, user_in_ptr<const zx_pci_init_arg_t
             return ret;
         }
 
-        ret = pcie->SetAddressTranslationProvider(fbl::move(addr_provider));
+        ret = pcie->SetAddressTranslationProvider(ktl::move(addr_provider));
         if (ret != ZX_OK) {
             TRACEF("Failed to set Address Translation Provider, st = %d\n", ret);
             return ret;
@@ -398,7 +398,7 @@ zx_status_t sys_pci_init(zx_handle_t handle, user_in_ptr<const zx_pci_init_arg_t
     if (root == nullptr)
         return ZX_ERR_NO_MEMORY;
 
-    zx_status_t ret = pcie->AddRoot(fbl::move(root));
+    zx_status_t ret = pcie->AddRoot(ktl::move(root));
     if (ret != ZX_OK) {
         TRACEF("Failed to add root complex to PCIe bus driver! (ret %d)\n", ret);
         return ret;
@@ -449,7 +449,7 @@ zx_status_t sys_pci_get_nth_device(zx_handle_t hrsrc,
     if (status != ZX_OK)
         return status;
 
-    return out_handle->make(fbl::move(dispatcher), rights);
+    return out_handle->make(ktl::move(dispatcher), rights);
 }
 
 // zx_status_t zx_pci_config_read
@@ -667,7 +667,7 @@ zx_status_t sys_pci_get_bar(zx_handle_t dev_handle,
     }
 
     if (vmo) {
-        return out_handle->make(fbl::move(dispatcher), rights);
+        return out_handle->make(ktl::move(dispatcher), rights);
     }
 
     return ZX_OK;
@@ -700,7 +700,7 @@ zx_status_t sys_pci_map_interrupt(zx_handle_t dev_handle,
     if (result != ZX_OK)
         return result;
 
-    return out_handle->make(fbl::move(interrupt_dispatcher), rights);
+    return out_handle->make(ktl::move(interrupt_dispatcher), rights);
 }
 
 /**

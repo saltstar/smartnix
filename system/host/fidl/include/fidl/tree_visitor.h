@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "raw_ast.h"
 
@@ -136,10 +139,6 @@ public:
             DISPATCH_TO(RequestHandleType, Type, element);
             break;
         }
-        case Type::Kind::kPrimitive: {
-            DISPATCH_TO(PrimitiveType, Type, element);
-            break;
-        }
         case Type::Kind::kIdentifier: {
             DISPATCH_TO(IdentifierType, Type, element);
             break;
@@ -163,9 +162,6 @@ public:
         element->Accept(*this);
     }
     virtual void OnRequestHandleType(std::unique_ptr<RequestHandleType> const& element) {
-        element->Accept(*this);
-    }
-    virtual void OnPrimitiveType(std::unique_ptr<PrimitiveType> const& element) {
         element->Accept(*this);
     }
     virtual void OnIdentifierType(std::unique_ptr<IdentifierType> const& element) {
@@ -213,6 +209,12 @@ public:
         element->Accept(*this);
     }
     virtual void OnUnionDeclaration(std::unique_ptr<UnionDeclaration> const& element) {
+        element->Accept(*this);
+    }
+    virtual void OnXUnionMember(std::unique_ptr<XUnionMember> const& element) {
+        element->Accept(*this);
+    }
+    virtual void OnXUnionDeclaration(std::unique_ptr<XUnionDeclaration> const& element) {
         element->Accept(*this);
     }
     virtual void OnFile(std::unique_ptr<File> const& element) {

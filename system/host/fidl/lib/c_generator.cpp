@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "fidl/c_generator.h"
 
@@ -38,7 +41,27 @@ CGenerator::Member MessageHeader() {
         {},
         {},
         types::Nullability::kNonnullable,
+        {},
     };
+}
+
+CGenerator::Member EmptyStructMember() {
+    return {
+        .kind = flat::Type::Kind::kPrimitive,
+        .type = NamePrimitiveCType(types::PrimitiveSubtype::kUint8),
+
+        // Prepend the reserved uint8_t field with a single underscore, which is
+        // for reserved identifiers (see ISO C standard, section 7.1.3
+        // <http://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf>).
+        .name = "_reserved",
+    };
+}
+
+CGenerator::Transport ParseTransport(StringView view) {
+    if (view == "SocketControl") {
+        return CGenerator::Transport::SocketControl;
+    }
+    return CGenerator::Transport::Channel;
 }
 
 // Functions named "Emit..." are called to actually emit to an std::ostream
@@ -114,6 +137,7 @@ void EmitMethodInParamDecl(std::ostream* file, const CGenerator::Member& member)
         case flat::Decl::Kind::kStruct:
         case flat::Decl::Kind::kTable:
         case flat::Decl::Kind::kUnion:
+        case flat::Decl::Kind::kXUnion:
             switch (member.nullability) {
             case types::Nullability::kNullable:
                 *file << "const " << member.type << " " << member.name;
@@ -163,6 +187,7 @@ void EmitMethodOutParamDecl(std::ostream* file, const CGenerator::Member& member
         case flat::Decl::Kind::kStruct:
         case flat::Decl::Kind::kTable:
         case flat::Decl::Kind::kUnion:
+        case flat::Decl::Kind::kXUnion:
             switch (member.nullability) {
             case types::Nullability::kNullable:
                 *file << member.type << " out_" << member.name;
@@ -234,7 +259,7 @@ bool IsStoredOutOfLine(const CGenerator::Member& member) {
         return true;
     if (member.kind == flat::Type::Kind::kIdentifier) {
         return member.nullability == types::Nullability::kNullable &&
-               (member.decl_kind == flat::Decl::Kind::kStruct || member.decl_kind == flat::Decl::Kind::kUnion);
+               (member.decl_kind == flat::Decl::Kind::kStruct || member.decl_kind == flat::Decl::Kind::kUnion || member.decl_kind == flat::Decl::Kind::kXUnion);
     }
     return false;
 }
@@ -247,7 +272,27 @@ void EmitMeasureInParams(std::ostream* file,
         else if (member.kind == flat::Type::Kind::kString)
             *file << " + FIDL_ALIGN(" << member.name << "_size)";
         else if (IsStoredOutOfLine(member))
-            *file << " + (" << member.name << " ? sizeof(*" << member.name << ") : 0u)";
+            *file << " + (" << member.name << " ? FIDL_ALIGN(sizeof(*" << member.name << ")) : 0u)";
+    }
+}
+
+void EmitParameterSizeValidation(std::ostream* file,
+                                 const std::vector<CGenerator::Member>& params) {
+    for (const auto& member : params) {
+        if (member.max_num_elements == std::numeric_limits<uint32_t>::max())
+            continue;
+        std::string param_name;
+        if (member.kind == flat::Type::Kind::kVector) {
+            param_name = member.name + "_count";
+        } else if (member.kind == flat::Type::Kind::kString) {
+            param_name = member.name + "_size";
+        } else {
+            assert(false && "only vector/string has size limit");
+        }
+        *file << kIndent
+              << "if (" << param_name << " > " << member.max_num_elements << ") {\n";
+        *file << kIndent << kIndent << "return ZX_ERR_INVALID_ARGS;\n";
+        *file << kIndent << "}\n";
     }
 }
 
@@ -259,7 +304,7 @@ void EmitMeasureOutParams(std::ostream* file,
         else if (member.kind == flat::Type::Kind::kString)
             *file << " + FIDL_ALIGN(" << member.name << "_capacity)";
         else if (IsStoredOutOfLine(member))
-            *file << " + (out_" << member.name << " ? sizeof(*out_" << member.name << ") : 0u)";
+            *file << " + (out_" << member.name << " ? FIDL_ALIGN(sizeof(*out_" << member.name << ")) : 0u)";
     }
 }
 
@@ -338,6 +383,9 @@ void EmitLinearizeMessage(std::ostream* file,
             case flat::Decl::Kind::kTable:
                 assert(false && "c-codegen for tables not yet implemented");
                 break;
+            case flat::Decl::Kind::kXUnion:
+                assert(false && "c-codegen for extensible unions not yet implemented");
+                break;
             case flat::Decl::Kind::kStruct:
             case flat::Decl::Kind::kUnion:
                 switch (member.nullability) {
@@ -362,92 +410,55 @@ void EmitLinearizeMessage(std::ostream* file,
 
 // Various computational helper routines.
 
-void EnumValue(types::PrimitiveSubtype type, const flat::Constant* constant,
-               const flat::Library* library, std::string* out_value) {
-    // TODO(kulakowski) Move this into library resolution.
-
+void EnumValue(const flat::Constant* constant, std::string* out_value) {
     std::ostringstream member_value;
 
-    switch (type) {
-    case types::PrimitiveSubtype::kInt8: {
-        int8_t value;
-        bool success = library->ParseIntegerConstant(constant, &value);
-        if (!success) {
-            __builtin_trap();
-        }
-        // The char-sized overloads of operator<< here print
-        // the character value, not the numeric value, so cast up.
-        member_value << static_cast<int>(value);
-        break;
-    }
-    case types::PrimitiveSubtype::kInt16: {
-        int16_t value;
-        bool success = library->ParseIntegerConstant(constant, &value);
-        if (!success) {
-            __builtin_trap();
-        }
+    const flat::ConstantValue& const_val = constant->Value();
+    switch (const_val.kind) {
+    case flat::ConstantValue::Kind::kInt8: {
+        auto value = static_cast<const flat::NumericConstantValue<int8_t>&>(const_val);
         member_value << value;
         break;
     }
-    case types::PrimitiveSubtype::kInt32: {
-        int32_t value;
-        bool success = library->ParseIntegerConstant(constant, &value);
-        if (!success) {
-            __builtin_trap();
-        }
+    case flat::ConstantValue::Kind::kInt16: {
+        auto value = static_cast<const flat::NumericConstantValue<int16_t>&>(const_val);
         member_value << value;
         break;
     }
-    case types::PrimitiveSubtype::kInt64: {
-        int64_t value;
-        bool success = library->ParseIntegerConstant(constant, &value);
-        if (!success) {
-            __builtin_trap();
-        }
+    case flat::ConstantValue::Kind::kInt32: {
+        auto value = static_cast<const flat::NumericConstantValue<int32_t>&>(const_val);
         member_value << value;
         break;
     }
-    case types::PrimitiveSubtype::kUint8: {
-        uint8_t value;
-        bool success = library->ParseIntegerConstant(constant, &value);
-        if (!success) {
-            __builtin_trap();
-        }
-        // The char-sized overloads of operator<< here print
-        // the character value, not the numeric value, so cast up.
-        member_value << static_cast<unsigned int>(value);
-        break;
-    }
-    case types::PrimitiveSubtype::kUint16: {
-        uint16_t value;
-        bool success = library->ParseIntegerConstant(constant, &value);
-        if (!success) {
-            __builtin_trap();
-        }
+    case flat::ConstantValue::Kind::kInt64: {
+        auto value = static_cast<const flat::NumericConstantValue<int64_t>&>(const_val);
         member_value << value;
         break;
     }
-    case types::PrimitiveSubtype::kUint32: {
-        uint32_t value;
-        bool success = library->ParseIntegerConstant(constant, &value);
-        if (!success) {
-            __builtin_trap();
-        }
+    case flat::ConstantValue::Kind::kUint8: {
+        auto value = static_cast<const flat::NumericConstantValue<uint8_t>&>(const_val);
         member_value << value;
         break;
     }
-    case types::PrimitiveSubtype::kUint64: {
-        uint64_t value;
-        bool success = library->ParseIntegerConstant(constant, &value);
-        if (!success) {
-            __builtin_trap();
-        }
+    case flat::ConstantValue::Kind::kUint16: {
+        auto value = static_cast<const flat::NumericConstantValue<uint16_t>&>(const_val);
         member_value << value;
         break;
     }
-    case types::PrimitiveSubtype::kBool:
-    case types::PrimitiveSubtype::kFloat32:
-    case types::PrimitiveSubtype::kFloat64:
+    case flat::ConstantValue::Kind::kUint32: {
+        auto value = static_cast<const flat::NumericConstantValue<uint32_t>&>(const_val);
+        member_value << value;
+        break;
+    }
+    case flat::ConstantValue::Kind::kUint64: {
+        auto value = static_cast<const flat::NumericConstantValue<uint64_t>&>(const_val);
+        member_value << value;
+        break;
+    }
+    case flat::ConstantValue::Kind::kBool:
+    case flat::ConstantValue::Kind::kFloat32:
+    case flat::ConstantValue::Kind::kFloat64:
+    case flat::ConstantValue::Kind::kString:
         assert(false && "bad primitive type for an enum");
         break;
     }
@@ -477,8 +488,8 @@ void ArrayCountsAndElementTypeName(const flat::Library* library, const flat::Typ
         }
         case flat::Type::Kind::kArray: {
             auto array_type = static_cast<const flat::ArrayType*>(type);
-            uint32_t element_count = array_type->element_count.Value();
-            array_counts.push_back(element_count);
+            auto element_count = static_cast<const flat::Size&>(array_type->element_count->Value());
+            array_counts.push_back(element_count.value);
             type = array_type->element_type.get();
             continue;
         }
@@ -495,6 +506,7 @@ CGenerator::Member CreateMember(const flat::Library* library, const T& decl) {
     std::string element_type_name;
     std::vector<uint32_t> array_counts;
     types::Nullability nullability = types::Nullability::kNonnullable;
+    uint32_t max_num_elements = std::numeric_limits<uint32_t>::max();
     switch (type->kind) {
     case flat::Type::Kind::kArray: {
         ArrayCountsAndElementTypeName(library,
@@ -508,6 +520,8 @@ CGenerator::Member CreateMember(const flat::Library* library, const T& decl) {
         const flat::Type* element_type = vector_type->element_type.get();
         element_type_name =
             NameFlatCType(element_type, GetDeclKind(library, element_type));
+        max_num_elements =
+            static_cast<const flat::Size&>(vector_type->element_count.get()->Value()).value;
         break;
     }
     case flat::Type::Kind::kIdentifier: {
@@ -519,6 +533,8 @@ CGenerator::Member CreateMember(const flat::Library* library, const T& decl) {
     case flat::Type::Kind::kString: {
         auto string_type = static_cast<const flat::StringType*>(type);
         nullability = string_type->nullability;
+        max_num_elements =
+            static_cast<const flat::Size&>(string_type->max_size.get()->Value()).value;
         break;
     }
     case flat::Type::Kind::kHandle:
@@ -536,6 +552,7 @@ CGenerator::Member CreateMember(const flat::Library* library, const T& decl) {
         std::move(element_type_name),
         std::move(array_counts),
         nullability,
+        max_num_elements,
     };
 }
 
@@ -546,6 +563,17 @@ GenerateMembers(const flat::Library* library,
     members.reserve(union_members.size());
     for (const auto& union_member : union_members) {
         members.push_back(CreateMember(library, union_member));
+    }
+    return members;
+}
+
+std::vector<CGenerator::Member>
+GenerateMembers(const flat::Library* library,
+                const std::vector<flat::XUnion::Member>& xunion_members) {
+    std::vector<CGenerator::Member> members;
+    members.reserve(xunion_members.size());
+    for (const auto& xunion_member : xunion_members) {
+        members.push_back(CreateMember(library, xunion_member));
     }
     return members;
 }
@@ -649,21 +677,33 @@ void CGenerator::GenerateStructTypedef(StringView name) {
     file_ << "typedef struct " << name << " " << name << ";\n";
 }
 
-void CGenerator::GenerateStructDeclaration(StringView name, const std::vector<Member>& members) {
+void CGenerator::GenerateStructDeclaration(StringView name, const std::vector<Member>& members,
+                                           StructKind kind) {
     file_ << "struct " << name << " {\n";
-    file_ << kIndent << "FIDL_ALIGNDECL\n";
-    for (const auto& member : members) {
+    if (kind == StructKind::kMessage) {
+        file_ << kIndent << "FIDL_ALIGNDECL\n";
+    }
+
+    auto emit_member = [this](const Member& member) {
         file_ << kIndent;
         EmitMemberDecl(&file_, member);
         file_ << ";\n";
+    };
+
+    for (const auto& member : members) {
+        emit_member(member);
     }
+
+    if (members.empty()) {
+        emit_member(EmptyStructMember());
+    }
+
     file_ << "};\n";
 }
 
 void CGenerator::GenerateTaggedUnionDeclaration(StringView name,
                                                 const std::vector<Member>& members) {
     file_ << "struct " << name << " {\n";
-    file_ << kIndent << "FIDL_ALIGNDECL\n";
     file_ << kIndent << "fidl_union_tag_t tag;\n";
     file_ << kIndent << "union {\n";
     for (const auto& member : members) {
@@ -673,6 +713,11 @@ void CGenerator::GenerateTaggedUnionDeclaration(StringView name,
     }
     file_ << kIndent << "};\n";
     file_ << "};\n";
+}
+
+void CGenerator::GenerateTaggedXUnionDeclaration(StringView name,
+                                                 const std::vector<Member>& members) {
+    // XUnions are (intentionally) unimplemented for C bindings.
 }
 
 // TODO(TO-702) These should maybe check for global name
@@ -705,6 +750,8 @@ CGenerator::NameInterfaces(const std::vector<std::unique_ptr<flat::Interface>>& 
         if (interface_info->HasAttribute("Discoverable")) {
             named_interface.discoverable_name = NameDiscoverable(*interface_info);
         }
+        // TODO: Transport::SocketControl should imply NoHandles.
+        named_interface.transport = ParseTransport(interface_info->GetAttribute("Transport"));
         for (const auto& method_pointer : interface_info->all_methods) {
             assert(method_pointer != nullptr);
             const auto& method = *method_pointer;
@@ -712,6 +759,8 @@ CGenerator::NameInterfaces(const std::vector<std::unique_ptr<flat::Interface>>& 
             std::string method_name = NameMethod(named_interface.c_name, method);
             named_method.ordinal = method.ordinal->value;
             named_method.ordinal_name = NameOrdinal(method_name);
+            named_method.generated_ordinal = method.generated_ordinal->value;
+            named_method.generated_ordinal_name = NameGenOrdinal(method_name);
             named_method.identifier = NameIdentifier(method.name);
             named_method.c_name = method_name;
             if (method.maybe_request != nullptr) {
@@ -719,7 +768,7 @@ CGenerator::NameInterfaces(const std::vector<std::unique_ptr<flat::Interface>>& 
                 std::string coded_name = NameTable(c_name);
                 named_method.request = std::make_unique<NamedMessage>(NamedMessage{
                     std::move(c_name), std::move(coded_name),
-                    method.maybe_request->parameters, method.maybe_request->typeshape});
+                    method.maybe_request->members, method.maybe_request->typeshape});
             }
             if (method.maybe_response != nullptr) {
                 if (method.maybe_request == nullptr) {
@@ -728,14 +777,14 @@ CGenerator::NameInterfaces(const std::vector<std::unique_ptr<flat::Interface>>& 
                     std::string coded_name = NameTable(c_name);
                     named_method.response = std::make_unique<NamedMessage>(
                         NamedMessage{std::move(c_name), std::move(coded_name),
-                                     method.maybe_response->parameters,
+                                     method.maybe_response->members,
                                      method.maybe_response->typeshape});
                 } else {
                     std::string c_name = NameMessage(method_name, types::MessageKind::kResponse);
                     std::string coded_name = NameTable(c_name);
                     named_method.response = std::make_unique<NamedMessage>(
                         NamedMessage{std::move(c_name), std::move(coded_name),
-                                     method.maybe_response->parameters,
+                                     method.maybe_response->members,
                                      method.maybe_response->typeshape});
                 }
             }
@@ -750,6 +799,8 @@ std::map<const flat::Decl*, CGenerator::NamedStruct>
 CGenerator::NameStructs(const std::vector<std::unique_ptr<flat::Struct>>& struct_infos) {
     std::map<const flat::Decl*, NamedStruct> named_structs;
     for (const auto& struct_info : struct_infos) {
+        if (struct_info->anonymous)
+            continue;
         std::string c_name = NameName(struct_info->name, "_", "_");
         std::string coded_name = c_name + "Coded";
         named_structs.emplace(struct_info.get(),
@@ -780,6 +831,16 @@ CGenerator::NameUnions(const std::vector<std::unique_ptr<flat::Union>>& union_in
     return named_unions;
 }
 
+std::map<const flat::Decl*, CGenerator::NamedXUnion>
+CGenerator::NameXUnions(const std::vector<std::unique_ptr<flat::XUnion>>& xunion_infos) {
+    std::map<const flat::Decl*, NamedXUnion> named_xunions;
+    for (const auto& xunion_info : xunion_infos) {
+        std::string xunion_name = NameName(xunion_info->name, "_", "_");
+        named_xunions.emplace(xunion_info.get(), NamedXUnion{std::move(xunion_name), *xunion_info});
+    }
+    return named_xunions;
+}
+
 void CGenerator::ProduceConstForwardDeclaration(const NamedConst& named_const) {
     // TODO(TO-702)
 }
@@ -790,7 +851,7 @@ void CGenerator::ProduceEnumForwardDeclaration(const NamedEnum& named_enum) {
     for (const auto& member : named_enum.enum_info.members) {
         std::string member_name = named_enum.name + "_" + NameIdentifier(member.name);
         std::string member_value;
-        EnumValue(named_enum.enum_info.type->subtype, member.value.get(), library_, &member_value);
+        EnumValue(member.value.get(), &member_value);
         GenerateIntegerDefine(member_name, subtype, std::move(member_value));
     }
 
@@ -806,6 +867,8 @@ void CGenerator::ProduceInterfaceForwardDeclaration(const NamedInterface& named_
             IOFlagsGuard reset_flags(&file_);
             file_ << "#define " << method_info.ordinal_name << " ((uint32_t)0x"
                   << std::uppercase << std::hex << method_info.ordinal << std::dec << ")\n";
+            file_ << "#define " << method_info.generated_ordinal_name << " ((uint32_t)0x"
+                  << std::uppercase << std::hex << method_info.generated_ordinal << std::dec << ")\n";
         }
         if (method_info.request)
             GenerateStructTypedef(method_info.request->c_name);
@@ -824,6 +887,10 @@ void CGenerator::ProduceTableForwardDeclaration(const NamedTable& named_struct) 
 
 void CGenerator::ProduceUnionForwardDeclaration(const NamedUnion& named_union) {
     GenerateStructTypedef(named_union.name);
+}
+
+void CGenerator::ProduceXUnionForwardDeclaration(const NamedXUnion& named_xunion) {
+    GenerateStructTypedef(named_xunion.name);
 }
 
 void CGenerator::ProduceInterfaceExternDeclaration(const NamedInterface& named_interface) {
@@ -862,6 +929,9 @@ void CGenerator::ProduceConstDeclaration(const NamedConst& named_const) {
 }
 
 void CGenerator::ProduceMessageDeclaration(const NamedMessage& named_message) {
+    // When we generate a request or response struct (i.e. messages), we must
+    // both include the message header, and ensure the message is FIDL aligned.
+
     std::vector<CGenerator::Member> members;
     members.reserve(1 + named_message.parameters.size());
     members.push_back(MessageHeader());
@@ -869,7 +939,7 @@ void CGenerator::ProduceMessageDeclaration(const NamedMessage& named_message) {
         members.push_back(CreateMember(library_, parameter));
     }
 
-    GenerateStructDeclaration(named_message.c_name, members);
+    GenerateStructDeclaration(named_message.c_name, members, StructKind::kMessage);
 
     EmitBlank(&file_);
 }
@@ -890,7 +960,7 @@ void CGenerator::ProduceStructDeclaration(const NamedStruct& named_struct) {
         members.push_back(CreateMember(library_, struct_member));
     }
 
-    GenerateStructDeclaration(named_struct.c_name, members);
+    GenerateStructDeclaration(named_struct.c_name, members, StructKind::kNonmessage);
 
     EmitBlank(&file_);
 }
@@ -907,6 +977,24 @@ void CGenerator::ProduceUnionDeclaration(const NamedUnion& named_union) {
         std::ostringstream value;
         value << tag;
         GenerateIntegerDefine(std::move(tag_name), union_tag_type, value.str());
+        ++tag;
+    }
+
+    EmitBlank(&file_);
+}
+
+void CGenerator::ProduceXUnionDeclaration(const NamedXUnion& named_xunion) {
+    std::vector<CGenerator::Member> members =
+        GenerateMembers(library_, named_xunion.xunion_info.members);
+    GenerateTaggedXUnionDeclaration(named_xunion.name, members);
+
+    uint32_t tag = 0u;
+    for (const auto& member : named_xunion.xunion_info.members) {
+        std::string tag_name = NameXUnionTag(named_xunion.name, member);
+        auto xunion_tag_type = types::PrimitiveSubtype::kUint32;
+        std::ostringstream value;
+        value << tag;
+        GenerateIntegerDefine(std::move(tag_name), xunion_tag_type, value.str());
         ++tag;
     }
 
@@ -941,6 +1029,7 @@ void CGenerator::ProduceInterfaceClientImplementation(const NamedInterface& name
 
         EmitClientMethodDecl(&file_, method_info.c_name, request, response);
         file_ << " {\n";
+        EmitParameterSizeValidation(&file_, request);
         file_ << kIndent << "uint32_t _wr_num_bytes = sizeof(" << method_info.request->c_name << ")";
         EmitMeasureInParams(&file_, request);
         file_ << ";\n";
@@ -950,59 +1039,87 @@ void CGenerator::ProduceInterfaceClientImplementation(const NamedInterface& name
         file_ << kIndent << "_request->hdr.ordinal = " << method_info.ordinal << ";\n";
         EmitLinearizeMessage(&file_, "_request", "_wr_bytes", request);
         if (encode) {
-            file_ << kIndent << "zx_handle_t _handles[ZX_CHANNEL_MAX_MSG_HANDLES];\n";
             file_ << kIndent << "uint32_t _wr_num_handles = 0u;\n";
-            file_ << kIndent << "zx_status_t _status = fidl_encode(&" << method_info.request->coded_name
-                  << ", _wr_bytes, _wr_num_bytes, _handles, ZX_CHANNEL_MAX_MSG_HANDLES"
-                  << ", &_wr_num_handles, NULL);\n";
+            switch (named_interface.transport) {
+            case Transport::Channel:
+                file_ << kIndent << "zx_handle_t _handles[ZX_CHANNEL_MAX_MSG_HANDLES];\n";
+                file_ << kIndent << "zx_status_t _status = fidl_encode(&" << method_info.request->coded_name
+                      << ", _wr_bytes, _wr_num_bytes, _handles, ZX_CHANNEL_MAX_MSG_HANDLES"
+                      << ", &_wr_num_handles, NULL);\n";
+                break;
+            case Transport::SocketControl:
+                file_ << kIndent << "zx_status_t _status = fidl_encode(&" << method_info.request->coded_name
+                      << ", _wr_bytes, _wr_num_bytes, NULL, 0, &_wr_num_handles, NULL);\n";
+                break;
+            }
             file_ << kIndent << "if (_status != ZX_OK)\n";
             file_ << kIndent << kIndent << "return _status;\n";
         } else {
             file_ << kIndent << "// OPTIMIZED AWAY fidl_encode() of POD-only request\n";
         }
         if (!method_info.response) {
-            if (encode) {
-                file_ << kIndent << "return zx_channel_write(_channel, 0u, _wr_bytes, _wr_num_bytes, _handles, _wr_num_handles);\n";
-            } else {
-                file_ << kIndent << "return zx_channel_write(_channel, 0u, _wr_bytes, _wr_num_bytes, NULL, 0);\n";
+            switch (named_interface.transport) {
+            case Transport::Channel:
+                if (encode) {
+                    file_ << kIndent << "return zx_channel_write(_channel, 0u, _wr_bytes, _wr_num_bytes, _handles, _wr_num_handles);\n";
+                } else {
+                    file_ << kIndent << "return zx_channel_write(_channel, 0u, _wr_bytes, _wr_num_bytes, NULL, 0);\n";
+                }
+                break;
+            case Transport::SocketControl:
+                file_ << kIndent << "return fidl_socket_write_control(_channel, _wr_bytes, _wr_num_bytes);\n";
+                break;
             }
         } else {
             file_ << kIndent << "uint32_t _rd_num_bytes = sizeof(" << method_info.response->c_name << ")";
             EmitMeasureOutParams(&file_, response);
             file_ << ";\n";
             file_ << kIndent << "FIDL_ALIGNDECL char _rd_bytes[_rd_num_bytes];\n";
-            if (!encode) {
-                file_ << kIndent << "zx_handle_t _handles[ZX_CHANNEL_MAX_MSG_HANDLES];\n";
-            }
             if (!response.empty())
                 file_ << kIndent << method_info.response->c_name << "* _response = (" << method_info.response->c_name << "*)_rd_bytes;\n";
-            file_ << kIndent << "zx_channel_call_args_t _args = {\n";
-            file_ << kIndent << kIndent << ".wr_bytes = _wr_bytes,\n";
-            if (encode) {
-                file_ << kIndent << kIndent << ".wr_handles = _handles,\n";
-            } else {
-                file_ << kIndent << kIndent << ".wr_handles = NULL,\n";
-            }
-            file_ << kIndent << kIndent << ".rd_bytes = _rd_bytes,\n";
-            file_ << kIndent << kIndent << ".rd_handles = _handles,\n";
-            file_ << kIndent << kIndent << ".wr_num_bytes = _wr_num_bytes,\n";
-            if (encode) {
-                file_ << kIndent << kIndent << ".wr_num_handles = _wr_num_handles,\n";
-            } else {
-                file_ << kIndent << kIndent << ".wr_num_handles = 0,\n";
-            }
-            file_ << kIndent << kIndent << ".rd_num_bytes = _rd_num_bytes,\n";
-            file_ << kIndent << kIndent << ".rd_num_handles = ZX_CHANNEL_MAX_MSG_HANDLES,\n";
-            file_ << kIndent << "};\n";
+            switch (named_interface.transport) {
+            case Transport::Channel:
+                if (!encode) {
+                    file_ << kIndent << "zx_handle_t _handles[ZX_CHANNEL_MAX_MSG_HANDLES];\n";
+                }
+                file_ << kIndent << "zx_channel_call_args_t _args = {\n";
+                file_ << kIndent << kIndent << ".wr_bytes = _wr_bytes,\n";
+                if (encode) {
+                    file_ << kIndent << kIndent << ".wr_handles = _handles,\n";
+                } else {
+                    file_ << kIndent << kIndent << ".wr_handles = NULL,\n";
+                }
+                file_ << kIndent << kIndent << ".rd_bytes = _rd_bytes,\n";
+                file_ << kIndent << kIndent << ".rd_handles = _handles,\n";
+                file_ << kIndent << kIndent << ".wr_num_bytes = _wr_num_bytes,\n";
+                if (encode) {
+                    file_ << kIndent << kIndent << ".wr_num_handles = _wr_num_handles,\n";
+                } else {
+                    file_ << kIndent << kIndent << ".wr_num_handles = 0,\n";
+                }
+                file_ << kIndent << kIndent << ".rd_num_bytes = _rd_num_bytes,\n";
+                file_ << kIndent << kIndent << ".rd_num_handles = ZX_CHANNEL_MAX_MSG_HANDLES,\n";
+                file_ << kIndent << "};\n";
 
-            file_ << kIndent << "uint32_t _actual_num_bytes = 0u;\n";
-            file_ << kIndent << "uint32_t _actual_num_handles = 0u;\n";
-            if (encode) {
-                file_ << kIndent;
-            } else {
-                file_ << kIndent << "zx_status_t ";
+                file_ << kIndent << "uint32_t _actual_num_bytes = 0u;\n";
+                file_ << kIndent << "uint32_t _actual_num_handles = 0u;\n";
+                if (encode) {
+                    file_ << kIndent;
+                } else {
+                    file_ << kIndent << "zx_status_t ";
+                }
+                file_ << "_status = zx_channel_call(_channel, 0u, ZX_TIME_INFINITE, &_args, &_actual_num_bytes, &_actual_num_handles);\n";
+                break;
+            case Transport::SocketControl:
+                file_ << kIndent << "size_t _actual_num_bytes = 0u;\n";
+                if (encode) {
+                    file_ << kIndent;
+                } else {
+                    file_ << kIndent << "zx_status_t ";
+                }
+                file_ << "_status = fidl_socket_call_control(_channel, _wr_bytes, _wr_num_bytes, _rd_bytes, _rd_num_bytes, &_actual_num_bytes);\n";
+                break;
             }
-            file_ << "_status = zx_channel_call(_channel, 0u, ZX_TIME_INFINITE, &_args, &_actual_num_bytes, &_actual_num_handles);\n";
             file_ << kIndent << "if (_status != ZX_OK)\n";
             file_ << kIndent << kIndent << "return _status;\n";
 
@@ -1034,7 +1151,9 @@ void CGenerator::ProduceInterfaceClientImplementation(const NamedInterface& name
                 if (count > 1u)
                     file_ << ")";
                 file_ << " {\n";
-                file_ << kIndent << kIndent << "zx_handle_close_many(_handles, _actual_num_handles);\n";
+                if (named_interface.transport == Transport::Channel) {
+                    file_ << kIndent << kIndent << "zx_handle_close_many(_handles, _actual_num_handles);\n";
+                }
                 file_ << kIndent << kIndent << "return ZX_ERR_BUFFER_TOO_SMALL;\n";
                 file_ << kIndent << "}\n";
             }
@@ -1042,14 +1161,24 @@ void CGenerator::ProduceInterfaceClientImplementation(const NamedInterface& name
             hcount = method_info.response->typeshape.MaxHandles();
             if ((count == 0) && (hcount == 0)) {
                 file_ << kIndent << "// OPTIMIZED AWAY fidl_decode() of POD-only response\n";
-                file_ << kIndent << "if (_actual_num_handles > 0) {\n";
-                file_ << kIndent << kIndent << "zx_handle_close_many(_handles, _actual_num_handles);\n";
-                file_ << kIndent << kIndent << "return ZX_ERR_INTERNAL;\n"; // WHAT ERROR?
-                file_ << kIndent << "}\n";
+                if (named_interface.transport == Transport::Channel) {
+                    file_ << kIndent << "if (_actual_num_handles > 0) {\n";
+                    file_ << kIndent << kIndent << "zx_handle_close_many(_handles, _actual_num_handles);\n";
+                    file_ << kIndent << kIndent << "return ZX_ERR_INTERNAL;\n"; // WHAT ERROR?
+                    file_ << kIndent << "}\n";
+                }
             } else {
                 // TODO(FIDL-162): Validate the response ordinal. C++ bindings also need to do that.
-                file_ << kIndent << "_status = fidl_decode(&" << method_info.response->coded_name
-                      << ", _rd_bytes, _actual_num_bytes, _handles, _actual_num_handles, NULL);\n";
+                switch (named_interface.transport) {
+                case Transport::Channel:
+                    file_ << kIndent << "_status = fidl_decode(&" << method_info.response->coded_name
+                          << ", _rd_bytes, _actual_num_bytes, _handles, _actual_num_handles, NULL);\n";
+                    break;
+                case Transport::SocketControl:
+                    file_ << kIndent << "_status = fidl_decode(&" << method_info.response->coded_name
+                          << ", _rd_bytes, _actual_num_bytes, NULL, 0, NULL);\n";
+                    break;
+                }
                 file_ << kIndent << "if (_status != ZX_OK)\n";
                 file_ << kIndent << kIndent << "return _status;\n";
             }
@@ -1086,6 +1215,9 @@ void CGenerator::ProduceInterfaceClientImplementation(const NamedInterface& name
                         break;
                     case flat::Decl::Kind::kTable:
                         assert(false && "c-codegen for tables not yet implemented");
+                        break;
+                    case flat::Decl::Kind::kXUnion:
+                        assert(false && "c-codegen for extensible unions not yet implemented");
                         break;
                     case flat::Decl::Kind::kStruct:
                     case flat::Decl::Kind::kUnion:
@@ -1165,6 +1297,9 @@ void CGenerator::ProduceInterfaceServerImplementation(const NamedInterface& name
     for (const auto& method_info : named_interface.methods) {
         if (!method_info.request)
             continue;
+        if (method_info.ordinal != method_info.generated_ordinal) {
+            file_ << kIndent << "case " << method_info.generated_ordinal_name << ":\n";
+        }
         file_ << kIndent << "case " << method_info.ordinal_name << ": {\n";
         file_ << kIndent << kIndent << "status = fidl_decode_msg(&" << method_info.request->coded_name << ", msg, NULL);\n";
         file_ << kIndent << kIndent << "if (status != ZX_OK)\n";
@@ -1201,6 +1336,9 @@ void CGenerator::ProduceInterfaceServerImplementation(const NamedInterface& name
                     break;
                 case flat::Decl::Kind::kTable:
                     assert(false && "c-codegen for tables not yet implemented");
+                    break;
+                case flat::Decl::Kind::kXUnion:
+                    assert(false && "c-codegen for extensible unions not yet implemented");
                     break;
                 case flat::Decl::Kind::kStruct:
                 case flat::Decl::Kind::kUnion:
@@ -1309,6 +1447,8 @@ std::ostringstream CGenerator::ProduceHeader() {
         NameTables(library_->table_declarations_);
     std::map<const flat::Decl*, NamedUnion> named_unions =
         NameUnions(library_->union_declarations_);
+    std::map<const flat::Decl*, NamedXUnion> named_xunions =
+        NameXUnions(library_->xunion_declarations_);
 
     file_ << "\n// Forward declarations\n\n";
 
@@ -1356,6 +1496,13 @@ std::ostringstream CGenerator::ProduceHeader() {
             }
             break;
         }
+        case flat::Decl::Kind::kXUnion: {
+            auto iter = named_xunions.find(decl);
+            if (iter != named_xunions.end()) {
+                ProduceXUnionForwardDeclaration(iter->second);
+            }
+            break;
+        }
         default:
             abort();
         }
@@ -1370,6 +1517,7 @@ std::ostringstream CGenerator::ProduceHeader() {
         case flat::Decl::Kind::kStruct:
         case flat::Decl::Kind::kTable:
         case flat::Decl::Kind::kUnion:
+        case flat::Decl::Kind::kXUnion:
             // Only messages have extern fidl_type_t declarations.
             break;
         case flat::Decl::Kind::kInterface: {
@@ -1424,6 +1572,13 @@ std::ostringstream CGenerator::ProduceHeader() {
             }
             break;
         }
+        case flat::Decl::Kind::kXUnion: {
+            auto iter = named_xunions.find(decl);
+            if (iter != named_xunions.end()) {
+                ProduceXUnionDeclaration(iter->second);
+            }
+            break;
+        }
         default:
             abort();
         }
@@ -1438,6 +1593,7 @@ std::ostringstream CGenerator::ProduceHeader() {
         case flat::Decl::Kind::kStruct:
         case flat::Decl::Kind::kTable:
         case flat::Decl::Kind::kUnion:
+        case flat::Decl::Kind::kXUnion:
             // Only interfaces have client declarations.
             break;
         case flat::Decl::Kind::kInterface: {
@@ -1463,6 +1619,7 @@ std::ostringstream CGenerator::ProduceHeader() {
 std::ostringstream CGenerator::ProduceClient() {
     EmitFileComment(&file_);
     EmitIncludeHeader(&file_, "<lib/fidl/coding.h>");
+    EmitIncludeHeader(&file_, "<lib/fidl/transport.h>");
     EmitIncludeHeader(&file_, "<string.h>");
     EmitIncludeHeader(&file_, "<zircon/syscalls.h>");
     EmitIncludeHeader(&file_, "<" + NameLibraryCHeader(library_->name()) + ">");
@@ -1478,6 +1635,7 @@ std::ostringstream CGenerator::ProduceClient() {
         case flat::Decl::Kind::kStruct:
         case flat::Decl::Kind::kTable:
         case flat::Decl::Kind::kUnion:
+        case flat::Decl::Kind::kXUnion:
             // Only interfaces have client implementations.
             break;
         case flat::Decl::Kind::kInterface: {
@@ -1515,6 +1673,7 @@ std::ostringstream CGenerator::ProduceServer() {
         case flat::Decl::Kind::kStruct:
         case flat::Decl::Kind::kTable:
         case flat::Decl::Kind::kUnion:
+        case flat::Decl::Kind::kXUnion:
             // Only interfaces have client implementations.
             break;
         case flat::Decl::Kind::kInterface: {

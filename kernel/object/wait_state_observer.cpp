@@ -8,8 +8,6 @@
 #include <object/handle.h>
 #include <object/dispatcher.h>
 
-#include <fbl/type_support.h>
-
 WaitStateObserver::~WaitStateObserver() {
     DEBUG_ASSERT(!dispatcher_);
 }

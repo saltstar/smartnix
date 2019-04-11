@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <inttypes.h>
 #include <fcntl.h>
@@ -8,7 +11,6 @@
 
 #include <fbl/algorithm.h>
 #include <fbl/alloc_checker.h>
-#include <fbl/atomic.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/string_piece.h>
 #include <fbl/unique_ptr.h>
@@ -16,6 +18,8 @@
 #include <fs/vfs.h>
 #include <lib/memfs/cpp/vnode.h>
 #include <zircon/device/vfs.h>
+
+#include <utility>
 
 #include "dnode.h"
 
@@ -41,7 +45,7 @@ zx_status_t VnodeDir::ValidateFlags(uint32_t flags) {
 void VnodeDir::Notify(fbl::StringPiece name, unsigned event) { watcher_.Notify(name, event); }
 
 zx_status_t VnodeDir::WatchDir(fs::Vfs* vfs, uint32_t mask, uint32_t options, zx::channel watcher) {
-    return watcher_.WatchDir(vfs, this, mask, options, fbl::move(watcher));
+    return watcher_.WatchDir(vfs, this, mask, options, std::move(watcher));
 }
 
 zx_status_t VnodeDir::QueryFilesystem(fuchsia_io_FilesystemInfo* info) {
@@ -68,14 +72,14 @@ zx_status_t VnodeDir::QueryFilesystem(fuchsia_io_FilesystemInfo* info) {
     return ZX_OK;
 }
 
-zx_status_t VnodeDir::GetVmo(int flags, zx_handle_t* out) {
+zx_status_t VnodeDir::GetVmo(int flags, zx_handle_t* out_vmo, size_t* out_size) {
     return ZX_ERR_ACCESS_DENIED;
 }
 
 bool VnodeDir::IsRemote() const { return remoter_.IsRemote(); }
 zx::channel VnodeDir::DetachRemote() { return remoter_.DetachRemote(); }
 zx_handle_t VnodeDir::GetRemote() const { return remoter_.GetRemote(); }
-void VnodeDir::SetRemote(zx::channel remote) { return remoter_.SetRemote(fbl::move(remote)); }
+void VnodeDir::SetRemote(zx::channel remote) { return remoter_.SetRemote(std::move(remote)); }
 
 zx_status_t VnodeDir::Lookup(fbl::RefPtr<fs::Vnode>* out, fbl::StringPiece name) {
     if (!IsDirectory()) {
@@ -109,9 +113,8 @@ zx_status_t VnodeDir::Getattr(vnattr_t* attr) {
     return ZX_OK;
 }
 
-zx_status_t VnodeDir::GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                                 zxrio_node_info_t* extra) {
-    *type = fuchsia_io_NodeInfoTag_directory;
+zx_status_t VnodeDir::GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info) {
+    info->tag = fuchsia_io_NodeInfoTag_directory;
     return ZX_OK;
 }
 
@@ -150,7 +153,7 @@ zx_status_t VnodeDir::Create(fbl::RefPtr<fs::Vnode>* out, fbl::StringPiece name,
     if ((status = AttachVnode(vn, name, S_ISDIR(mode))) != ZX_OK) {
         return status;
     }
-    *out = fbl::move(vn);
+    *out = std::move(vn);
     return status;
 }
 
@@ -180,7 +183,7 @@ zx_status_t VnodeDir::Unlink(fbl::StringPiece name, bool must_be_dir) {
 zx_status_t VnodeDir::Rename(fbl::RefPtr<fs::Vnode> _newdir, fbl::StringPiece oldname,
                              fbl::StringPiece newname, bool src_must_be_dir,
                              bool dst_must_be_dir) {
-    auto newdir = fbl::RefPtr<VnodeMemfs>::Downcast(fbl::move(_newdir));
+    auto newdir = fbl::RefPtr<VnodeMemfs>::Downcast(std::move(_newdir));
 
     if (!IsDirectory() || !newdir->IsDirectory())
         return ZX_ERR_BAD_STATE;
@@ -234,7 +237,7 @@ zx_status_t VnodeDir::Rename(fbl::RefPtr<fs::Vnode> _newdir, fbl::StringPiece ol
     fbl::unique_ptr<char[]> namebuffer(nullptr);
     if (target_exists) {
         targetdn->Detach();
-        namebuffer = fbl::move(targetdn->TakeName());
+        namebuffer = targetdn->TakeName();
     } else {
         fbl::AllocChecker ac;
         namebuffer.reset(new (&ac) char[newname.length() + 1]);
@@ -251,13 +254,13 @@ zx_status_t VnodeDir::Rename(fbl::RefPtr<fs::Vnode> _newdir, fbl::StringPiece ol
     // beyond this point.
 
     olddn->RemoveFromParent();
-    olddn->PutName(fbl::move(namebuffer), newname.length());
-    Dnode::AddChild(newdir->dnode_, fbl::move(olddn));
+    olddn->PutName(std::move(namebuffer), newname.length());
+    Dnode::AddChild(newdir->dnode_, std::move(olddn));
     return ZX_OK;
 }
 
 zx_status_t VnodeDir::Link(fbl::StringPiece name, fbl::RefPtr<fs::Vnode> target) {
-    auto vn = fbl::RefPtr<VnodeMemfs>::Downcast(fbl::move(target));
+    auto vn = fbl::RefPtr<VnodeMemfs>::Downcast(std::move(target));
 
     if (!IsDirectory()) {
         // Empty, unlinked parent
@@ -281,7 +284,7 @@ zx_status_t VnodeDir::Link(fbl::StringPiece name, fbl::RefPtr<fs::Vnode> target)
     }
 
     // Attach the new dnode to its parent
-    Dnode::AddChild(dnode_, fbl::move(targetdn));
+    Dnode::AddChild(dnode_, std::move(targetdn));
 
     return ZX_OK;
 }
@@ -303,7 +306,7 @@ zx_status_t VnodeDir::CreateFromVmo(fbl::StringPiece name,
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
-    if ((status = AttachVnode(fbl::move(vn), name, false)) != ZX_OK) {
+    if ((status = AttachVnode(std::move(vn), name, false)) != ZX_OK) {
         return status;
     }
 
@@ -339,7 +342,7 @@ zx_status_t VnodeDir::AttachVnode(fbl::RefPtr<VnodeMemfs> vn, fbl::StringPiece n
     }
 
     // parent takes first reference
-    Dnode::AddChild(dnode_, fbl::move(dn));
+    Dnode::AddChild(dnode_, std::move(dn));
     return ZX_OK;
 }
 

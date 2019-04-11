@@ -1,16 +1,20 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <lib/fdio/remoteio.h>
+#ifndef __Fuchsia__
+#error "Fuchsia-only header"
+#endif
 
 #include <stdlib.h>
 #include <stdint.h>
 #include <sys/types.h>
 
+#include <lib/fdio/vfs.h>
 #include <zircon/assert.h>
 #include <zircon/types.h>
-
-#include <lib/fdio/vfs.h>
 
 __BEGIN_CDECLS
 

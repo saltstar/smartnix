@@ -4,7 +4,8 @@
 
 #include <stdio.h>
 #include <unittest/unittest.h>
-#include <fbl/type_support.h>
+
+#include <utility>
 
 enum Category { CAT_LVALUE, CAT_RVALUE };
 
@@ -21,19 +22,19 @@ static int passing(T&& t)
 template <typename T>
 static int moving(T&& t)
 {
-    return category(fbl::move(t));
+    return category(std::move(t));
 }
 
 template <typename T>
 static int forwarding(T&& t)
 {
-    return category(fbl::forward<T>(t));
+    return category(std::forward<T>(t));
 }
 
 template <typename T>
 static int forward_copy(T&& t)
 {
-    return category(fbl::forward<T&>(t));
+    return category(std::forward<T&>(t));
 }
 
 struct A {
@@ -45,7 +46,7 @@ struct A {
 template <typename T, typename U>
 static T make_object(U&& u)
 {
-    return T(fbl::forward<U>(u));
+    return T(std::forward<U>(u));
 }
 
 static bool forward_test()

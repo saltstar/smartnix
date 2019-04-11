@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -21,11 +24,16 @@ static_assert(DEVICE_METADATA_PARTITION_MAP == ZBI_TYPE_DRV_PARTITION_MAP, "");
 
 // Initial USB mode
 // type: usb_mode_t
-#define DEVICE_METADATA_USB_MODE                  0x4D425355 // USBM
+#define DEVICE_METADATA_USB_MODE 0x4D425355 // USBM
+
+// Board-specific USB configuration
+// type: UsbConfig
+// fidl: usb-peripheral.fidl
+#define DEVICE_METADATA_USB_CONFIG 0x4D425356 // USBC
 
 // Serial port info
 // type: serial_port_info_t
-#define DEVICE_METADATA_SERIAL_PORT_INFO          0x4D524553 // SERM
+#define DEVICE_METADATA_SERIAL_PORT_INFO 0x4D524553 // SERM
 
 // Platform board name (for sysinfo driver)
 // type: char[ZBI_BOARD_NAME_LEN]
@@ -39,6 +47,9 @@ static_assert(DEVICE_METADATA_PARTITION_MAP == ZBI_TYPE_DRV_PARTITION_MAP, "");
 // type: array of guid_map_t
 #define DEVICE_METADATA_GUID_MAP                  0x44495547 // GUID
 #define DEVICE_METADATA_GUID_MAP_MAX_ENTRIES      8
+
+#define DEVICE_METADATA_BUTTONS_BUTTONS           0x424E5442 // BTNB
+#define DEVICE_METADATA_BUTTONS_GPIOS             0x474E5442 // BTNG
 
 // Metadata types that have least significant byte set to lowercase 'd'
 // signify private driver data.

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 //
 // Trace observers allow components to observe when tracing is starting or
@@ -7,7 +10,8 @@
 // documentation.
 //
 
-#pragma once
+#ifndef TRACE_OBSERVER_H_
+#define TRACE_OBSERVER_H_
 
 #include <trace-engine/instrumentation.h>
 
@@ -50,3 +54,5 @@ private:
 } // namespace trace
 
 #endif // __cplusplus
+
+#endif // TRACE_OBSERVER_H_

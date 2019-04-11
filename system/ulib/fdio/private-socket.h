@@ -1,33 +1,22 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <lib/zxs/inception.h>
 #include <lib/zxs/zxs.h>
 #include <zircon/compiler.h>
 
 #include "private.h"
 
+// SIO signals
+#define ZXSIO_SIGNAL_INCOMING  ZX_USER_SIGNAL_0
+#define ZXSIO_SIGNAL_OUTGOING  ZX_USER_SIGNAL_1
+// TODO(tamird): ERROR seems to be unused.
+#define ZXSIO_SIGNAL_ERROR     ZX_USER_SIGNAL_2
+#define ZXSIO_SIGNAL_CONNECTED ZX_USER_SIGNAL_3
+
 __BEGIN_CDECLS
-
-// Flags for zxsio.flags
-
-// Set if listen() was called for this socket.
-#define ZXSIO_DID_LISTEN (1<<0)
-
-typedef struct zxsio zxsio_t;
-
-struct zxsio {
-    // base fdio io object
-    fdio_t io;
-
-    // The underlying |zxs_socket_t|.
-    //
-    // The Zircon socket is contained in this structure.
-    zxs_socket_t s;
-
-    // see ZXSIO flags above
-    uint32_t flags;
-};
 
 // Returns a pointer to the |zxs_socket_t| inside the given |fd|, if such a
 // struct exists.

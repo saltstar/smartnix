@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 library banjo.examples.test;
 
@@ -34,7 +37,7 @@ union Points {
 const uint32 NumberOfDirections = 4;
 
 interface Drawing {
-    1: Draw(Point p, Direction d);
-    2: DrawLots(Points ps);
-    3: -> DrawSucceeded(uint32 draws);
+    Draw(Point p, Direction d);
+    DrawLots(Points ps);
+    -> DrawSucceeded(uint32 draws);
 };

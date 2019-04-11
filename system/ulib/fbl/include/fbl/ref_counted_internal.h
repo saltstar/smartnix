@@ -1,10 +1,13 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
+#include <atomic>
+#include <fbl/canary.h>
 #include <zircon/assert.h>
 #include <zircon/compiler.h>
-#include <fbl/atomic.h>
-#include <fbl/canary.h>
 
 namespace fbl {
 namespace internal {
@@ -28,12 +31,12 @@ protected:
             // have the best chance of catching a use-after-free situation, even if
             // we have a messed up mix of debug/release translation units being
             // linked together.
-            ref_count_.store(kPreAdoptSentinel, memory_order_release);
+            ref_count_.store(kPreAdoptSentinel, std::memory_order_release);
         }
     }
 
     void AddRef() const {
-        const int32_t rc = ref_count_.fetch_add(1, memory_order_relaxed);
+        const int32_t rc = ref_count_.fetch_add(1, std::memory_order_relaxed);
 
         // This assertion will fire if either of the following occur.
         //
@@ -58,7 +61,7 @@ protected:
 
     // Returns true if the object should self-delete.
     bool Release() const __WARN_UNUSED_RESULT {
-        const int32_t rc = ref_count_.fetch_sub(1, memory_order_release);
+        const int32_t rc = ref_count_.fetch_sub(1, std::memory_order_release);
 
         // This assertion will fire if someone manually calls Release()
         // on a ref-counted object too many times, or if Release is called
@@ -74,7 +77,7 @@ protected:
         }
 
         if (rc == 1) {
-            atomic_thread_fence(memory_order_acquire);
+            atomic_thread_fence(std::memory_order_acquire);
             return true;
         }
 
@@ -86,9 +89,9 @@ protected:
         // to C++17
         if (EnableAdoptionValidator) {
             int32_t expected = kPreAdoptSentinel;
-            bool res = ref_count_.compare_exchange_strong(&expected, 1,
-                                                          memory_order_acq_rel,
-                                                          memory_order_acquire);
+            bool res = ref_count_.compare_exchange_strong(expected, 1,
+                                                          std::memory_order_acq_rel,
+                                                          std::memory_order_acquire);
             // Note: leave the ASSERT on in all builds.  The constant
             // EnableAdoptionValidator check above should cause this code path
             // to be pruned in release builds, but leaving this as an always on
@@ -99,19 +102,19 @@ protected:
                           static_cast<uint32_t>(expected),
                           static_cast<uint32_t>(kPreAdoptSentinel));
         } else {
-            ref_count_.store(1, memory_order_release);
+            ref_count_.store(1, std::memory_order_release);
         }
     }
 
     // Current ref count. Only to be used for debugging purposes.
     int ref_count_debug() const {
-        return ref_count_.load(memory_order_relaxed);
+        return ref_count_.load(std::memory_order_relaxed);
     }
 
     // Note:
     //
     // The PreAdoptSentinel value is chosen specifically to be negative when
-    // stored as an int32_t, and as far away from becoming positiive (via either
+    // stored as an int32_t, and as far away from becoming positive (via either
     // addition or subtraction) as possible.  These properties allow us to
     // combine the debug-build adopt sanity checks and the lifecycle sanity
     // checks into a single debug assert.
@@ -123,7 +126,7 @@ protected:
     // detect the bad state of the system fails to detect the problem.
     //
     static constexpr int32_t kPreAdoptSentinel = static_cast<int32_t>(0xC0000000);
-    mutable fbl::atomic_int32_t ref_count_;
+    mutable std::atomic_int32_t ref_count_;
 };
 
 } // namespace internal

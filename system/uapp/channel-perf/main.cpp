@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <assert.h>
 #include <errno.h>
@@ -45,7 +48,8 @@ void do_test(uint32_t duration_sec, const TestArgs& test_args) {
 
     // We'll send/receive duplicates of this handle.
     zx_handle_t event;
-    assert(zx_event_create(0u, &event) == ZX_OK);
+    status = zx_event_create(0u, &event);
+    assert(status == ZX_OK);
 
     // Storage space for our messages' stuff.
     fbl::unique_ptr<uint8_t[]> data;

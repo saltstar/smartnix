@@ -12,22 +12,24 @@
 #include <lib/counters.h>
 #include <object/excp_port.h>
 #include <object/handle.h>
+#include <object/process_dispatcher.h>
 #include <object/thread_dispatcher.h>
 #include <zircon/compiler.h>
 #include <zircon/rights.h>
 #include <zircon/syscalls/port.h>
 #include <zircon/types.h>
 
-static_assert(sizeof(zx_packet_signal_t) == sizeof(zx_packet_user_t),
-              "size of zx_packet_signal_t must match zx_packet_user_t");
-static_assert(sizeof(zx_packet_exception_t) == sizeof(zx_packet_user_t),
-              "size of zx_packet_exception_t must match zx_packet_user_t");
-static_assert(sizeof(zx_packet_guest_mem_t) == sizeof(zx_packet_user_t),
-              "size of zx_packet_guest_mem_t must match zx_packet_user_t");
-static_assert(sizeof(zx_packet_guest_io_t) == sizeof(zx_packet_user_t),
-              "size of zx_packet_guest_io_t must match zx_packet_user_t");
-static_assert(sizeof(zx_packet_guest_vcpu_t) == sizeof(zx_packet_user_t),
-              "size of zx_packet_guest_vcpu_t must match zx_packet_user_t");
+// All port sub-packets must be exactly 32 bytes
+static_assert(sizeof(zx_packet_user_t) == 32, "incorrect size for zx_packet_signal_t");
+static_assert(sizeof(zx_packet_signal_t) == 32, "incorrect size for zx_packet_signal_t");
+static_assert(sizeof(zx_packet_exception_t) == 32, "incorrect size for zx_packet_exception_t");
+static_assert(sizeof(zx_packet_guest_bell_t) == 32, "incorrect size for zx_packet_guest_bell_t");
+static_assert(sizeof(zx_packet_guest_mem_t) == 32, "incorrect size for zx_packet_guest_mem_t");
+static_assert(sizeof(zx_packet_guest_io_t) == 32, "incorrect size for zx_packet_guest_io_t");
+static_assert(sizeof(zx_packet_guest_vcpu_t) == 32, "incorrect size for zx_packet_guest_vcpu_t");
+static_assert(sizeof(zx_packet_interrupt_t) == 32, "incorrect size for zx_packet_interrupt_t");
+static_assert(sizeof(zx_packet_page_request_t) == 32,
+              "incorrect size for zx_packet_page_request_t");
 
 KCOUNTER(port_arena_count, "kernel.port.arena.count");
 KCOUNTER(port_full_count, "kernel.port.full.count");
@@ -86,7 +88,7 @@ PortObserver::PortObserver(uint32_t type, const Handle* handle, fbl::RefPtr<Port
     : type_(type),
       trigger_(signals),
       packet_(handle, nullptr),
-      port_(fbl::move(port)) {
+      port_(ktl::move(port)) {
 
     DEBUG_ASSERT(handle != nullptr);
 
@@ -133,8 +135,8 @@ StateObserver::Flags PortObserver::OnCancelByKey(const Handle* handle, const voi
 void PortObserver::OnRemoved() {
     // If observer ends up being non-null, it is ourself, and thus our
     // responsibility to delete ourself.
-    fbl::unique_ptr<PortObserver> observer =
-        port_->MaybeReap(fbl::unique_ptr<PortObserver>(this), &packet_);
+    ktl::unique_ptr<PortObserver> observer =
+        port_->MaybeReap(ktl::unique_ptr<PortObserver>(this), &packet_);
 }
 
 StateObserver::Flags PortObserver::MaybeQueue(zx_signals_t new_state, uint64_t count) {
@@ -204,8 +206,21 @@ void PortDispatcher::on_zero_handles() {
 
     // Free any queued packets.
     while (!packets_.is_empty()) {
-        FreePacket(packets_.pop_front());
+        auto packet = packets_.pop_front();
         --num_packets_;
+
+        // If the packet is ephemeral, free it outside of the lock. Otherwise,
+        // reset the observer if it is present.
+        if (packet->is_ephemeral()) {
+            guard.CallUnlocked([packet]() {
+                    packet->Free();
+            });
+        } else {
+            // The reference to the port that the observer holds cannot be the last one
+            // because another reference was used to call on_zero_handles, so we don't
+            // need to worry about destroying ourselves.
+            packet->observer.reset();
+        }
     }
 }
 
@@ -278,7 +293,8 @@ zx_status_t PortDispatcher::Queue(PortPacket* port_packet, zx_signals_t observed
     return ZX_OK;
 }
 
-zx_status_t PortDispatcher::Dequeue(zx_time_t deadline, zx_port_packet_t* out_packet) {
+zx_status_t PortDispatcher::Dequeue(const Deadline& deadline,
+                                    zx_port_packet_t* out_packet) {
     canary_.Assert();
 
     while (true) {
@@ -300,7 +316,20 @@ zx_status_t PortDispatcher::Dequeue(zx_time_t deadline, zx_port_packet_t* out_pa
             if (port_packet != nullptr) {
                 --num_packets_;
                 *out_packet = port_packet->packet;
-                FreePacket(port_packet);
+
+                bool is_ephemeral = port_packet->is_ephemeral();
+                // The reference to the port that the observer holds cannot be the last one
+                // because another reference was used to call Dequeue, so we don't need to
+                // worry about destroying ourselves.
+                port_packet->observer.reset();
+                guard.Release();
+
+                // If the packet is ephemeral, free it outside of the lock. We need to read
+                // is_ephemeral inside the lock because it's possible for a non-ephemeral packet
+                // to get deleted after a call to |MaybeReap| as soon as we release the lock.
+                if (is_ephemeral) {
+                    port_packet->Free();
+                }
                 return ZX_OK;
             }
         }
@@ -314,29 +343,16 @@ zx_status_t PortDispatcher::Dequeue(zx_time_t deadline, zx_port_packet_t* out_pa
     }
 }
 
-void PortDispatcher::FreePacket(PortPacket* port_packet) {
-    // We need to move the observer pointer out, as it's potentially containing us.
-    fbl::unique_ptr<const PortObserver> observer = fbl::move(port_packet->observer);
-
-    if (observer) {
-        // Deleting the observer under |get_lock()| is fine because the
-        // reference that holds to this PortDispatcher is by construction
-        // not the last one. We need to do this under |get_lock()| because
-        // another thread can call MaybeReap().
-    } else if (port_packet->is_ephemeral()) {
-        port_packet->Free();
-    }
-}
-
-fbl::unique_ptr<PortObserver> PortDispatcher::MaybeReap(fbl::unique_ptr<PortObserver> observer,
+ktl::unique_ptr<PortObserver> PortDispatcher::MaybeReap(ktl::unique_ptr<PortObserver> observer,
                                                         PortPacket* port_packet) {
     canary_.Assert();
+    DEBUG_ASSERT(!port_packet->is_ephemeral());
 
     Guard<fbl::Mutex> guard{get_lock()};
     if (port_packet->InContainer()) {
         // The destruction will happen when the packet is dequeued or in CancelQueued()
         DEBUG_ASSERT(port_packet->observer == nullptr);
-        port_packet->observer = fbl::move(observer);
+        port_packet->observer = ktl::move(observer);
     }
     return observer;
 }
@@ -404,8 +420,8 @@ bool PortDispatcher::CancelQueued(const void* handle, uint64_t key) {
         if ((it->handle == handle) && (it->key() == key)) {
             auto to_remove = it++;
             // Destroyed as we go around the loop.
-            fbl::unique_ptr<const PortObserver> observer =
-                fbl::move(packets_.erase(to_remove)->observer);
+            ktl::unique_ptr<const PortObserver> observer =
+                ktl::move(packets_.erase(to_remove)->observer);
             --num_packets_;
             packet_removed = true;
         } else {
@@ -416,20 +432,34 @@ bool PortDispatcher::CancelQueued(const void* handle, uint64_t key) {
     return packet_removed;
 }
 
-void PortDispatcher::LinkExceptionPort(ExceptionPort* eport) {
+bool PortDispatcher::CancelQueued(PortPacket* port_packet) {
     canary_.Assert();
 
     Guard<fbl::Mutex> guard{get_lock()};
-    DEBUG_ASSERT_COND(eport->PortMatches(this, /* allow_null */ false));
-    DEBUG_ASSERT(!eport->InContainer());
-    eports_.push_back(fbl::move(AdoptRef(eport)));
+
+    if (port_packet->InContainer()) {
+        packets_.erase(*port_packet)->observer.reset();
+        --num_packets_;
+        return true;
+    }
+
+    return false;
 }
 
-void PortDispatcher::UnlinkExceptionPort(ExceptionPort* eport) {
+void PortDispatcher::LinkExceptionPortEportLocked(ExceptionPort* eport) {
     canary_.Assert();
 
     Guard<fbl::Mutex> guard{get_lock()};
-    DEBUG_ASSERT_COND(eport->PortMatches(this, /* allow_null */ true));
+    DEBUG_ASSERT_COND(eport->PortMatchesLocked(this, /* allow_null */ false));
+    DEBUG_ASSERT(!eport->InContainer());
+    eports_.push_back(ktl::move(AdoptRef(eport)));
+}
+
+void PortDispatcher::UnlinkExceptionPortEportLocked(ExceptionPort* eport) {
+    canary_.Assert();
+
+    Guard<fbl::Mutex> guard{get_lock()};
+    DEBUG_ASSERT_COND(eport->PortMatchesLocked(this, /* allow_null */ true));
     if (eport->InContainer()) {
         eports_.erase(*eport);
     }

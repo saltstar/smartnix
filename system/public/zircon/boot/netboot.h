@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,7 +9,7 @@
 
 // clang-format off
 
-#define BOOTLOADER_VERSION "0.7.10"
+#define BOOTLOADER_VERSION "0.7.13"
 
 #define NB_MAGIC              0xAA774217
 #define NB_DEBUGLOG_MAGIC     0xAEAE1123
@@ -69,6 +72,10 @@
 #define NB_ZIRCONB_FILENAME NB_IMAGE_PREFIX NB_ZIRCONB_HOST_FILENAME
 #define NB_ZIRCONR_HOST_FILENAME "zirconr.img"
 #define NB_ZIRCONR_FILENAME NB_IMAGE_PREFIX NB_ZIRCONR_HOST_FILENAME
+#define NB_VBMETAA_HOST_FILENAME "vbmetaa.img"
+#define NB_VBMETAA_FILENAME NB_IMAGE_PREFIX NB_VBMETAA_HOST_FILENAME
+#define NB_VBMETAB_HOST_FILENAME "vbmetab.img"
+#define NB_VBMETAB_FILENAME NB_IMAGE_PREFIX NB_VBMETAB_HOST_FILENAME
 #define NB_SSHAUTH_HOST_FILENAME "authorized_keys"
 #define NB_SSHAUTH_FILENAME NB_IMAGE_PREFIX NB_SSHAUTH_HOST_FILENAME
 

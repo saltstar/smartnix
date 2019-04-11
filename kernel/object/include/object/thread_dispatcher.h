@@ -60,6 +60,8 @@ public:
         WAIT_MANY,
         // zx_interrupt_wait
         INTERRUPT,
+        // pager
+        PAGER,
     };
 
     static zx_status_t Create(fbl::RefPtr<ProcessDispatcher> process, uint32_t flags,
@@ -69,7 +71,7 @@ public:
     ~ThreadDispatcher();
 
     static ThreadDispatcher* GetCurrent() {
-        return reinterpret_cast<ThreadDispatcher*>(get_current_thread()->user_thread);
+        return get_current_thread()->user_thread;
     }
 
     // Dispatcher implementation.
@@ -84,11 +86,17 @@ public:
     void Exit() __NO_RETURN;
     void Kill();
 
+    // Suspends the thread.
+    // Returns ZX_OK on success, or ZX_ERR_BAD_STATE if the thread is dying or dead.
     zx_status_t Suspend();
     void Resume();
 
     // accessors
     ProcessDispatcher* process() const { return process_.get(); }
+
+    // Returns true if the thread is dying or dead. Threads never return to a previous state
+    // from dying/dead so once this is true it will never flip back to false.
+    bool IsDyingOrDead() const;
 
     zx_status_t set_name(const char* name, size_t len) final __NONNULL((2));
     void get_name(char out_name[ZX_MAX_NAME_LEN]) const final __NONNULL((2));
@@ -96,7 +104,7 @@ public:
 
     zx_status_t SetExceptionPort(fbl::RefPtr<ExceptionPort> eport);
     // Returns true if a port had been set.
-    bool ResetExceptionPort(bool quietly);
+    bool ResetExceptionPort();
     fbl::RefPtr<ExceptionPort> exception_port();
 
     // Send a report to the associated exception handler of |eport| and wait
@@ -123,7 +131,6 @@ public:
     // Called when an exception handler is finished processing the exception.
     // If |eport| is non-nullptr, then the exception is only continued if
     // |eport| corresponds to the current exception port.
-    // TODO(ZX-2720): Remove nullptr support when |zx_task_resume()| is deleted.
     zx_status_t MarkExceptionHandled(PortDispatcher* eport);
     zx_status_t MarkExceptionNotHandled(PortDispatcher* eport);
 
@@ -195,7 +202,7 @@ private:
                                            ThreadState::Exception handled_state);
 
     // Dispatch routine for state changes that LK tells us about
-    static void ThreadUserCallback(enum thread_user_state_change new_state, void* arg);
+    static void ThreadUserCallback(enum thread_user_state_change new_state, thread_t* arg);
 
     // change states of the object, do what is appropriate for the state transition
     void SetStateLocked(ThreadState::Lifecycle lifecycle) TA_REQ(get_lock());
@@ -241,7 +248,7 @@ private:
 
     // Tracks the number of times Suspend() has been called. Resume() will resume this thread
     // only when this reference count reaches 0.
-    int suspend_count_ = 0;
+    int suspend_count_ TA_GUARDED(get_lock()) = 0;
 
     // Used to protect thread name read/writes
     mutable DECLARE_SPINLOCK(ThreadDispatcher) name_lock_;

@@ -1,9 +1,12 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <ddk/io-buffer.h>
 #include <ddk/protocol/i2c.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddktl/device-internal.h>
 #include <ddktl/device.h>
 #include <ddktl/pdev.h>
@@ -57,7 +60,7 @@ private:
 
     fbl::RefPtr<dispatcher::Timer> notify_timer_;
 
-    fbl::optional<ddk::PDev> pdev_;
+    ddk::PDev pdev_;
 
     fbl::unique_ptr<Tas27xx> codec_;
 
@@ -65,8 +68,8 @@ private:
     fzl::PinnedVmo pinned_ring_buffer_;
 
     fbl::unique_ptr<AmlTdmDevice> aml_audio_;
-    fbl::optional<ddk::GpioProtocolProxy> audio_en_;
-    fbl::optional<ddk::GpioProtocolProxy> audio_fault_;
+    ddk::GpioProtocolClient audio_en_;
+    ddk::GpioProtocolClient audio_fault_;
 
     zx::bti bti_;
 };

@@ -4,7 +4,8 @@
 
 #pragma once
 
-#include <fbl/type_support.h>
+#include <type_traits>
+#include <utility>
 
 namespace fbl {
 namespace tests {
@@ -21,23 +22,23 @@ struct ContainerUtils;
 
 template <typename ContainerType>
 struct ContainerUtils<ContainerType,
-                      typename enable_if<ContainerType::IsSequenced, void>::type> {
+                      typename std::enable_if<ContainerType::IsSequenced, void>::type> {
     using PtrTraits = typename ContainerType::PtrTraits;
     using PtrType   = typename PtrTraits::PtrType;
 
     static void MoveInto(ContainerType& container, PtrType&& ptr) {
-        container.push_front(fbl::move(ptr));
+        container.push_front(std::move(ptr));
     }
 };
 
 template <typename ContainerType>
 struct ContainerUtils<ContainerType,
-                      typename enable_if<ContainerType::IsAssociative, void>::type> {
+                      typename std::enable_if<ContainerType::IsAssociative, void>::type> {
     using PtrTraits = typename ContainerType::PtrTraits;
     using PtrType   = typename PtrTraits::PtrType;
 
     static void MoveInto(ContainerType& container, PtrType&& ptr) {
-        container.insert(fbl::move(ptr));
+        container.insert(std::move(ptr));
     }
 };
 
@@ -46,14 +47,14 @@ struct SizeUtils;
 
 template <typename ContainerType>
 struct SizeUtils<ContainerType,
-                 typename enable_if<ContainerType::SupportsConstantOrderSize == true, void>::type> {
+                 typename std::enable_if<ContainerType::SupportsConstantOrderSize == true, void>::type> {
     static size_t size(const ContainerType& container) { return container.size(); }
 };
 
 template <typename ContainerType>
 struct SizeUtils<ContainerType,
-                 typename enable_if<ContainerType::SupportsConstantOrderSize == false,
-                                    void>::type> {
+                 typename std::enable_if<ContainerType::SupportsConstantOrderSize == false,
+                                         void>::type> {
     static size_t size(const ContainerType& container) { return container.size_slow(); }
 };
 

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 library banjo.examples.types;
 
@@ -10,7 +13,7 @@ union this_is_a_union {
 };
 
 interface this_is_an_interface {
-    23: Copy(string s, uint32 count) -> (string s);
+    Copy(string s, uint32 count) -> (string s);
 };
 
 struct interfaces_and_requests {
@@ -246,6 +249,7 @@ struct handles {
     handle<fifo> fifo_handle;
     handle<guest> guest_handle;
     handle<timer> timer_handle;
+    handle<profile> profile_handle;
 
     handle? nullable_handle_handle;
     handle<process>? nullable_process_handle;
@@ -264,6 +268,7 @@ struct handles {
     handle<fifo>? nullable_fifo_handle;
     handle<guest>? nullable_guest_handle;
     handle<timer>? nullable_timer_handle;
+    handle<profile>? nullable_profile_handle;
 };
 
 const uint32 strings_size = 32;

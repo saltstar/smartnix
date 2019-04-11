@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <runtests-utils/fuchsia-run-test.h>
 
@@ -24,11 +27,13 @@
 #include <zircon/status.h>
 #include <zircon/syscalls.h>
 
+#include <utility>
+
 namespace runtests {
 
 // Path to helper binary which can run test as a component. This binary takes
 // component url as its parameter.
-constexpr char kRunTestComponentPath[] = "/system/bin/run_test_component";
+constexpr char kRunTestComponentPath[] = "/bin/run-test-component";
 
 fbl::String DirectoryName(const fbl::String& path) {
     char* cpath = strndup(path.data(), path.length());
@@ -117,7 +122,7 @@ zx_status_t LoadObject(void* ctx, const char* name, zx_handle_t* out) {
         }
         fbl::unique_fd fd(openat(state->root_dir_fd.get(), path, O_RDONLY));
         if (fd) {
-            return VmoFromFd(fbl::move(fd), name, out);
+            return VmoFromFd(std::move(fd), name, out);
         }
     }
     return ZX_ERR_NOT_FOUND;
@@ -127,7 +132,7 @@ zx_status_t LoadAbspath(void* ctx, const char* path, zx_handle_t* out) {
     const auto state = static_cast<LoaderServiceState*>(ctx);
     fbl::unique_fd fd(openat(state->root_dir_fd.get(), path, O_RDONLY));
     if (fd) {
-        return VmoFromFd(fbl::move(fd), path, out);
+        return VmoFromFd(std::move(fd), path, out);
     }
     return ZX_ERR_NOT_FOUND;
 }
@@ -152,11 +157,11 @@ const loader_service_ops_t fd_ops = {
 
 // To avoid creating a separate service thread for each test, we have a global
 // instance of the async loop which is shared by all tests and their loader services.
-fbl::unique_ptr<async::Loop> loop;
+std::unique_ptr<async::Loop> loop;
 
 } // namespace
 
-fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
+std::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
                                        const char* output_dir,
                                        const char* output_filename) {
     // The arguments passed to fdio_spaws_etc. May be overridden.
@@ -179,20 +184,20 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
     // If we get a non empty |cmx_file_path|, check that it exists, and if
     // present launch the test as component using generated |component_url|.
     if (cmx_file_path != "" && stat(cmx_file_path.c_str(), &s) == 0) {
-        if (stat(kRunTestComponentPath, &s) != 0) {
-            // TODO(anmittal): Make this a error once we have a stable
-            // system and we can run all tests as components.
-            fprintf(stderr,
-                    "WARNING: Cannot find '%s', running '%s' as normal test "
-                    "binary.",
-                    kRunTestComponentPath, path);
-        } else {
+        if (stat(kRunTestComponentPath, &s) == 0) {
             component_launch_args[0] = kRunTestComponentPath;
             component_launch_args[1] = component_url.c_str();
             for (size_t i = 1; i <= argc; i++) {
                 component_launch_args[1 + i] = argv[i];
             }
             args = component_launch_args;
+        } else {
+            // TODO(anmittal): Make this a error once we have a stable
+            // system and we can run all tests as components.
+            fprintf(stderr,
+                    "WARNING: Cannot find '%s', running '%s' as normal test "
+                    "binary.",
+                    kRunTestComponentPath, path);
         }
     }
 
@@ -217,7 +222,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
         state->root_dir_fd.reset(open("/", O_RDONLY | O_DIRECTORY));
         if (!state->root_dir_fd) {
             printf("FAILURE: Could not open root directory /\n");
-            return fbl::make_unique<Result>(path, FAILED_UNKNOWN, 0);
+            return std::make_unique<Result>(path, FAILED_UNKNOWN, 0);
         }
 
         if (!loop) {
@@ -225,19 +230,19 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
             if (loop->StartThread("loader-service") != ZX_OK) {
                 printf("FAILURE: cannot start message loop\n");
                 loop.reset();
-                return fbl::make_unique<Result>(path, FAILED_UNKNOWN, 0);
+                return std::make_unique<Result>(path, FAILED_UNKNOWN, 0);
             }
         }
 
         if (loader_service_create(loop->dispatcher(), &fd_ops, state, &loader_service) != ZX_OK) {
             printf("FAILURE: cannot create loader service\n");
             delete state;
-            return fbl::make_unique<Result>(path, FAILED_UNKNOWN, 0);
+            return std::make_unique<Result>(path, FAILED_UNKNOWN, 0);
         }
 
         if (loader_service_connect(loader_service, &svc_handle) != ZX_OK) {
             printf("FAILURE: cannot connect loader service\n");
-            return fbl::make_unique<Result>(path, FAILED_UNKNOWN, 0);
+            return std::make_unique<Result>(path, FAILED_UNKNOWN, 0);
         }
 
         fdio_actions.push_back(
@@ -253,7 +258,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
         if (pipe(temp_fds)) {
             fprintf(stderr, "FAILURE: Failed to create pipe: %s\n",
                     strerror(errno));
-            return fbl::make_unique<Result>(path, FAILED_TO_LAUNCH, 0);
+            return std::make_unique<Result>(path, FAILED_TO_LAUNCH, 0);
         }
         fds[0].reset(temp_fds[0]);
         fds[1].reset(temp_fds[1]);
@@ -270,7 +275,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
     status = zx::job::create(*zx::job::default_job(), 0, &test_job);
     if (status != ZX_OK) {
         fprintf(stderr, "FAILURE: zx::job::create() returned %d\n", status);
-        return fbl::make_unique<Result>(path, FAILED_TO_LAUNCH, 0);
+        return std::make_unique<Result>(path, FAILED_TO_LAUNCH, 0);
     }
     auto auto_call_kill_job =
         fbl::MakeAutoCall([&test_job]() { test_job.kill(); });
@@ -278,7 +283,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
         test_job.set_property(ZX_PROP_NAME, "run-test", sizeof("run-test"));
     if (status != ZX_OK) {
         fprintf(stderr, "FAILURE: set_property() returned %d\n", status);
-        return fbl::make_unique<Result>(path, FAILED_TO_LAUNCH, 0);
+        return std::make_unique<Result>(path, FAILED_TO_LAUNCH, 0);
     }
 
     fds[1].release(); // To avoid double close since fdio_spawn_etc() closes it.
@@ -291,7 +296,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
     if (status != ZX_OK) {
         fprintf(stderr, "FAILURE: Failed to launch %s: %d (%s): %s\n", path,
                 status, zx_status_get_string(status), err_msg);
-        return fbl::make_unique<Result>(path, FAILED_TO_LAUNCH, 0);
+        return std::make_unique<Result>(path, FAILED_TO_LAUNCH, 0);
     }
     // Tee output.
     if (output_filename != nullptr) {
@@ -299,7 +304,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
         if (output_file == nullptr) {
             fprintf(stderr, "FAILURE: Could not open output file at %s: %s\n",
                     output_filename, strerror(errno));
-            return fbl::make_unique<Result>(path, FAILED_DURING_IO, 0);
+            return std::make_unique<Result>(path, FAILED_DURING_IO, 0);
         }
         char buf[1024];
         ssize_t bytes_read = 0;
@@ -310,7 +315,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
         if (fclose(output_file)) {
             fprintf(stderr, "FAILURE:  Could not close %s: %s", output_filename,
                     strerror(errno));
-            return fbl::make_unique<Result>(path, FAILED_DURING_IO, 0);
+            return std::make_unique<Result>(path, FAILED_DURING_IO, 0);
         }
     }
     status =
@@ -318,7 +323,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
     if (status != ZX_OK) {
         fprintf(stderr, "FAILURE: Failed to wait for process exiting %s: %d\n",
                 path, status);
-        return fbl::make_unique<Result>(path, FAILED_TO_WAIT, 0);
+        return std::make_unique<Result>(path, FAILED_TO_WAIT, 0);
     }
 
     // Read the return code.
@@ -329,17 +334,17 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
     if (status != ZX_OK) {
         fprintf(stderr, "FAILURE: Failed to get process return code %s: %d\n",
                 path, status);
-        return fbl::make_unique<Result>(path, FAILED_TO_RETURN_CODE, 0);
+        return std::make_unique<Result>(path, FAILED_TO_RETURN_CODE, 0);
     }
 
-    fbl::unique_ptr<Result> result;
+    std::unique_ptr<Result> result;
     if (proc_info.return_code == 0) {
         fprintf(stderr, "PASSED: %s passed\n", path);
-        result = fbl::make_unique<Result>(path, SUCCESS, 0);
+        result = std::make_unique<Result>(path, SUCCESS, 0);
     } else {
         fprintf(stderr, "FAILURE: %s exited with nonzero status: %" PRId64 "\n",
                 path, proc_info.return_code);
-        result = fbl::make_unique<Result>(path, FAILED_NONZERO_RETURN_CODE,
+        result = std::make_unique<Result>(path, FAILED_NONZERO_RETURN_CODE,
                                           proc_info.return_code);
     }
 
@@ -457,7 +462,7 @@ fbl::unique_ptr<Result> FuchsiaRunTest(const char* argv[],
         }
 
         Result::HashTable::iterator it;
-        result->data_sinks.insert_or_find(fbl::make_unique<DataSink>(data.sink_name), &it);
+        result->data_sinks.insert_or_find(std::make_unique<DataSink>(data.sink_name), &it);
         it->files.push_back(DumpFile{name, dump_file});
     }
 

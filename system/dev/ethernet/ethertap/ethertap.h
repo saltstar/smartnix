@@ -29,7 +29,7 @@ class TapCtl : public ddk::Device<TapCtl, ddk::Ioctlable> {
 };
 
 class TapDevice : public ddk::Device<TapDevice, ddk::Unbindable>,
-                  public ddk::EthmacProtocol<TapDevice> {
+                  public ddk::EthmacProtocol<TapDevice, ddk::base_protocol> {
   public:
     TapDevice(zx_device_t* device, const ethertap_ioctl_config* config, zx::socket data);
 
@@ -38,11 +38,12 @@ class TapDevice : public ddk::Device<TapDevice, ddk::Unbindable>,
 
     zx_status_t EthmacQuery(uint32_t options, ethmac_info_t* info);
     void EthmacStop();
-    zx_status_t EthmacStart(fbl::unique_ptr<ddk::EthmacIfcProxy> proxy);
+    zx_status_t EthmacStart(const ethmac_ifc_t* ifc);
     zx_status_t EthmacQueueTx(uint32_t options, ethmac_netbuf_t* netbuf);
-    zx_status_t EthmacSetParam(uint32_t param, int32_t value, void* data);
+    zx_status_t EthmacSetParam(uint32_t param, int32_t value, const void* data,
+                                  size_t data_size);
     // No DMA capability, so return invalid handle for get_bti
-    zx_handle_t EthmacGetBti();
+    void EthmacGetBti(zx::bti* bti);
     int Thread();
 
   private:
@@ -59,7 +60,7 @@ class TapDevice : public ddk::Device<TapDevice, ddk::Unbindable>,
 
     fbl::Mutex lock_;
     bool dead_ = false;
-    fbl::unique_ptr<ddk::EthmacIfcProxy> ethmac_proxy_ __TA_GUARDED(lock_);
+    ddk::EthmacIfcClient ethmac_client_ __TA_GUARDED(lock_);
 
     // Only accessed from Thread, so not locked.
     bool online_ = false;

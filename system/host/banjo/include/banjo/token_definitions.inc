@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // No header inclusion guards _sic_ as this may be re-included with
 // different X macro arguments.
@@ -71,8 +74,7 @@ KEYWORD(Float32, "float32")
 KEYWORD(Float64, "float64")
 KEYWORD(USize, "usize")
 KEYWORD(ISize, "isize")
-// TODO(surajmalhtora): rename this to voidptr.
-KEYWORD(VoidPtr, "void")
+KEYWORD(VoidPtr, "voidptr")
 
 KEYWORD(True, "true")
 KEYWORD(False, "false")

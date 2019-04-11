@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -5,6 +8,8 @@
 #include <fbl/macros.h>
 #include <fbl/ref_counted_internal.h>
 #include <fbl/ref_ptr.h>
+
+#include <atomic>
 
 namespace fbl {
 namespace internal {
@@ -36,15 +41,15 @@ public:
     // loop does not have to do a separate load.
     //
     bool AddRefMaybeInDestructor() const __WARN_UNUSED_RESULT {
-        int32_t old = this->ref_count_.load(memory_order_acquire);
+        int32_t old = this->ref_count_.load(std::memory_order_acquire);
         do {
             if (old <= 0) {
                 return false;
             }
-        } while (!this->ref_count_.compare_exchange_weak(&old,
+        } while (!this->ref_count_.compare_exchange_weak(old,
                                                          old + 1,
-                                                         memory_order_acq_rel,
-                                                         memory_order_acquire));
+                                                         std::memory_order_acq_rel,
+                                                         std::memory_order_acquire));
         return true;
     }
 };
@@ -112,7 +117,7 @@ public:
 //          }
 //
 //          if (rc_client) {
-//              bar->Client(move(rc_client));  // Bar might keep a ref to client.
+//              bar->Client(std::move(rc_client));  // Bar might keep a ref to client.
 //          } else {
 //              bar->OnNoClient();
 //          }
@@ -125,7 +130,7 @@ public:
 //
 //  class Client: public RefCounted<Client> {
 //  public:
-//      Client(RefPtr<Holder> holder) : holder_(move(holder)) {
+//      Client(RefPtr<Holder> holder) : holder_(std::move(holder)) {
 //          holder_->add_client(this);
 //      }
 //

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2018 The Fuchsia Authors
+#
+# Use of this source code is governed by a MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT
+
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 BUILD_DIR="${DIR}/../build-arm64"
@@ -31,7 +37,7 @@ if [[ -z "${BOARD}" ]]; then
     HELP
 fi
 
-BOOT_IMG=${BUILD_DIR}/${BOARD}-boot.img
-VBMETA_IMG=${BUILD_DIR}/${BOARD}-vbmeta.img
+BOOT_IMG="${BUILD_DIR}/${BOARD}-boot.img"
+VBMETA_IMG="${BUILD_DIR}/${BOARD}-vbmeta.img"
 
-fastboot flash boot_a ${BOOT_IMG} && fastboot flash vbmeta_a ${VBMETA_IMG} && fastboot reboot
+fastboot flash boot_a "${BOOT_IMG}" && fastboot flash vbmeta_a "${VBMETA_IMG}" && fastboot reboot

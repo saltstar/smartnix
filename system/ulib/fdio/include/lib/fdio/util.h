@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -63,19 +66,23 @@ fdio_t* fdio_null_create(void);
 // Takes ownership of h and e.
 fdio_t* fdio_remote_create(zx_handle_t h, zx_handle_t event);
 
-// Wraps a channel with an fdio_t using an unknown rpc protocol.
-// Takes ownership of h.
-fdio_t* fdio_service_create(zx_handle_t);
-
 // creates a fdio that wraps a log object
 // this will allocate a per-thread buffer (on demand) to assemble
 // entire log-lines and flush them on newline or buffer full.
 fdio_t* fdio_logger_create(zx_handle_t);
 
-// create a fdio that wraps a function
-// used for plumbing stdout/err to logging subsystems, etc
-fdio_t* fdio_output_create(ssize_t (*func)(void* cookie, const void* data, size_t len),
-                           void* cookie);
+typedef struct zxio_storage zxio_storage_t;
+
+// Creates an |fdio_t| that is backed by a |zxio_t|.
+//
+// The |zxio_t| is initialized with a null ops table. The |zxio_storage_t| for
+// the |zxio_t| is returned via |out_storage|. The client can re-initialize the
+// |zxio_storage_t| to customize the behavior of the |zxio_t|.
+//
+// To bind the |fdio_t| to a file descriptor, use |fdio_bind_to_fd|.
+//
+// Upon failure, returns NULL.
+fdio_t* fdio_zxio_create(zxio_storage_t** out_storage);
 
 // Attempt to connect a channel to a named service.
 // On success the channel is connected.  On failure
@@ -87,7 +94,10 @@ zx_status_t fdio_service_connect(const char* svcpath, zx_handle_t h);
 // an error is returned and the handle is closed.
 zx_status_t fdio_service_connect_at(zx_handle_t dir, const char* path, zx_handle_t h);
 
-// As above but allows the passing of flags
+// Same as |fdio_service_connect|, but allows the passing of flags.
+zx_status_t fdio_open(const char* path, uint32_t zxflags, zx_handle_t h);
+
+// Same as |fdio_service_connect_at, but allows the passing of flags.
 zx_status_t fdio_open_at(zx_handle_t dir, const char* path, uint32_t zxflags, zx_handle_t h);
 
 // Attempt to clone a service handle by doing a pipelined

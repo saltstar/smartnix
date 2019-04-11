@@ -37,4 +37,9 @@ MODULE_STATIC_LIBS := \
     system/ulib/zx \
     system/ulib/zxcpp \
 
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-intelhda-codec \
+    system/banjo/ddk-protocol-intelhda-dsp \
+    system/banjo/ddk-protocol-pci \
+
 include make/module.mk

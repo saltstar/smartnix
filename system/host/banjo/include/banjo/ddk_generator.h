@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_banjo_INCLUDE_banjo_DDK_GENERATOR_H_
 #define ZIRCON_SYSTEM_HOST_banjo_INCLUDE_banjo_DDK_GENERATOR_H_
@@ -39,10 +42,10 @@ public:
         std::string doc;
         std::vector<uint32_t> array_counts;
         types::Nullability nullability;
+        bool address_of = false;
     };
 
     struct NamedMethod {
-        uint32_t ordinal;
         bool async;
         bool generate_sync_method;
         std::string c_name;
@@ -69,7 +72,6 @@ protected:
 
     enum class InterfaceType {
         kProtocol,
-        kDefaultProtocol,
         // Like a protocol, but not.
         kInterface,
         // One time callback.
@@ -183,7 +185,7 @@ protected:
 
     void ProduceExample(const NamedInterface& named_interface);
     virtual void ProduceProtocolImplementation(const NamedInterface& named_interface) override;
-    void ProduceProxyImplementation(const NamedInterface& named_interface);
+    void ProduceClientImplementation(const NamedInterface& named_interface);
     void ProduceProtocolSubclass(const NamedInterface& named_interface);
 };
 

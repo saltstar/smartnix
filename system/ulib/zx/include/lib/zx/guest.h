@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#pragma once
+#ifndef LIB_ZX_GUEST_H_
+#define LIB_ZX_GUEST_H_
 
 #include <lib/zx/handle.h>
 #include <lib/zx/object.h>
@@ -33,7 +34,7 @@ public:
                               guest* guest, vmar* vmar);
 
     zx_status_t set_trap(uint32_t kind, zx_gpaddr_t addr, size_t len,
-                         const port& port, uint64_t key) {
+                         const port& port, uint64_t key) const {
         return zx_guest_set_trap(get(), kind, addr, len, port.get(), key);
     }
 };
@@ -41,3 +42,5 @@ public:
 using unowned_guest = unowned<guest>;
 
 } // namespace zx
+
+#endif  // LIB_ZX_GUEST_H_

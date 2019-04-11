@@ -83,13 +83,6 @@ zx_status_t copy_user_string(const user_in_ptr<const char>& src,
     return ZX_OK;
 }
 
-// Convenience function to go from process handle to process.
-zx_status_t get_process(ProcessDispatcher* up,
-                        zx_handle_t proc_handle,
-                        fbl::RefPtr<ProcessDispatcher>* proc) {
-    return up->GetDispatcherWithRights(proc_handle, ZX_RIGHT_WRITE, proc);
-}
-
 // This represents the local storage for thread_read/write_state. It should be large enough to
 // handle all structures passed over these APIs.
 union thread_state_local_buffer_t {
@@ -165,16 +158,17 @@ zx_status_t sys_thread_create(zx_handle_t process_handle,
     auto up = ProcessDispatcher::GetCurrent();
 
     fbl::RefPtr<ProcessDispatcher> process;
-    result = get_process(up, process_handle, &process);
-    if (result != ZX_OK)
+    result = up->GetDispatcherWithRights(process_handle, ZX_RIGHT_MANAGE_THREAD, &process);
+    if (result != ZX_OK) {
         return result;
+    }
 
     uint32_t pid = (uint32_t)process->get_koid();
 
     // create the thread dispatcher
     fbl::RefPtr<Dispatcher> thread_dispatcher;
     zx_rights_t thread_rights;
-    result = ThreadDispatcher::Create(fbl::move(process), options, sp,
+    result = ThreadDispatcher::Create(ktl::move(process), options, sp,
                                       &thread_dispatcher, &thread_rights);
     if (result != ZX_OK)
         return result;
@@ -183,31 +177,26 @@ zx_status_t sys_thread_create(zx_handle_t process_handle,
     ktrace(TAG_THREAD_CREATE, tid, pid, 0, 0);
     ktrace_name(TAG_THREAD_NAME, tid, pid, buf);
 
-    return out->make(fbl::move(thread_dispatcher), thread_rights);
+    return out->make(ktl::move(thread_dispatcher), thread_rights);
 }
 
 // zx_status_t zx_thread_start
-zx_status_t sys_thread_start(zx_handle_t thread_handle, zx_vaddr_t entry,
+zx_status_t sys_thread_start(zx_handle_t handle, zx_vaddr_t thread_entry,
                              zx_vaddr_t stack, uintptr_t arg1, uintptr_t arg2) {
     LTRACEF("handle %x, entry %#" PRIxPTR ", sp %#" PRIxPTR
             ", arg1 %#" PRIxPTR ", arg2 %#" PRIxPTR "\n",
-            thread_handle, entry, stack, arg1, arg2);
+            handle, thread_entry, stack, arg1, arg2);
 
     auto up = ProcessDispatcher::GetCurrent();
 
     fbl::RefPtr<ThreadDispatcher> thread;
-    zx_status_t status = up->GetDispatcherWithRights(thread_handle, ZX_RIGHT_MANAGE_THREAD,
-                                                     &thread);
+    zx_status_t status = up->GetDispatcherWithRights(handle, ZX_RIGHT_MANAGE_THREAD, &thread);
     if (status != ZX_OK) {
-        // Try again, but with the WRITE right.
-        // TODO(kulakowski) Remove this when all callers are using MANAGE_THREAD.
-        status = up->GetDispatcherWithRights(thread_handle, ZX_RIGHT_WRITE, &thread);
-        if (status != ZX_OK)
-            return status;
+        return status;
     }
 
     ktrace(TAG_THREAD_START, (uint32_t)thread->get_koid(), 0, 0, 0);
-    return thread->Start(entry, stack, arg1, arg2, /* initial_thread= */ false);
+    return thread->Start(thread_entry, stack, arg1, arg2, /* initial_thread= */ false);
 }
 
 void sys_thread_exit() {
@@ -216,9 +205,9 @@ void sys_thread_exit() {
 }
 
 // zx_status_t zx_thread_read_state
-zx_status_t sys_thread_read_state(zx_handle_t handle, uint32_t state_kind,
-                                  user_out_ptr<void> _buffer, size_t buffer_len) {
-    LTRACEF("handle %x, state_kind %u\n", handle, state_kind);
+zx_status_t sys_thread_read_state(zx_handle_t handle, uint32_t kind,
+                                  user_out_ptr<void> buffer, size_t buffer_size) {
+    LTRACEF("handle %x, kind %u\n", handle, kind);
 
     auto up = ProcessDispatcher::GetCurrent();
 
@@ -230,24 +219,24 @@ zx_status_t sys_thread_read_state(zx_handle_t handle, uint32_t state_kind,
 
     thread_state_local_buffer_t local_buffer;
     size_t local_buffer_len = 0;
-    status = validate_thread_state_input(state_kind, buffer_len, &local_buffer_len);
+    status = validate_thread_state_input(kind, buffer_size, &local_buffer_len);
     if (status != ZX_OK)
         return status;
 
-    status = thread->ReadState(static_cast<zx_thread_state_topic_t>(state_kind), &local_buffer,
+    status = thread->ReadState(static_cast<zx_thread_state_topic_t>(kind), &local_buffer,
                                local_buffer_len);
     if (status != ZX_OK)
         return status;
 
-    if (_buffer.copy_array_to_user(&local_buffer, local_buffer_len) != ZX_OK)
+    if (buffer.copy_array_to_user(&local_buffer, local_buffer_len) != ZX_OK)
         return ZX_ERR_INVALID_ARGS;
     return ZX_OK;
 }
 
 // zx_status_t zx_thread_write_state
-zx_status_t sys_thread_write_state(zx_handle_t handle, uint32_t state_kind,
-                                   user_in_ptr<const void> _buffer, size_t buffer_len) {
-    LTRACEF("handle %x, state_kind %u\n", handle, state_kind);
+zx_status_t sys_thread_write_state(zx_handle_t handle, uint32_t kind,
+                                   user_in_ptr<const void> buffer, size_t buffer_size) {
+    LTRACEF("handle %x, kind %u\n", handle, kind);
 
     auto up = ProcessDispatcher::GetCurrent();
 
@@ -259,20 +248,20 @@ zx_status_t sys_thread_write_state(zx_handle_t handle, uint32_t state_kind,
 
     thread_state_local_buffer_t local_buffer;
     size_t local_buffer_len = 0;
-    status = validate_thread_state_input(state_kind, buffer_len, &local_buffer_len);
+    status = validate_thread_state_input(kind, buffer_size, &local_buffer_len);
     if (status != ZX_OK)
         return status;
 
     // Additionally check that the buffer is the exact size expected (validate only checks it's
     // larger, which is sufficient for reading).
-    if (local_buffer_len != buffer_len)
+    if (local_buffer_len != buffer_size)
         return ZX_ERR_INVALID_ARGS;
 
-    status = _buffer.copy_array_from_user(&local_buffer, local_buffer_len);
+    status = buffer.copy_array_from_user(&local_buffer, local_buffer_len);
     if (status != ZX_OK)
         return ZX_ERR_INVALID_ARGS;
 
-    return thread->WriteState(static_cast<zx_thread_state_topic_t>(state_kind), &local_buffer,
+    return thread->WriteState(static_cast<zx_thread_state_topic_t>(kind), &local_buffer,
                               local_buffer_len);
 }
 
@@ -297,29 +286,30 @@ zx_status_t sys_thread_set_priority(int32_t prio) {
 }
 
 // zx_status_t zx_task_suspend
-zx_status_t sys_task_suspend(zx_handle_t task_handle, user_out_handle* token) {
+zx_status_t sys_task_suspend(zx_handle_t handle, user_out_handle* token) {
     LTRACE_ENTRY;
 
     auto up = ProcessDispatcher::GetCurrent();
 
-    // TODO(ZX-1840): Add support for tasks other than threads
-    fbl::RefPtr<ThreadDispatcher> thread;
-    zx_status_t status = up->GetDispatcherWithRights(task_handle, ZX_RIGHT_WRITE,
-                                                     &thread);
+    // TODO(ZX-858): Add support for jobs
+    fbl::RefPtr<Dispatcher> task;
+    zx_status_t status = up->GetDispatcherWithRights(handle, ZX_RIGHT_WRITE, &task);
     if (status != ZX_OK)
         return status;
 
-    fbl::RefPtr<Dispatcher> suspend_token;
+    fbl::RefPtr<SuspendTokenDispatcher> suspend_token;
     zx_rights_t rights;
-    status = SuspendTokenDispatcher::Create(fbl::move(thread), &suspend_token, &rights);
+    status = SuspendTokenDispatcher::Create(ktl::move(task), &suspend_token, &rights);
+
     if (status == ZX_OK)
-        status = token->make(fbl::move(suspend_token), rights);
+        status = token->make(ktl::move(suspend_token), rights);
+
     return status;
 }
 
 // zx_status_t zx_task_suspend_token
-zx_status_t sys_task_suspend_token(zx_handle_t task_handle, user_out_handle* token) {
-    return sys_task_suspend(task_handle, token);
+zx_status_t sys_task_suspend_token(zx_handle_t handle, user_out_handle* token) {
+    return sys_task_suspend(handle, token);
 }
 
 // zx_status_t zx_process_create
@@ -339,7 +329,7 @@ zx_status_t sys_process_create(zx_handle_t job_handle,
     // We check the policy against the process calling zx_process_create, which
     // is the operative policy, rather than against |job_handle|. Access to
     // |job_handle| is controlled by the rights associated with the handle.
-    zx_status_t result = up->QueryPolicy(ZX_POL_NEW_PROCESS);
+    zx_status_t result = up->QueryBasicPolicy(ZX_POL_NEW_PROCESS);
     if (result != ZX_OK)
         return result;
 
@@ -355,16 +345,21 @@ zx_status_t sys_process_create(zx_handle_t job_handle,
     LTRACEF("name %s\n", buf);
 
     fbl::RefPtr<JobDispatcher> job;
-    // TODO(ZX-968): define process creation job rights.
-    auto status = up->GetDispatcherWithRights(job_handle, ZX_RIGHT_WRITE, &job);
-    if (status != ZX_OK)
-        return status;
+    auto status = up->GetDispatcherWithRights(job_handle, ZX_RIGHT_MANAGE_PROCESS, &job);
+    if (status != ZX_OK) {
+        // Try again, but with the WRITE right.
+        // TODO(ZX-2967) Remove this when all callers are using MANAGE_PROCESS.
+        status = up->GetDispatcherWithRights(job_handle, ZX_RIGHT_WRITE, &job);
+        if (status != ZX_OK) {
+            return status;
+        }
+    }
 
     // create a new process dispatcher
     fbl::RefPtr<Dispatcher> proc_dispatcher;
     fbl::RefPtr<VmAddressRegionDispatcher> vmar_dispatcher;
     zx_rights_t proc_rights, vmar_rights;
-    result = ProcessDispatcher::Create(fbl::move(job), sp, options,
+    result = ProcessDispatcher::Create(ktl::move(job), sp, options,
                                        &proc_dispatcher, &proc_rights,
                                        &vmar_dispatcher, &vmar_rights);
     if (result != ZX_OK)
@@ -377,9 +372,9 @@ zx_status_t sys_process_create(zx_handle_t job_handle,
     // Give arch-specific tracing a chance to record process creation.
     arch_trace_process_create(koid, vmar_dispatcher->vmar()->aspace()->arch_aspace().arch_table_phys());
 
-    result = proc_handle->make(fbl::move(proc_dispatcher), proc_rights);
+    result = proc_handle->make(ktl::move(proc_dispatcher), proc_rights);
     if (result == ZX_OK)
-        result = vmar_handle->make(fbl::move(vmar_dispatcher), vmar_rights);
+        result = vmar_handle->make(ktl::move(vmar_dispatcher), vmar_rights);
     return result;
 }
 
@@ -405,7 +400,7 @@ zx_status_t sys_process_start(zx_handle_t process_handle, zx_handle_t thread_han
 
     // get process dispatcher
     fbl::RefPtr<ProcessDispatcher> process;
-    zx_status_t status = get_process(up, process_handle, &process);
+    zx_status_t status = up->GetDispatcherWithRights(process_handle, ZX_RIGHT_WRITE, &process);
     if (status != ZX_OK) {
         up->RemoveHandle(arg_handle_value);
         return status;
@@ -430,7 +425,7 @@ zx_status_t sys_process_start(zx_handle_t process_handle, zx_handle_t thread_han
         return ZX_ERR_ACCESS_DENIED;
 
     auto arg_nhv = process->MapHandleToValue(arg_handle);
-    process->AddHandle(fbl::move(arg_handle));
+    process->AddHandle(ktl::move(arg_handle));
 
     status = thread->Start(pc, sp, static_cast<uintptr_t>(arg_nhv),
                            arg2, /* initial_thread */ true);
@@ -452,20 +447,20 @@ void sys_process_exit(int64_t retcode) {
 }
 
 // zx_status_t zx_process_read_memory
-zx_status_t sys_process_read_memory(zx_handle_t proc, zx_vaddr_t vaddr,
-                                    user_out_ptr<void> _buffer,
-                                    size_t len, user_out_ptr<size_t> _actual) {
-    LTRACEF("vaddr 0x%" PRIxPTR ", size %zu\n", vaddr, len);
+zx_status_t sys_process_read_memory(zx_handle_t handle, zx_vaddr_t vaddr,
+                                    user_out_ptr<void> buffer,
+                                    size_t buffer_size, user_out_ptr<size_t> _actual) {
+    LTRACEF("vaddr 0x%" PRIxPTR ", size %zu\n", vaddr, buffer_size);
 
-    if (!_buffer)
+    if (!buffer)
         return ZX_ERR_INVALID_ARGS;
-    if (len == 0 || len > kMaxDebugReadBlock)
+    if (buffer_size == 0 || buffer_size > kMaxDebugReadBlock)
         return ZX_ERR_INVALID_ARGS;
 
     auto up = ProcessDispatcher::GetCurrent();
 
     fbl::RefPtr<ProcessDispatcher> process;
-    zx_status_t status = up->GetDispatcherWithRights(proc, ZX_RIGHT_READ | ZX_RIGHT_WRITE,
+    zx_status_t status = up->GetDispatcherWithRights(handle, ZX_RIGHT_READ | ZX_RIGHT_WRITE,
                                                      &process);
     if (status != ZX_OK)
         return status;
@@ -491,15 +486,15 @@ zx_status_t sys_process_read_memory(zx_handle_t proc, zx_vaddr_t vaddr,
     // things, the bug will come back.  We should fix this more properly.
     {
         uint8_t byte = 0;
-        auto int_data = _buffer.reinterpret<uint8_t>();
-        for (size_t i = 0; i < len; i += PAGE_SIZE) {
+        auto int_data = buffer.reinterpret<uint8_t>();
+        for (size_t i = 0; i < buffer_size; i += PAGE_SIZE) {
             status = int_data.copy_array_to_user(&byte, 1, i);
             if (status != ZX_OK) {
                 return status;
             }
         }
-        if (len > 0) {
-            status = int_data.copy_array_to_user(&byte, 1, len - 1);
+        if (buffer_size > 0) {
+            status = int_data.copy_array_to_user(&byte, 1, buffer_size - 1);
             if (status != ZX_OK) {
                 return status;
             }
@@ -510,11 +505,11 @@ zx_status_t sys_process_read_memory(zx_handle_t proc, zx_vaddr_t vaddr,
     // TODO(ZX-1631): While this limits reading to the mapped address space of
     // this VMO, it should be reading from multiple VMOs, not a single one.
     // Additionally, it is racy with the mapping going away.
-    len = MIN(len, vm_mapping->size() - (vaddr - vm_mapping->base()));
-    zx_status_t st = vmo->ReadUser(_buffer, offset, len);
+    buffer_size = MIN(buffer_size, vm_mapping->size() - (vaddr - vm_mapping->base()));
+    zx_status_t st = vmo->ReadUser(buffer, offset, buffer_size);
 
     if (st == ZX_OK) {
-        zx_status_t status = _actual.copy_to_user(static_cast<size_t>(len));
+        zx_status_t status = _actual.copy_to_user(static_cast<size_t>(buffer_size));
         if (status != ZX_OK)
             return status;
     }
@@ -522,20 +517,20 @@ zx_status_t sys_process_read_memory(zx_handle_t proc, zx_vaddr_t vaddr,
 }
 
 // zx_status_t zx_process_write_memory
-zx_status_t sys_process_write_memory(zx_handle_t proc, zx_vaddr_t vaddr,
-                                     user_in_ptr<const void> _buffer,
-                                     size_t len, user_out_ptr<size_t> _actual) {
-    LTRACEF("vaddr 0x%" PRIxPTR ", size %zu\n", vaddr, len);
+zx_status_t sys_process_write_memory(zx_handle_t handle, zx_vaddr_t vaddr,
+                                     user_in_ptr<const void> buffer,
+                                     size_t buffer_size, user_out_ptr<size_t> _actual) {
+    LTRACEF("vaddr 0x%" PRIxPTR ", size %zu\n", vaddr, buffer_size);
 
-    if (!_buffer)
+    if (!buffer)
         return ZX_ERR_INVALID_ARGS;
-    if (len == 0 || len > kMaxDebugWriteBlock)
+    if (buffer_size == 0 || buffer_size > kMaxDebugWriteBlock)
         return ZX_ERR_INVALID_ARGS;
 
     auto up = ProcessDispatcher::GetCurrent();
 
     fbl::RefPtr<ProcessDispatcher> process;
-    zx_status_t status = up->GetDispatcherWithRights(proc, ZX_RIGHT_WRITE, &process);
+    zx_status_t status = up->GetDispatcherWithRights(handle, ZX_RIGHT_WRITE, &process);
     if (status != ZX_OK)
         return status;
 
@@ -560,15 +555,15 @@ zx_status_t sys_process_write_memory(zx_handle_t proc, zx_vaddr_t vaddr,
     // things, the bug will come back.  We should fix this more properly.
     {
         uint8_t byte = 0;
-        auto int_data = _buffer.reinterpret<const uint8_t>();
-        for (size_t i = 0; i < len; i += PAGE_SIZE) {
+        auto int_data = buffer.reinterpret<const uint8_t>();
+        for (size_t i = 0; i < buffer_size; i += PAGE_SIZE) {
             status = int_data.copy_array_from_user(&byte, 1, i);
             if (status != ZX_OK) {
                 return status;
             }
         }
-        if (len > 0) {
-            status = int_data.copy_array_from_user(&byte, 1, len - 1);
+        if (buffer_size > 0) {
+            status = int_data.copy_array_from_user(&byte, 1, buffer_size - 1);
             if (status != ZX_OK) {
                 return status;
             }
@@ -579,11 +574,11 @@ zx_status_t sys_process_write_memory(zx_handle_t proc, zx_vaddr_t vaddr,
     // TODO(ZX-1631): While this limits writing to the mapped address space of
     // this VMO, it should be writing to multiple VMOs, not a single one.
     // Additionally, it is racy with the mapping going away.
-    len = MIN(len, vm_mapping->size() - (vaddr - vm_mapping->base()));
-    zx_status_t st = vmo->WriteUser(_buffer, offset, len);
+    buffer_size = MIN(buffer_size, vm_mapping->size() - (vaddr - vm_mapping->base()));
+    zx_status_t st = vmo->WriteUser(buffer, offset, buffer_size);
 
     if (st == ZX_OK) {
-        zx_status_t status = _actual.copy_to_user(static_cast<size_t>(len));
+        zx_status_t status = _actual.copy_to_user(static_cast<size_t>(buffer_size));
         if (status != ZX_OK)
             return status;
     }
@@ -615,11 +610,11 @@ zx_status_t sys_task_kill(zx_handle_t task_handle) {
     // see if it's a process or thread and dispatch accordingly
     switch (dispatcher->get_type()) {
     case ZX_OBJ_TYPE_PROCESS:
-        return kill_task<ProcessDispatcher>(fbl::move(dispatcher));
+        return kill_task<ProcessDispatcher>(ktl::move(dispatcher));
     case ZX_OBJ_TYPE_THREAD:
-        return kill_task<ThreadDispatcher>(fbl::move(dispatcher));
+        return kill_task<ThreadDispatcher>(ktl::move(dispatcher));
     case ZX_OBJ_TYPE_JOB:
-        return kill_task<JobDispatcher>(fbl::move(dispatcher));
+        return kill_task<JobDispatcher>(ktl::move(dispatcher));
     default:
         return ZX_ERR_WRONG_TYPE;
     }
@@ -648,42 +643,81 @@ zx_status_t sys_job_create(zx_handle_t parent_job, uint32_t options,
 
     fbl::RefPtr<Dispatcher> job;
     zx_rights_t rights;
-    status = JobDispatcher::Create(options, fbl::move(parent), &job, &rights);
+    status = JobDispatcher::Create(options, ktl::move(parent), &job, &rights);
     if (status == ZX_OK)
-        status = out->make(fbl::move(job), rights);
+        status = out->make(ktl::move(job), rights);
     return status;
 }
 
-// zx_status_t zx_job_set_policy
-zx_status_t sys_job_set_policy(zx_handle_t job_handle, uint32_t options,
-                               uint32_t topic, user_in_ptr<const void> _policy,
-                               uint32_t count) {
-
-    if ((options != ZX_JOB_POL_RELATIVE) && (options != ZX_JOB_POL_ABSOLUTE))
+static zx_status_t job_set_policy_basic(zx_handle_t handle, uint32_t options,
+                                        user_in_ptr<const void> _policy, uint32_t count) {
+    if ((options != ZX_JOB_POL_RELATIVE) && (options != ZX_JOB_POL_ABSOLUTE)) {
         return ZX_ERR_INVALID_ARGS;
-    if (!_policy || (count == 0u))
+    }
+    if (!_policy || (count == 0u)) {
         return ZX_ERR_INVALID_ARGS;
-
-    if (topic != ZX_JOB_POL_BASIC)
-        return ZX_ERR_INVALID_ARGS;
+    }
 
     fbl::AllocChecker ac;
     fbl::InlineArray<
         zx_policy_basic, kPolicyBasicInlineCount>
         policy(&ac, count);
-    if (!ac.check())
+    if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
+    }
 
     auto status = _policy.copy_array_from_user(policy.get(), sizeof(zx_policy_basic) * count);
-    if (status != ZX_OK)
+    if (status != ZX_OK) {
         return ZX_ERR_INVALID_ARGS;
+    }
 
     auto up = ProcessDispatcher::GetCurrent();
 
     fbl::RefPtr<JobDispatcher> job;
-    status = up->GetDispatcherWithRights(job_handle, ZX_RIGHT_SET_POLICY, &job);
-    if (status != ZX_OK)
+    status = up->GetDispatcherWithRights(handle, ZX_RIGHT_SET_POLICY, &job);
+    if (status != ZX_OK) {
         return status;
+    }
 
-    return job->SetPolicy(options, policy.get(), policy.size());
+    return job->SetBasicPolicy(options, policy.get(), policy.size());
+}
+
+static zx_status_t job_set_policy_timer_slack(zx_handle_t handle, uint32_t options,
+                                              user_in_ptr<const void> _policy, uint32_t count) {
+    if (options != ZX_JOB_POL_RELATIVE) {
+        return ZX_ERR_INVALID_ARGS;
+    }
+    if (!_policy || (count != 1u)) {
+        return ZX_ERR_INVALID_ARGS;
+    }
+
+    zx_policy_timer_slack slack_policy;
+    auto status = _policy.reinterpret<const zx_policy_timer_slack>().copy_from_user(&slack_policy);
+    if (status != ZX_OK) {
+        return ZX_ERR_INVALID_ARGS;
+    }
+
+    auto up = ProcessDispatcher::GetCurrent();
+
+    fbl::RefPtr<JobDispatcher> job;
+    status = up->GetDispatcherWithRights(handle, ZX_RIGHT_SET_POLICY, &job);
+    if (status != ZX_OK) {
+        return status;
+    }
+
+    return job->SetTimerSlackPolicy(slack_policy);
+}
+
+// zx_status_t zx_job_set_policy
+zx_status_t sys_job_set_policy(zx_handle_t handle, uint32_t options,
+                               uint32_t topic, user_in_ptr<const void> _policy,
+                               uint32_t count) {
+    switch (topic) {
+    case ZX_JOB_POL_BASIC:
+        return job_set_policy_basic(handle, options, _policy, count);
+    case ZX_JOB_POL_TIMER_SLACK:
+        return job_set_policy_timer_slack(handle, options, _policy, count);
+    default:
+        return ZX_ERR_INVALID_ARGS;
+    };
 }

@@ -5,8 +5,8 @@
 #pragma once
 
 #include <assert.h>
-#include <ddk/protocol/display-controller.h>
-#include <ddk/protocol/intel-gpu-core.h>
+#include <ddk/protocol/display/controller.h>
+#include <ddk/protocol/intelgpucore.h>
 #include <hwreg/bitfields.h>
 #include <zircon/pixelformat.h>
 

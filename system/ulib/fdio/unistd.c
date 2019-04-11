@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <assert.h>
 #include <dirent.h>
@@ -25,6 +28,7 @@
 #include <zircon/device/vfs.h>
 #include <zircon/process.h>
 #include <zircon/processargs.h>
+#include <zircon/status.h>
 #include <zircon/syscalls.h>
 #include <zircon/time.h>
 
@@ -33,11 +37,9 @@
 #include <lib/fdio/io.h>
 #include <lib/fdio/namespace.h>
 #include <lib/fdio/private.h>
-#include <lib/fdio/remoteio.h>
 #include <lib/fdio/unsafe.h>
 #include <lib/fdio/util.h>
 #include <lib/fdio/vfs.h>
-#include <lib/zxs/protocol.h>
 
 #include "private.h"
 #include "unistd.h"
@@ -53,6 +55,81 @@ fdio_state_t __fdio_global_state = {
     .init = true,
     .cwd_path = "/",
 };
+
+// fdio_reserved_io is a globally shared fdio_t that is used to represent a
+// reservation in the fdtab. If a user observes fdio_reserved_io there is a race
+// condition in their code or they are looking up fd's by number.
+// fdio_reserved_io is used in the time between a user requesting an operation
+// that creates and fd, and the time when a remote operation to create the
+// backing fdio_t is created, without holding the fdtab lock. Examples include
+// open() of a file, or accept() on a socket.
+static fdio_t fdio_reserved_io = {
+    // TODO(raggi): It may be ideal to replace these operations with ones that
+    // more directly encode the result that a user must have implemented a race
+    // in order to invoke them.
+    .ops = NULL,
+    .magic = FDIO_MAGIC,
+    .refcount = 1,
+    .dupcount = 1,
+    .ioflag = 0,
+};
+
+
+static bool fdio_is_reserved_or_null(fdio_t *io) {
+    if (io == NULL || io == &fdio_reserved_io) {
+        return true;
+    }
+    return false;
+}
+
+int fdio_reserve_fd(int starting_fd) {
+    if ((starting_fd < 0) || (starting_fd >= FDIO_MAX_FD)) {
+        errno = EINVAL;
+        return -1;
+    }
+    mtx_lock(&fdio_lock);
+    for (int fd = starting_fd; fd < FDIO_MAX_FD; fd++) {
+        if (fdio_fdtab[fd] == NULL) {
+            fdio_fdtab[fd] = &fdio_reserved_io;
+            mtx_unlock(&fdio_lock);
+            return fd;
+        }
+    }
+    mtx_unlock(&fdio_lock);
+    errno = EMFILE;
+    return -1;
+}
+
+int fdio_assign_reserved(int fd, fdio_t *io) {
+    mtx_lock(&fdio_lock);
+    fdio_t *res = fdio_fdtab[fd];
+    if (res != &fdio_reserved_io) {
+        mtx_unlock(&fdio_lock);
+        errno = EINVAL;
+        return -1;
+    }
+    io->dupcount++;
+    fdio_fdtab[fd] = io;
+    mtx_unlock(&fdio_lock);
+    return fd;
+}
+
+int fdio_release_reserved(int fd) {
+    if ((fd < 0) || (fd >= FDIO_MAX_FD)) {
+        errno = EINVAL;
+        return -1;
+    }
+    mtx_lock(&fdio_lock);
+    fdio_t *res = fdio_fdtab[fd];
+    if (res != &fdio_reserved_io) {
+        mtx_unlock(&fdio_lock);
+        errno = EINVAL;
+        return -1;
+    }
+    fdio_fdtab[fd] = NULL;
+    mtx_unlock(&fdio_lock);
+    return fd;
+}
 
 // Attaches an fdio to an fdtab slot.
 // The fdio must have been upref'd on behalf of the
@@ -126,7 +203,7 @@ zx_status_t fdio_unbind_from_fd(int fd, fdio_t** out) {
         goto done;
     }
     fdio_t* io = fdio_fdtab[fd];
-    if (io == NULL) {
+    if (fdio_is_reserved_or_null(io)) {
         status = ZX_ERR_INVALID_ARGS;
         goto done;
     }
@@ -154,7 +231,11 @@ fdio_t* fdio_unsafe_fd_to_io(int fd) {
     }
     fdio_t* io = NULL;
     mtx_lock(&fdio_lock);
-    if ((io = fdio_fdtab[fd]) != NULL) {
+    io = fdio_fdtab[fd];
+    if (fdio_is_reserved_or_null(io)) {
+        // Never hand back the reserved io as it does not have an ops table.
+        io = NULL;
+    } else {
         fdio_acquire(io);
     }
     mtx_unlock(&fdio_lock);
@@ -568,38 +649,27 @@ void __libc_extensions_init(uint32_t handle_count,
                 // a single handle for PA_FDIO_REMOTE.
                 event = handle[n + 1];
                 handle_info[n + 1] = ZX_HANDLE_INVALID;
+                fdio_fdtab[arg_fd] = fdio_remote_create(h, event);
+                fdio_fdtab[arg_fd]->dupcount++;
+                LOG(1, "fdio: inherit fd=%d (channel)\n", arg_fd);
             } else {
-                fuchsia_io_NodeInfo info;
-                memset(&info, 0, sizeof(info));
-                zx_status_t status = fuchsia_io_NodeDescribe(h, &info);
+                fdio_t* io = NULL;
+                zx_status_t status = fdio_from_channel(h, &io);
                 if (status != ZX_OK) {
-                    LOG(1, "fdio: Failed to describe fd=%d (rio) status=%d (%s)\n",
+                    LOG(1, "fdio: Failed to acquire for fd=%d (channel) status=%d (%s)\n",
                         arg_fd, status, zx_status_get_string(status));
                     zx_handle_close(h);
                     continue;
                 }
-
-                switch (info.tag) {
-                case fuchsia_io_NodeInfoTag_file:
-                    event = info.file.event;
-                    break;
-                case fuchsia_io_NodeInfoTag_device:
-                    event = info.device.event;
-                    break;
-                default:
-                    event = ZX_HANDLE_INVALID;
-                    break;
-                }
+                fdio_fdtab[arg_fd] = io;
+                fdio_fdtab[arg_fd]->dupcount++;
+                LOG(1, "fdio: inherit fd=%d (channel)\n", arg_fd);
             }
-
-            fdio_fdtab[arg_fd] = fdio_remote_create(h, event);
-            fdio_fdtab[arg_fd]->dupcount++;
-            LOG(1, "fdio: inherit fd=%d (rio)\n", arg_fd);
             break;
         }
         case PA_FDIO_SOCKET: {
             fdio_t* io = NULL;
-            zx_status_t status = fdio_acquire_socket(h, &io);
+            zx_status_t status = fdio_from_socket(h, &io);
             if (status != ZX_OK) {
                 LOG(1, "fdio: Failed to acquire for fd=%d (socket) status=%d (%s)\n",
                     arg_fd, status, zx_status_get_string(status));
@@ -617,7 +687,7 @@ void __libc_extensions_init(uint32_t handle_count,
             LOG(1, "fdio: inherit fd=%d (log)\n", arg_fd);
             break;
         case PA_NS_DIR:
-            // we always contine here to not steal the
+            // we always continue here to not steal the
             // handles from higher level code that may
             // also need access to the namespace
             if (arg >= name_count) {
@@ -829,22 +899,23 @@ zx_status_t fdio_wait_fd(int fd, uint32_t events, uint32_t* _pending, zx_time_t 
 }
 
 static zx_status_t fdio_stat(fdio_t* io, struct stat* s) {
-    vnattr_t attr;
+    fuchsia_io_NodeAttributes attr;
     zx_status_t status = io->ops->get_attr(io, &attr);
     if (status != ZX_OK) {
         return status;
     }
+
     memset(s, 0, sizeof(struct stat));
     s->st_mode = attr.mode;
-    s->st_ino = attr.inode;
-    s->st_size = attr.size;
-    s->st_blksize = attr.blksize;
-    s->st_blocks = attr.blkcount;
-    s->st_nlink = attr.nlink;
-    s->st_ctim.tv_sec = attr.create_time / ZX_SEC(1);
-    s->st_ctim.tv_nsec = attr.create_time % ZX_SEC(1);
-    s->st_mtim.tv_sec = attr.modify_time / ZX_SEC(1);
-    s->st_mtim.tv_nsec = attr.modify_time % ZX_SEC(1);
+    s->st_ino = attr.id;
+    s->st_size = attr.content_size;
+    s->st_blksize = VNATTR_BLKSIZE;
+    s->st_blocks = attr.storage_size / VNATTR_BLKSIZE;
+    s->st_nlink = attr.link_count;
+    s->st_ctim.tv_sec = attr.creation_time / ZX_SEC(1);
+    s->st_ctim.tv_nsec = attr.creation_time % ZX_SEC(1);
+    s->st_mtim.tv_sec = attr.modification_time / ZX_SEC(1);
+    s->st_mtim.tv_nsec = attr.modification_time % ZX_SEC(1);
     return ZX_OK;
 }
 
@@ -865,6 +936,7 @@ int fdio_status_to_errno(zx_status_t status) {
     case ZX_ERR_NOT_FILE: return EISDIR;
     case ZX_ERR_NOT_DIR: return ENOTDIR;
     case ZX_ERR_NOT_SUPPORTED: return ENOTSUP;
+    case ZX_ERR_WRONG_TYPE: return ENOTSUP;
     case ZX_ERR_OUT_OF_RANGE: return EINVAL;
     case ZX_ERR_NO_RESOURCES: return ENOMEM;
     case ZX_ERR_BAD_HANDLE: return EBADF;
@@ -884,8 +956,41 @@ int fdio_status_to_errno(zx_status_t status) {
     case ZX_ERR_CONNECTION_RESET: return ECONNRESET;
     case ZX_ERR_CONNECTION_ABORTED: return ECONNABORTED;
 
-    // No specific translation, so return a generic errno value.
+    // No specific translation, so return a generic value.
     default: return EIO;
+    }
+}
+
+zx_status_t errno_to_fdio_status(int16_t out_code) {
+    switch (out_code) {
+        case EACCES: return ZX_ERR_ACCESS_DENIED;
+        case EADDRINUSE: return ZX_ERR_ADDRESS_IN_USE;
+        case EAGAIN: return ZX_ERR_SHOULD_WAIT;
+        case EBADF: return ZX_ERR_BAD_HANDLE;
+        case EBUSY: return ZX_ERR_UNAVAILABLE;
+        case ECONNABORTED: return ZX_ERR_CONNECTION_ABORTED;
+        case ECONNREFUSED: return ZX_ERR_IO_REFUSED;
+        case ECONNRESET: return ZX_ERR_CONNECTION_RESET;
+        case EEXIST: return ZX_ERR_ALREADY_EXISTS;
+        case EFBIG: return ZX_ERR_FILE_BIG;
+        case EINVAL: return ZX_ERR_INVALID_ARGS;
+        case EIO: return ZX_ERR_IO;
+        case EISDIR: return ZX_ERR_NOT_FILE;
+        case ENAMETOOLONG: return ZX_ERR_BAD_PATH;
+        case ENETUNREACH: return ZX_ERR_ADDRESS_UNREACHABLE;
+        case ENOENT: return ZX_ERR_NOT_FOUND;
+        case ENOMEM: return ZX_ERR_NO_MEMORY;
+        case ENOSPC: return ZX_ERR_NO_SPACE;
+        case ENOTCONN: return ZX_ERR_NOT_CONNECTED;
+        case ENOTDIR: return ZX_ERR_NOT_DIR;
+        case ENOTEMPTY: return ZX_ERR_NOT_EMPTY;
+        case ENOTSUP: return ZX_ERR_NOT_SUPPORTED;
+        case EPIPE: return ZX_ERR_PEER_CLOSED;
+        case EPROTONOSUPPORT: return ZX_ERR_PROTOCOL_NOT_SUPPORTED;
+        case ETIMEDOUT: return ZX_ERR_TIMED_OUT;
+
+        // No specific translation, so return a generic value.
+        default: return ZX_ERR_INTERNAL;
     }
 }
 
@@ -942,7 +1047,7 @@ zx_status_t _mmap_file(size_t offset, size_t len, zx_vm_option_t zx_options, int
         return ZX_ERR_BAD_HANDLE;
     }
 
-    int vflags = zx_options | (flags & MAP_PRIVATE ? FDIO_MMAP_FLAG_PRIVATE : 0);
+    int vflags = zx_options | (flags & MAP_PRIVATE ? fuchsia_io_VMO_FLAG_PRIVATE : 0);
     zx_handle_t vmo;
     zx_status_t r = io->ops->get_vmo(io, vflags, &vmo);
     fdio_release(io);
@@ -986,16 +1091,18 @@ ssize_t read(int fd, void* buf, size_t count) {
     if (io == NULL) {
         return ERRNO(EBADF);
     }
+    bool nonblocking = io->ioflag & IOFLAG_NONBLOCK;
+    size_t actual = 0u;
     zx_status_t status;
     for (;;) {
-        status = io->ops->read(io, buf, count);
-        if (status != ZX_ERR_SHOULD_WAIT || io->ioflag & IOFLAG_NONBLOCK) {
+        status = zxio_read(fdio_get_zxio(io), buf, count, &actual);
+        if (status != ZX_ERR_SHOULD_WAIT || nonblocking) {
             break;
         }
-        fdio_wait_fd(fd, FDIO_EVT_READABLE | FDIO_EVT_PEER_CLOSED, NULL, ZX_TIME_INFINITE);
+        fdio_wait(io, FDIO_EVT_READABLE | FDIO_EVT_PEER_CLOSED, ZX_TIME_INFINITE, NULL);
     }
     fdio_release(io);
-    return status < 0 ? STATUS(status) : status;
+    return status != ZX_OK ? ERROR(status) : (ssize_t)actual;
 }
 
 __EXPORT
@@ -1008,16 +1115,18 @@ ssize_t write(int fd, const void* buf, size_t count) {
     if (io == NULL) {
         return ERRNO(EBADF);
     }
+    bool nonblocking = io->ioflag & IOFLAG_NONBLOCK;
+    size_t actual = 0u;
     zx_status_t status;
     for (;;) {
-        status = io->ops->write(io, buf, count);
-        if ((status != ZX_ERR_SHOULD_WAIT) || (io->ioflag & IOFLAG_NONBLOCK)) {
+        status = zxio_write(fdio_get_zxio(io), buf, count, &actual);
+        if ((status != ZX_ERR_SHOULD_WAIT) || nonblocking) {
             break;
         }
-        fdio_wait_fd(fd, FDIO_EVT_WRITABLE | FDIO_EVT_PEER_CLOSED, NULL, ZX_TIME_INFINITE);
+        fdio_wait(io, FDIO_EVT_WRITABLE | FDIO_EVT_PEER_CLOSED, ZX_TIME_INFINITE, NULL);
     }
     fdio_release(io);
-    return status < 0 ? STATUS(status) : status;
+    return status != ZX_OK ? ERROR(status) : (ssize_t)actual;
 }
 
 __EXPORT
@@ -1052,16 +1161,18 @@ ssize_t pread(int fd, void* buf, size_t size, off_t ofs) {
     if (io == NULL) {
         return ERRNO(EBADF);
     }
+    bool nonblocking = io->ioflag & IOFLAG_NONBLOCK;
+    size_t actual = 0u;
     zx_status_t status;
     for (;;) {
-        status = io->ops->read_at(io, buf, size, ofs);
-        if ((status != ZX_ERR_SHOULD_WAIT) || (io->ioflag & IOFLAG_NONBLOCK)) {
+        status = zxio_read_at(fdio_get_zxio(io), ofs, buf, size, &actual);
+        if ((status != ZX_ERR_SHOULD_WAIT) || nonblocking) {
             break;
         }
-        fdio_wait_fd(fd, FDIO_EVT_READABLE | FDIO_EVT_PEER_CLOSED, NULL, ZX_TIME_INFINITE);
+        fdio_wait(io, FDIO_EVT_READABLE | FDIO_EVT_PEER_CLOSED, ZX_TIME_INFINITE, NULL);
     }
     fdio_release(io);
-    return status < 0 ? STATUS(status) : status;
+    return status != ZX_OK ? ERROR(status) : (ssize_t)actual;
 }
 
 __EXPORT
@@ -1096,16 +1207,18 @@ ssize_t pwrite(int fd, const void* buf, size_t size, off_t ofs) {
     if (io == NULL) {
         return ERRNO(EBADF);
     }
+    bool nonblocking = io->ioflag & IOFLAG_NONBLOCK;
+    size_t actual = 0u;
     zx_status_t status;
     for (;;) {
-        status = io->ops->write_at(io, buf, size, ofs);
-        if ((status != ZX_ERR_SHOULD_WAIT) || (io->ioflag & IOFLAG_NONBLOCK)) {
+        status = zxio_write_at(fdio_get_zxio(io), ofs, buf, size, &actual);
+        if ((status != ZX_ERR_SHOULD_WAIT) || nonblocking) {
             break;
         }
-        fdio_wait_fd(fd, FDIO_EVT_WRITABLE | FDIO_EVT_PEER_CLOSED, NULL, ZX_TIME_INFINITE);
+        fdio_wait(io, FDIO_EVT_WRITABLE | FDIO_EVT_PEER_CLOSED, ZX_TIME_INFINITE, NULL);
     }
     fdio_release(io);
-    return status < 0 ? STATUS(status) : status;
+    return status != ZX_OK ? ERROR(status) : (ssize_t)actual;
 }
 
 __EXPORT
@@ -1283,25 +1396,32 @@ int fcntl(int fd, int cmd, ...) {
 #undef GET_INT_ARG
 }
 
+static_assert(SEEK_SET == fuchsia_io_SeekOrigin_START, "");
+static_assert(SEEK_CUR == fuchsia_io_SeekOrigin_CURRENT, "");
+static_assert(SEEK_END == fuchsia_io_SeekOrigin_END, "");
+
 __EXPORT
 off_t lseek(int fd, off_t offset, int whence) {
     fdio_t* io = fd_to_io(fd);
     if (io == NULL) {
         return ERRNO(EBADF);
     }
-    off_t r = io->ops->seek(io, offset, whence);
-    if (r == ZX_ERR_WRONG_TYPE) {
+    size_t result = 0u;
+    zx_status_t status = zxio_seek(fdio_get_zxio(io), offset, whence, &result);
+    if (status == ZX_ERR_WRONG_TYPE) {
         // Although 'ESPIPE' is a bit of a misnomer, it is the valid errno
         // for any fd which does not implement seeking (i.e., for pipes,
         // sockets, etc).
-        errno = ESPIPE;
-        r = -1;
-    } else if (r < 0) {
-        r = ERROR(r);
+        fdio_release(io);
+        return ERRNO(ESPIPE);
+    } else {
+        fdio_release(io);
+        return status != ZX_OK ? STATUS(status) : (off_t)result;
     }
-    fdio_release(io);
-    return r;
 }
+
+#define READDIR_CMD_NONE  0
+#define READDIR_CMD_RESET 1
 
 static int getdirents(int fd, void* ptr, size_t len, long cmd) {
     size_t actual;
@@ -1504,9 +1624,9 @@ int fsync(int fd) {
     if (io == NULL) {
         return ERRNO(EBADF);
     }
-    zx_status_t r = io->ops->sync(io);
+    zx_status_t status = zxio_sync(fdio_get_zxio(io));
     fdio_release(io);
-    return STATUS(r);
+    return STATUS(status);
 }
 
 __EXPORT
@@ -1613,21 +1733,22 @@ char* realpath(const char* restrict filename, char* restrict resolved) {
 
 static zx_status_t zx_utimens(fdio_t* io, const struct timespec times[2],
                               int flags) {
-    vnattr_t vn;
-    vn.valid = 0;
+    fuchsia_io_NodeAttributes attr;
+    memset(&attr, 0, sizeof(attr));
+    uint32_t mask = 0;
 
     // Extract modify time.
-    vn.modify_time = (times == NULL || times[1].tv_nsec == UTIME_NOW)
+    attr.modification_time = (times == NULL || times[1].tv_nsec == UTIME_NOW)
         ? zx_clock_get(ZX_CLOCK_UTC)
         : zx_time_add_duration(ZX_SEC(times[1].tv_sec), times[1].tv_nsec);
 
     if (times == NULL || times[1].tv_nsec != UTIME_OMIT) {
         // For setattr, tell which fields are valid.
-        vn.valid = ATTR_MTIME;
+        mask = fuchsia_io_NODE_ATTRIBUTE_FLAG_MODIFICATION_TIME;
     }
 
     // set time(s) on underlying object
-    return io->ops->set_attr(io, &vn);
+    return io->ops->set_attr(io, mask, &attr);
 }
 
 __EXPORT
@@ -1972,7 +2093,7 @@ int fdio_handle_fd(zx_handle_t h, zx_signals_t signals_in, zx_signals_t signals_
 
 __EXPORT
 void fdio_unsafe_wait_begin(fdio_t* io, uint32_t events,
-                       zx_handle_t* handle_out, zx_signals_t* signals_out) {
+                            zx_handle_t* handle_out, zx_signals_t* signals_out) {
     return io->ops->wait_begin(io, events, handle_out, signals_out);
 }
 
@@ -2229,9 +2350,17 @@ ssize_t sendto(int fd, const void* buf, size_t buflen, int flags, const struct s
     if (io == NULL) {
         return ERRNO(EBADF);
     }
-    ssize_t r = io->ops->sendto(io, buf, buflen, flags, addr, addrlen);
+    bool nonblocking = (io->ioflag & IOFLAG_NONBLOCK) || (flags & MSG_DONTWAIT);
+    zx_status_t status;
+    for (;;) {
+        status = io->ops->sendto(io, buf, buflen, flags, addr, addrlen);
+        if (status != ZX_ERR_SHOULD_WAIT || nonblocking) {
+            break;
+        }
+        fdio_wait(io, FDIO_EVT_WRITABLE | FDIO_EVT_PEER_CLOSED, ZX_TIME_INFINITE, NULL);
+    }
     fdio_release(io);
-    return r < 0 ? STATUS(r) : r;
+    return status < 0 ? STATUS(status) : status;
 }
 
 __EXPORT
@@ -2243,9 +2372,17 @@ ssize_t recvfrom(int fd, void* restrict buf, size_t buflen, int flags, struct so
     if (addr != NULL && addrlen == NULL) {
         return ERRNO(EFAULT);
     }
-    ssize_t r = io->ops->recvfrom(io, buf, buflen, flags, addr, addrlen);
+    bool nonblocking = (io->ioflag & IOFLAG_NONBLOCK) || (flags & MSG_DONTWAIT);
+    zx_status_t status;
+    for (;;) {
+        status = io->ops->recvfrom(io, buf, buflen, flags, addr, addrlen);
+        if (status != ZX_ERR_SHOULD_WAIT || nonblocking) {
+            break;
+        }
+        fdio_wait(io, FDIO_EVT_READABLE | FDIO_EVT_PEER_CLOSED, ZX_TIME_INFINITE, NULL);
+    }
     fdio_release(io);
-    return r < 0 ? STATUS(r) : r;
+    return status < 0 ? STATUS(status) : status;
 }
 
 __EXPORT
@@ -2254,9 +2391,21 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
     if (io == NULL) {
         return ERRNO(EBADF);
     }
-    ssize_t r = io->ops->sendmsg(io, msg, flags);
+    // The |flags| are typically used to express intent *not* to issue SIGPIPE
+    // via MSG_NOSIGNAL. Applications use this frequently to avoid having to
+    // install additional signal handlers to handle cases where connection has
+    // been closed by remote end.
+    bool nonblocking = (io->ioflag & IOFLAG_NONBLOCK) || (flags & MSG_DONTWAIT);
+    zx_status_t status;
+    for (;;) {
+        status = io->ops->sendmsg(io, msg, flags);
+        if (status != ZX_ERR_SHOULD_WAIT || nonblocking) {
+            break;
+        }
+        fdio_wait(io, FDIO_EVT_WRITABLE | FDIO_EVT_PEER_CLOSED, ZX_TIME_INFINITE, NULL);
+    }
     fdio_release(io);
-    return r < 0 ? STATUS(r) : r;
+    return status < 0 ? STATUS(status) : status;
 }
 
 __EXPORT
@@ -2265,9 +2414,17 @@ ssize_t recvmsg(int fd, struct msghdr* msg, int flags) {
     if (io == NULL) {
         return ERRNO(EBADF);
     }
-    ssize_t r = io->ops->recvmsg(io, msg, flags);
+    bool nonblocking = (io->ioflag & IOFLAG_NONBLOCK) || (flags & MSG_DONTWAIT);
+    zx_status_t status;
+    for (;;) {
+        status = io->ops->recvmsg(io, msg, flags);
+        if (status != ZX_ERR_SHOULD_WAIT || nonblocking) {
+            break;
+        }
+        fdio_wait(io, FDIO_EVT_READABLE | FDIO_EVT_PEER_CLOSED, ZX_TIME_INFINITE, NULL);
+    }
     fdio_release(io);
-    return r < 0 ? STATUS(r) : r;
+    return status < 0 ? STATUS(status) : status;
 }
 
 __EXPORT

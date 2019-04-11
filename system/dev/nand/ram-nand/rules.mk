@@ -27,7 +27,10 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/zircon \
 
-MODULE_FIDL_LIBS := system/fidl/zircon-nand
+MODULE_FIDL_LIBS := system/fidl/fuchsia-hardware-nand
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-nand \
 
 include make/module.mk
 
@@ -43,7 +46,6 @@ TEST_DIR := $(LOCAL_DIR)/test
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/ram-nand.cpp \
-    $(TEST_DIR)/fake-ddk.cpp \
     $(TEST_DIR)/main.cpp \
     $(TEST_DIR)/ram-nand.cpp \
     $(TEST_DIR)/ram-nand-ctl.cpp \
@@ -51,6 +53,9 @@ MODULE_SRCS += \
 MODULE_COMPILEFLAGS := -I$(LOCAL_DIR)
 
 MODULE_STATIC_LIBS := \
+    system/dev/lib/fake_ddk \
+    system/ulib/devmgr-integration-test \
+    system/ulib/devmgr-launcher \
     system/ulib/fbl \
     system/ulib/fzl \
     system/ulib/ddk \
@@ -66,6 +71,9 @@ MODULE_LIBS := \
     system/ulib/unittest \
     system/ulib/zircon \
 
-MODULE_FIDL_LIBS := system/fidl/zircon-nand
+MODULE_FIDL_LIBS := system/fidl/fuchsia-hardware-nand
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-nand \
 
 include make/module.mk

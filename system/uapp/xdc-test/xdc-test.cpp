@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/auto_call.h>
 #include <fbl/unique_fd.h>
@@ -11,6 +14,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <utility>
 
 #include "xdc-init.h"
 
@@ -166,14 +171,14 @@ int main(int argc, char** argv) {
         if (read_file_header(xdc_fd, &file_header) != ZX_OK) {
             return -1;
         }
-        src_fd = fbl::move(xdc_fd);
-        dest_fd = fbl::move(file_fd);
+        src_fd = std::move(xdc_fd);
+        dest_fd = std::move(file_fd);
     } else {
         if (write_file_header(file_fd, xdc_fd, &file_header) != ZX_OK) {
             return -1;
         }
-        src_fd = fbl::move(file_fd);
-        dest_fd = fbl::move(xdc_fd);
+        src_fd = std::move(file_fd);
+        dest_fd = std::move(xdc_fd);
     }
 
     status = transfer(src_fd, file_header.file_size, dest_fd);

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // TODO(joshuseaton): Once std lands in Zircon, simplify everything below.
 
@@ -10,6 +13,8 @@
 #include <lib/async/default.h>
 #include <lib/zircon-internal/xorshiftrand.h>
 #include <zircon/syscalls.h>
+
+#include <utility>
 
 namespace async {
 namespace {
@@ -38,7 +43,6 @@ uint32_t GetRandomSeed() {;
         zx_cprng_draw(&random_seed, sizeof(uint32_t));
     }
 
-    printf("\nTEST_LOOP_RANDOM_SEED=\"%u\"\n", random_seed);
     return random_seed;
 }
 
@@ -67,7 +71,7 @@ public:
         DeadlinesByDispatcher entry{};
         entry.dispatcher = dispatcher;
         entry.deadlines.push_back(deadline);
-        table_.push_back(fbl::move(entry));
+        table_.push_back(std::move(entry));
     }
 
     void CancelTimers(TimerDispatcher* dispatcher) override {
@@ -142,10 +146,15 @@ private:
     TestLoopDispatcher* dispatcher_;
 };
 
-TestLoop::TestLoop()
-    : time_keeper_(new TestLoopTimeKeeper()), initial_state_(GetRandomSeed()), state_(initial_state_) {
+TestLoop::TestLoop() : TestLoop(0) {}
+
+TestLoop::TestLoop(uint32_t state)
+    : time_keeper_(new TestLoopTimeKeeper()),
+      initial_state_((state != 0)? state : GetRandomSeed()), state_(initial_state_) {
     dispatchers_.push_back(fbl::make_unique<TestLoopDispatcher>(time_keeper_.get()));
     async_set_default_dispatcher(dispatchers_[0].get());
+
+    printf("\nTEST_LOOP_RANDOM_SEED=\"%u\"\n", initial_state_);
 }
 
 TestLoop::~TestLoop() {

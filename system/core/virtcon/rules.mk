@@ -1,3 +1,6 @@
+# Copyright 2016 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -27,9 +30,10 @@ LOCAL_LIBS := \
     system/ulib/c
 
 LOCAL_FIDL_LIBS := \
-    system/fidl/fuchsia-display \
+    system/fidl/fuchsia-hardware-display \
     system/fidl/fuchsia-io \
-    system/fidl/zircon-input \
+    system/fidl/fuchsia-mem \
+    system/fidl/fuchsia-hardware-input \
 
 # virtual-console
 

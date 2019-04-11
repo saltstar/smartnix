@@ -1,6 +1,7 @@
 
 #include <trace.h>
 
+#include <ktl/move.h>
 #include <fbl/auto_lock.h>
 
 #include <dev/address_provider/address_provider.h>
@@ -82,7 +83,7 @@ zx_status_t MmioPcieAddressProvider::AddEcamRegion(const PciEcamRegion& ecam) {
 
     // Looks good.  Attempt to allocate and map this ECAM region.
     fbl::AllocChecker ac;
-    fbl::unique_ptr<MappedEcamRegion> region(new (&ac) MappedEcamRegion(ecam));
+    ktl::unique_ptr<MappedEcamRegion> region(new (&ac) MappedEcamRegion(ecam));
     if (!ac.check()) {
         TRACEF("Failed to allocate ECAM region for bus range [0x%02x, 0x%02x]\n",
                ecam.bus_start, ecam.bus_end);
@@ -97,7 +98,7 @@ zx_status_t MmioPcieAddressProvider::AddEcamRegion(const PciEcamRegion& ecam) {
     }
 
     // Everything checks out.  Add the new region to our set of regions and we are done.
-    ecam_regions_.insert(fbl::move(region));
+    ecam_regions_.insert(ktl::move(region));
     return ZX_OK;
 }
 

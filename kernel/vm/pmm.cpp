@@ -8,6 +8,7 @@
 #include <kernel/timer.h>
 #include <lib/console.h>
 #include <lk/init.h>
+#include <new>
 #include <platform.h>
 #include <pow2.h>
 #include <stdlib.h>
@@ -27,7 +28,6 @@
 #include <zircon/thread_annotations.h>
 #include <zircon/time.h>
 #include <zircon/types.h>
-#include <zxcpp/new.h>
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
 
@@ -139,7 +139,9 @@ static int cmd_pmm(int argc, const cmd_args* argv, uint32_t flags) {
             printf("pmm free: issue the same command to stop.\n");
             timer_init(&timer);
             zx_time_t deadline = zx_time_add_duration(current_time(), ZX_SEC(1));
-            timer_set(&timer, deadline, TIMER_SLACK_CENTER, ZX_MSEC(20), &pmm_dump_timer, nullptr);
+            const TimerSlack slack{ZX_MSEC(20), TIMER_SLACK_CENTER};
+            const Deadline slackDeadline(deadline, slack);
+            timer_set(&timer, slackDeadline, &pmm_dump_timer, nullptr);
             show_mem = true;
         } else {
             timer_cancel(&timer);

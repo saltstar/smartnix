@@ -5,9 +5,9 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/gpio-impl.h>
-#include <ddk/protocol/platform-bus.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/gpioimpl.h>
+#include <ddk/protocol/platform/bus.h>
+#include <ddk/protocol/platform/device.h>
 
 #include <soc/mt8167/mt8167-hw.h>
 
@@ -74,7 +74,6 @@ zx_status_t Mt8167::I2cInit() {
     pbus_dev_t i2c_dev = {};
     i2c_dev.name = "i2c0";
     i2c_dev.vid = PDEV_VID_MEDIATEK;
-    i2c_dev.pid = PDEV_PID_MEDIATEK_8167S_REF;
     i2c_dev.did = PDEV_DID_MEDIATEK_I2C;
     i2c_dev.mmio_list = i2c_mmios;
     i2c_dev.mmio_count = countof(i2c_mmios);

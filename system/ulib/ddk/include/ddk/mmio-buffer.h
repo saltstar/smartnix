@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -21,7 +24,7 @@ typedef struct {
 } mmio_pinned_buffer_t;
 
 // Takes raw mmio resources, and maps it into address space. |offset| is the
-// offset from the begining of |vmo| where the mmio region begins. |size|
+// offset from the beginning of |vmo| where the mmio region begins. |size|
 // specifies the size of the mmio region. |offset| + |size| must be less than
 // or equal to the size of |vmo|.
 // Always consumes |vmo|, including in error cases.

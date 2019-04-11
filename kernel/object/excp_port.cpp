@@ -41,7 +41,7 @@ static PortPacket* MakePacket(uint64_t key, uint32_t type, zx_koid_t pid, zx_koi
 zx_status_t ExceptionPort::Create(Type type, fbl::RefPtr<PortDispatcher> port, uint64_t port_key,
                                   fbl::RefPtr<ExceptionPort>* out_eport) {
     fbl::AllocChecker ac;
-    auto eport = new (&ac) ExceptionPort(type, fbl::move(port), port_key);
+    auto eport = new (&ac) ExceptionPort(type, ktl::move(port), port_key);
     if (!ac.check())
         return ZX_ERR_NO_MEMORY;
 
@@ -55,7 +55,9 @@ ExceptionPort::ExceptionPort(Type type, fbl::RefPtr<PortDispatcher> port, uint64
     : type_(type), port_key_(port_key), port_(port) {
     LTRACE_ENTRY_OBJ;
     DEBUG_ASSERT(port_ != nullptr);
-    port_->LinkExceptionPort(this);
+
+    Guard<fbl::Mutex> guard{&lock_};
+    port_->LinkExceptionPortEportLocked(this);
 }
 
 ExceptionPort::~ExceptionPort() {
@@ -108,10 +110,6 @@ void ExceptionPort::SetTarget(const fbl::RefPtr<ThreadDispatcher>& target) {
 void ExceptionPort::OnPortZeroHandles() {
     canary_.Assert();
 
-    // TODO(ZX-988): Add a way to mark specific ports as unbinding quietly
-    // when auto-unbinding.
-    static const bool default_quietness = false;
-
     LTRACE_ENTRY_OBJ;
     Guard<fbl::Mutex> guard{&lock_};
     if (port_ == nullptr) {
@@ -141,7 +139,7 @@ void ExceptionPort::OnPortZeroHandles() {
                 auto job = DownCastDispatcher<JobDispatcher>(&target_);
                 DEBUG_ASSERT(job != nullptr);
                 guard.Release();  // The target may call our ::OnTargetUnbind
-                job->ResetExceptionPort(type_ == Type::JOB_DEBUGGER, default_quietness);
+                job->ResetExceptionPort(type_ == Type::JOB_DEBUGGER);
                 break;
             }
             case Type::PROCESS:
@@ -150,7 +148,7 @@ void ExceptionPort::OnPortZeroHandles() {
                 auto process = DownCastDispatcher<ProcessDispatcher>(&target_);
                 DEBUG_ASSERT(process != nullptr);
                 guard.Release();  // The target may call our ::OnTargetUnbind
-                process->ResetExceptionPort(type_ == Type::DEBUGGER, default_quietness);
+                process->ResetExceptionPort(type_ == Type::DEBUGGER);
                 break;
             }
             case Type::THREAD: {
@@ -158,7 +156,7 @@ void ExceptionPort::OnPortZeroHandles() {
                 auto thread = DownCastDispatcher<ThreadDispatcher>(&target_);
                 DEBUG_ASSERT(thread != nullptr);
                 guard.Release();  // The target may call our ::OnTargetUnbind
-                thread->ResetExceptionPort(default_quietness);
+                thread->ResetExceptionPort();
                 break;
             }
             default:
@@ -203,20 +201,22 @@ void ExceptionPort::OnTargetUnbind() {
         // We may not have a target if the binding (Set*Target) never happened,
         // so don't require that we're bound.
         target_.reset();
-    }
-    // It should actually be safe to hold our lock while calling into
-    // the PortDispatcher, but there's no reason to.
 
-    // Unlink ourselves from the PortDispatcher's list.
-    // No-op if this method was ultimately called from
-    // PortDispatcher:on_zero_handles (via ::OnPortZeroHandles).
-    port->UnlinkExceptionPort(this);
+        // Unlink ourselves from the PortDispatcher's list.
+        // No-op if this method was ultimately called from
+        // PortDispatcher:on_zero_handles (via ::OnPortZeroHandles).
+        port->UnlinkExceptionPortEportLocked(this);
+    }
 
     LTRACE_EXIT_OBJ;
 }
 
 bool ExceptionPort::PortMatches(const PortDispatcher *port, bool allow_null) {
     Guard<fbl::Mutex> guard{&lock_};
+    return PortMatchesLocked(port, allow_null);
+}
+
+bool ExceptionPort::PortMatchesLocked(const PortDispatcher *port, bool allow_null) {
     return (allow_null && port_ == nullptr) || port_.get() == port;
 }
 

@@ -27,7 +27,7 @@ zx_status_t sys_resource_create(zx_handle_t parent_rsrc,
                                 uint32_t options,
                                 uint64_t base,
                                 size_t size,
-                                user_in_ptr<const char> _name,
+                                user_in_ptr<const char> user_name,
                                 size_t name_size,
                                 user_out_handle* resource_out) {
     auto up = ProcessDispatcher::GetCurrent();
@@ -53,10 +53,10 @@ zx_status_t sys_resource_create(zx_handle_t parent_rsrc,
     }
 
     // Extract the name from userspace if one was provided.
-    char name[ZX_MAX_NAME_LEN];
+    char name[ZX_MAX_NAME_LEN] = {0};
     size_t namesize = MIN(name_size,  ZX_MAX_NAME_LEN - 1);
     if (name_size > 0) {
-        if (_name.copy_array_from_user(name, namesize) != ZX_OK) {
+        if (user_name.copy_array_from_user(name, namesize) != ZX_OK) {
             return ZX_ERR_INVALID_ARGS;
         }
     }
@@ -70,5 +70,5 @@ zx_status_t sys_resource_create(zx_handle_t parent_rsrc,
     }
 
     // Create a handle for the child
-    return resource_out->make(fbl::move(child), rights);
+    return resource_out->make(ktl::move(child), rights);
 }

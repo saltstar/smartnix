@@ -8,6 +8,8 @@
 #include <ddktl/mmio.h>
 #include <fbl/unique_ptr.h>
 #include <soc/aml-common/aml-audio-regs.h>
+
+#include <utility>
 /*
     Presently assumes stereo input with both streams multiplexed on the same
     PDM input line. (TODO: support up to 8 channels to refactor gauss to use this)
@@ -58,6 +60,8 @@ public:
 
     uint32_t fifo_depth() const { return fifo_depth_; };
 
+    void ConfigPdmIn(uint8_t mask);
+
 private:
     friend class fbl::unique_ptr<AmlPdmDevice>;
 
@@ -70,14 +74,14 @@ private:
           sysclk_div_(sysclk_div),
           dclk_div_(dclk_div),
           toddr_base_(GetToddrBase(toddr)),
-          pdm_mmio_(fbl::move(pdm_mmio)),
-          audio_mmio_(fbl::move(audio_mmio)){};
+          pdm_mmio_(std::move(pdm_mmio)),
+          audio_mmio_(std::move(audio_mmio)){};
 
     ~AmlPdmDevice() = default;
 
     void ConfigFilters();
 
-    /* Get the resgister block offset for our ddr block */
+    /* Get the register block offset for our ddr block */
     static zx_off_t GetToddrBase(aml_toddr_t ch) {
         switch (ch) {
         case TODDR_A:
@@ -100,11 +104,11 @@ private:
     void PdmInDisable();
     void PdmInEnable();
 
-    /* Get the resgister block offset for our ddr block */
+    /* Get the register block offset for our ddr block */
     zx_off_t GetToddrOffset(zx_off_t off) {
         return toddr_base_ + off;
     }
-    const uint32_t fifo_depth_;
+    const uint32_t fifo_depth_;  // in bytes.
     const aml_toddr_t toddr_ch_; // fromddr channel used by this instance
     const ee_audio_mclk_src_t clk_src_;
     const uint32_t sysclk_div_;

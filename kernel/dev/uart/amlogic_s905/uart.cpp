@@ -103,11 +103,10 @@ static event_t uart_dputc_event = EVENT_INITIAL_VALUE(uart_dputc_event,
 
 static spin_lock_t uart_spinlock = SPIN_LOCK_INITIAL_VALUE;
 
-static void uart_irq(void* arg) {
+static interrupt_eoi uart_irq(void* arg) {
     uintptr_t base = (uintptr_t)arg;
 
     /* read interrupt status and mask */
-
     while ((UARTREG(base, S905_UART_STATUS) & S905_UART_STATUS_RXCOUNT_MASK) > 0) {
         if (cbuf_space_avail(&uart_rx_buf) == 0) {
             break;
@@ -124,6 +123,8 @@ static void uart_irq(void* arg) {
         }
         spin_unlock(&uart_spinlock);
     }
+
+    return IRQ_EOI_DEACTIVATE;
 }
 
 static void s905_uart_init(const void* driver_data, uint32_t length) {
@@ -215,7 +216,7 @@ static int s905_uart_getc(bool wait) {
         return ZX_ERR_INTERNAL;
 
     } else {
-        //Interupts not online yet, use the panic calls for now.
+        //Interrupts not online yet, use the panic calls for now.
         return s905_uart_pgetc();
     }
 }

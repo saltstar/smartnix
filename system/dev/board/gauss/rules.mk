@@ -12,6 +12,7 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/gauss.c \
     $(LOCAL_DIR)/gauss-audio.c \
     $(LOCAL_DIR)/gauss-clk.c \
+    $(LOCAL_DIR)/gauss-sysmem.c \
     $(LOCAL_DIR)/gauss-gpio.c \
     $(LOCAL_DIR)/gauss-i2c.c \
     $(LOCAL_DIR)/gauss-pcie.c \
@@ -31,6 +32,13 @@ MODULE_LIBS := \
     system/ulib/c \
     system/ulib/zircon
 
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-gpioimpl \
+    system/banjo/ddk-protocol-iommu \
+    system/banjo/ddk-protocol-platform-bus \
+    system/banjo/ddk-protocol-platform-device \
+
 include make/module.mk
 
 MODULE := $(LOCAL_DIR).i2c-test
@@ -48,6 +56,10 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/c \
     system/ulib/zircon
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-platform-device \
 
 include make/module.mk
 

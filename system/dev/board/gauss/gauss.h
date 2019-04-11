@@ -5,9 +5,9 @@
 #pragma once
 
 #include <ddk/mmio-buffer.h>
-#include <ddk/protocol/gpio-impl.h>
+#include <ddk/protocol/gpioimpl.h>
 #include <ddk/protocol/iommu.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 #include <soc/aml-a113/a113-clocks.h>
 
 #include <threads.h>
@@ -26,6 +26,7 @@ enum {
     BTI_AUDIO_OUT,
     BTI_USB_XHCI,
     BTI_AML_RAW_NAND,
+    BTI_SYSMEM,
 };
 
 typedef struct {
@@ -39,6 +40,9 @@ typedef struct {
     thrd_t phy_irq_thread;
     a113_clk_dev_t *clocks;
 } gauss_bus_t;
+
+// gauss-sysmem.c
+zx_status_t gauss_sysmem_init(gauss_bus_t* bus);
 
 // gauss-audio.c
 zx_status_t gauss_audio_init(gauss_bus_t* bus);

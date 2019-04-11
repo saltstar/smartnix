@@ -94,19 +94,16 @@ int x86_apic_id_to_cpu_num(uint32_t apic_id);
 // Allocate all of the necessary structures for all of the APs to run.
 zx_status_t x86_allocate_ap_structures(uint32_t *apic_ids, uint8_t cpu_count);
 
-static inline struct x86_percpu *x86_get_percpu(void)
-{
+static inline struct x86_percpu *x86_get_percpu(void) {
     return (struct x86_percpu *)x86_read_gs_offset64(PERCPU_DIRECT_OFFSET);
 }
 
-static inline cpu_num_t arch_curr_cpu_num(void)
-{
-    return x86_get_percpu()->cpu_num;
+static inline cpu_num_t arch_curr_cpu_num(void) {
+    return x86_read_gs_offset32(PERCPU_CPU_NUM_OFFSET);
 }
 
 extern uint8_t x86_num_cpus;
-static uint arch_max_num_cpus(void)
-{
+static uint arch_max_num_cpus(void) {
     return x86_num_cpus;
 }
 

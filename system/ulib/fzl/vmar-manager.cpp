@@ -1,6 +1,11 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/alloc_checker.h>
 #include <lib/fzl/vmar-manager.h>
+
+#include <utility>
 
 namespace fzl {
 
@@ -27,7 +32,7 @@ fbl::RefPtr<VmarManager> VmarManager::Create(size_t size,
         return nullptr;
     }
 
-    ret->parent_ = fbl::move(parent);
+    ret->parent_ = std::move(parent);
     ret->start_ = reinterpret_cast<void*>(child_addr);
     ret->size_ = size;
 

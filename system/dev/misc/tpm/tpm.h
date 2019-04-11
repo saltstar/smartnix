@@ -13,7 +13,7 @@
 #if __cplusplus
 
 #include <ddktl/device.h>
-#include <ddktl/protocol/tpm.h>
+#include <ddktl/protocol/empty-protocol.h>
 #include <fbl/mutex.h>
 #include <fbl/unique_ptr.h>
 
@@ -52,10 +52,10 @@ public:
 };
 
 class Device;
-using DeviceType = ddk::Device<Device, ddk::Ioctlable, ddk::Suspendable>;
+using DeviceType = ddk::Device<Device, ddk::Suspendable>;
 
 class Device : public DeviceType,
-               public ddk::TpmProtocol<Device> {
+               public ddk::EmptyProtocol<ZX_PROTOCOL_TPM> {
 public:
     Device(zx_device_t* parent, fbl::unique_ptr<HardwareInterface> iface);
     ~Device();
@@ -67,8 +67,6 @@ public:
 
     // DDK methods
     void DdkRelease();
-    zx_status_t DdkIoctl(uint32_t op, const void* in_buf, size_t in_len, void* out_buf,
-                         size_t out_len, size_t* actual);
     zx_status_t DdkSuspend(uint32_t flags);
 
     // Register this instance with devmgr and launch the deferred

@@ -1,11 +1,18 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
+#include <endian.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <zircon/compiler.h>
 #include <zircon/types.h>
+
+__BEGIN_CDECLS
 
 typedef struct mac_addr mac_addr_t;
 typedef union ip6_addr ip6_addr_t;
@@ -107,20 +114,13 @@ struct ndp_n_hdr {
 #define NDP_N_MTU 5
 
 #ifndef ntohs
-#define ntohs(n) _swap16(n)
-#define htons(n) _swap16(n)
-static inline uint16_t _swap16(uint16_t n) {
-    return (n >> 8) | (n << 8);
-}
+#define ntohs(n) be16toh(n)
+#define htons(n) htobe16(n)
 #endif
 
 #ifndef ntohl
-#define ntohl(n) _swap32(n)
-#define htonl(n) _swap32(n)
-static inline uint32_t _swap32(uint32_t n) {
-    return (n >> 24) | ((n >> 8) & 0xFF00) |
-           ((n & 0xFF00) << 8) | (n << 24);
-}
+#define ntohl(n) be32toh(n)
+#define htonl(n) htobe32(n)
 #endif
 
 // Formats an IP6 address into the provided buffer (which must be
@@ -182,3 +182,5 @@ unsigned ip6_checksum(ip6_hdr_t* ip, unsigned type, size_t length);
 // network stack via eth_send() or, in the event of an error, release
 // via eth_put_buffer().
 //
+
+__END_CDECLS

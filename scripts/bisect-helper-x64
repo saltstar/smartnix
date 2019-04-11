@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2016 The Fuchsia Authors
+#
+# Use of this source code is governed by a MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT
+
 # Use this to use git bisect with prebuilt binary artifacts. To use, first copy the script somewhere
 # outside of the source tree (so git bisect won't mess with it) then run the following commands:
 #   git bisect start <bad> <good>

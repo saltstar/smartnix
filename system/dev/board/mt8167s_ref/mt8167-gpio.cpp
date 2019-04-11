@@ -5,8 +5,7 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-bus.h>
-
+#include <ddk/protocol/platform/bus.h>
 #include <soc/mt8167/mt8167-hw.h>
 
 #include "mt8167.h"
@@ -40,7 +39,6 @@ zx_status_t Mt8167::GpioInit() {
     pbus_dev_t gpio_dev = {};
     gpio_dev.name = "gpio";
     gpio_dev.vid = PDEV_VID_MEDIATEK;
-    gpio_dev.pid = PDEV_PID_MEDIATEK_8167S_REF;
     gpio_dev.did = PDEV_DID_MEDIATEK_GPIO;
     gpio_dev.mmio_list = gpio_mmios;
     gpio_dev.mmio_count = countof(gpio_mmios);
@@ -52,6 +50,13 @@ zx_status_t Mt8167::GpioInit() {
         zxlogf(ERROR, "%s: ProtocolDeviceAdd failed %d\n", __FUNCTION__, status);
         return status;
     }
+
+    status = device_get_protocol(parent(), ZX_PROTOCOL_GPIO_IMPL, &gpio_impl_);
+    if (status != ZX_OK) {
+        zxlogf(ERROR, "%s: device_get_protocol failed %d\n", __func__, status);
+        return status;
+    }
+
 //#define GPIO_TEST
 #ifdef GPIO_TEST
     const pbus_gpio_t gpio_test_gpios[] = {

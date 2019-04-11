@@ -6,21 +6,22 @@
 
 #include <ddk/device.h>
 #include <ddk/io-buffer.h>
-#include <ddk/protocol/platform-device.h>
 #include <ddk/protocol/platform-device-lib.h>
-#include <ddk/protocol/usb-dci.h>
-#include <ddk/protocol/usb-mode-switch.h>
+#include <ddk/protocol/platform/device.h>
+#include <ddk/protocol/usb/dci.h>
+#include <ddk/protocol/usb/modeswitch.h>
 #include <ddktl/mmio.h>
 #include <fbl/mutex.h>
-#include <fbl/optional.h>
 #include <lib/zx/handle.h>
 #include <lib/zx/interrupt.h>
 #include <zircon/device/usb-peripheral.h>
+#include <zircon/hw/usb.h>
 #include <zircon/listnode.h>
 #include <zircon/types.h>
-#include <zircon/hw/usb.h>
 
 #include <threads.h>
+
+#include <optional>
 
 #include "dwc3-types.h"
 
@@ -81,16 +82,16 @@ typedef struct {
 } dwc3_endpoint_t;
 
 typedef struct {
-    zx_device_t* zxdev;
-    zx_device_t* xhci_dev;
-    zx_device_t* parent;
+    zx_device_t* zxdev = nullptr;
+    zx_device_t* xhci_dev = nullptr;
+    zx_device_t* parent = nullptr;
     pdev_protocol_t pdev;
     usb_mode_switch_protocol_t ums;
     usb_dci_interface_t dci_intf;
-    fbl::optional<ddk::MmioBuffer> mmio;
+    std::optional<ddk::MmioBuffer> mmio;
     zx::handle bti_handle;
 
-    usb_mode_t usb_mode;
+    usb_mode_t usb_mode = USB_MODE_NONE;
     bool start_device_on_xhci_release;
     fbl::Mutex usb_mode_lock; // protects usb_mode and start_device_on_xhci_release
 
@@ -102,7 +103,7 @@ typedef struct {
     dwc3_endpoint_t eps[DWC3_MAX_EPS];
 
     // connection state
-    usb_speed_t speed;
+    usb_speed_t speed = USB_SPEED_UNDEFINED;
 
     // ep0 stuff
     usb_setup_t cur_setup;      // current setup request
@@ -114,9 +115,20 @@ typedef struct {
     // dwc3_endpoint_t.lock should be acquired first
     // if acquiring both locks.
     fbl::Mutex lock;
-    bool configured;
+    bool configured = false;
 } dwc3_t;
 
+// Internal context for USB requests
+typedef struct {
+     // callback to the upper layer
+     usb_request_complete_t complete_cb;
+     // for queueing requests internally
+     list_node_t node;
+} dwc_usb_req_internal_t;
+
+#define USB_REQ_TO_INTERNAL(req) \
+    ((dwc_usb_req_internal_t *)((uintptr_t)(req) + sizeof(usb_request_t)))
+#define INTERNAL_TO_USB_REQ(ctx) ((usb_request_t *)((uintptr_t)(ctx) - sizeof(usb_request_t)))
 
 static inline ddk::MmioBuffer* dwc3_mmio(dwc3_t* dwc) {
     return &*dwc->mmio;
@@ -154,6 +166,7 @@ void dwc3_ep_xfer_complete(dwc3_t* dwc, unsigned ep_num);
 void dwc3_ep_xfer_not_ready(dwc3_t* dwc, unsigned ep_num, unsigned stage);
 zx_status_t dwc3_ep_set_stall(dwc3_t* dwc, unsigned ep_num, bool stall);
 void dwc3_ep_end_transfers(dwc3_t* dwc, unsigned ep_num, zx_status_t reason);
+void dwc_ep_read_trb(dwc3_endpoint_t* ep, dwc3_trb_t* trb, dwc3_trb_t* out_trb);
 
 // Endpoint 0
 zx_status_t dwc3_ep0_init(dwc3_t* dwc);

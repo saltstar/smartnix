@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -12,6 +15,8 @@
 #include <stdint.h>
 #include <lib/syslog/wire_format.h>
 
+#include <utility>
+
 namespace logger {
 
 class LoggerImpl : public fbl::SinglyLinkedListable<fbl::unique_ptr<LoggerImpl>> {
@@ -24,7 +29,7 @@ public:
     zx_status_t Begin(async_dispatcher_t* dispatcher);
 
     void set_error_handler(ErrorCallback error_handler) {
-        error_handler_ = fbl::move(error_handler);
+        error_handler_ = std::move(error_handler);
     }
 
     LoggerImpl* GetKey() const { return const_cast<LoggerImpl*>(this); }

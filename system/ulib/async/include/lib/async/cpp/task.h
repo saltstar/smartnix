@@ -1,9 +1,14 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <fbl/function.h>
 #include <lib/async/task.h>
 #include <lib/zx/time.h>
+
+#include <utility>
 
 namespace async {
 
@@ -139,7 +144,7 @@ public:
     explicit Task(Handler handler = nullptr);
     ~Task();
 
-    void set_handler(Handler handler) { handler_ = fbl::move(handler); }
+    void set_handler(Handler handler) { handler_ = std::move(handler); }
     bool has_handler() const { return !!handler_; }
 
 private:
@@ -184,7 +189,7 @@ public:
     explicit TaskClosure(fbl::Closure handler = nullptr);
     ~TaskClosure();
 
-    void set_handler(fbl::Closure handler) { handler_ = fbl::move(handler); }
+    void set_handler(fbl::Closure handler) { handler_ = std::move(handler); }
     bool has_handler() const { return !!handler_; }
 
 private:

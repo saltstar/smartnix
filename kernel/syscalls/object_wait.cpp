@@ -61,13 +61,16 @@ zx_status_t sys_object_wait_one(zx_handle_t handle_value,
     auto koid = static_cast<uint32_t>(up->GetKoidForHandle(handle_value));
     ktrace(TAG_WAIT_ONE, koid, signals, (uint32_t)deadline, (uint32_t)(deadline >> 32));
 
+    const TimerSlack slack = up->GetTimerSlackPolicy();
+    const Deadline slackDeadline(deadline, slack);
+
     // event_wait() will return ZX_OK if already signaled,
     // even if the deadline has passed.  It will return ZX_ERR_TIMED_OUT
     // after the deadline passes if the event has not been
     // signaled.
     {
         ThreadDispatcher::AutoBlocked by(ThreadDispatcher::Blocked::WAIT_ONE);
-        result = event.Wait(deadline);
+        result = event.Wait(slackDeadline);
     }
 
     // Regardless of wait outcome, we must call End().
@@ -91,10 +94,18 @@ zx_status_t sys_object_wait_one(zx_handle_t handle_value,
 zx_status_t sys_object_wait_many(user_inout_ptr<zx_wait_item_t> user_items, size_t count, zx_time_t deadline) {
     LTRACEF("count %zu\n", count);
 
+    const auto up = ProcessDispatcher::GetCurrent();
+    const Deadline slackDeadline(deadline, up->GetTimerSlackPolicy());
+
     if (!count) {
-        zx_status_t result = thread_sleep_etc(deadline, /*interruptable=*/true);
-        if (result != ZX_OK)
-            return result;
+        const zx_time_t now = current_time();
+        {
+            ThreadDispatcher::AutoBlocked by(ThreadDispatcher::Blocked::WAIT_MANY);
+            zx_status_t result = thread_sleep_etc(slackDeadline, /* interruptable */ true, now);
+            if (result != ZX_OK) {
+                return result;
+            }
+        }
         return ZX_ERR_TIMED_OUT;
     }
 
@@ -112,7 +123,6 @@ zx_status_t sys_object_wait_many(user_inout_ptr<zx_wait_item_t> user_items, size
     zx_status_t result = ZX_OK;
     size_t num_added = 0;
     {
-        auto up = ProcessDispatcher::GetCurrent();
         Guard<fbl::Mutex> guard{up->handle_table_lock()};
 
         for (; num_added != count; ++num_added) {
@@ -143,7 +153,7 @@ zx_status_t sys_object_wait_many(user_inout_ptr<zx_wait_item_t> user_items, size
     // signaled.
     {
         ThreadDispatcher::AutoBlocked by(ThreadDispatcher::Blocked::WAIT_MANY);
-        result = event.Wait(deadline);
+        result = event.Wait(slackDeadline);
     }
 
     // Regardless of wait outcome, we must call End().

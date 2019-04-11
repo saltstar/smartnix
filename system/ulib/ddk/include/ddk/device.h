@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -62,7 +65,6 @@ typedef struct zx_protocol_device {
     zx_status_t (*get_protocol)(void* ctx, uint32_t proto_id, void* protocol);
 
     //@ ## open
-    //
     // The open hook is called when a device is opened via the device filesystem,
     // or when an existing open connection to a device is cloned (for example,
     // when a device fd is shared with another process).  The default open hook,
@@ -81,6 +83,7 @@ typedef struct zx_protocol_device {
     zx_status_t (*open)(void* ctx, zx_device_t** dev_out, uint32_t flags);
 
     //@ ## open_at
+    // DEPRECATED: See ZX-3277.
     // The open_at hook is called in the event that the open path to the device
     // contains segments after the device name itself.  For example, if a device
     // exists as `/dev/misc/foo` and an attempt is made to `open("/dev/misc/foo/bar",...)`,
@@ -221,6 +224,9 @@ typedef struct zx_protocol_device {
     // The txn provided to respond to the message is only valid for
     // the duration of the message() call.  It must not be cached
     // and used later.
+    //
+    // If this method returns anything other than ZX_OK, the underlying
+    // connection is closed.
     zx_status_t (*message)(void* ctx, fidl_msg_t* msg, fidl_txn_t* txn);
 } zx_protocol_device_t;
 
@@ -257,6 +263,10 @@ zx_status_t device_ioctl(zx_device_t* dev, uint32_t op,
 // searches parent devices to find a match
 zx_status_t device_get_metadata(zx_device_t* dev, uint32_t type, void* buf, size_t buflen,
                                 size_t* actual);
+
+// retrieves metadata size for a specific device
+// searches parent devices to find a match
+zx_status_t device_get_metadata_size(zx_device_t* dev, uint32_t type, size_t* out_size);
 
 // Adds metadata to a specific device.
 zx_status_t device_add_metadata(zx_device_t* dev, uint32_t type, const void* data, size_t length);

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <runtests-utils/runtests-utils.h>
 
@@ -14,6 +17,8 @@
 #include <fbl/string.h>
 #include <fbl/vector.h>
 #include <unittest/unittest.h>
+
+#include <utility>
 
 namespace runtests {
 namespace {
@@ -208,7 +213,7 @@ int DiscoverAndRunTests(const RunTestFn& RunTest, int argc, const char* const* a
         if (arg == "--") {
             break;
         }
-        test_dir_globs.push_back(fbl::move(arg));
+        test_dir_globs.push_back(std::move(arg));
     }
     i++; // Skip "--" itself
     for (; i < argc; ++i) {
@@ -285,7 +290,7 @@ int DiscoverAndRunTests(const RunTestFn& RunTest, int argc, const char* const* a
     // TODO(mknyszek): Sort test_paths for deterministic behavior. Should be easy after ZX-1751.
     stopwatch->Start();
     int failed_count = 0;
-    fbl::Vector<fbl::unique_ptr<Result>> results;
+    fbl::Vector<std::unique_ptr<Result>> results;
     if (!RunTests(RunTest, test_paths, test_args, output_dir, kOutputFileName, verbosity,
                   &failed_count, &results)) {
         return EXIT_FAILURE;
@@ -321,7 +326,7 @@ int DiscoverAndRunTests(const RunTestFn& RunTest, int argc, const char* const* a
     if (failed_count) {
         printf("\nThe following tests failed:\n");
     }
-    for (const fbl::unique_ptr<Result>& result : results) {
+    for (const std::unique_ptr<Result>& result : results) {
         switch (result->launch_status) {
         case SUCCESS:
             break;

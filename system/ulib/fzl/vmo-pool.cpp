@@ -1,7 +1,12 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <lib/fzl/vmo-pool.h>
 #include <lib/zx/vmar.h>
 #include <string.h>
+
+#include <utility>
 
 namespace fzl {
 
@@ -22,7 +27,7 @@ zx_status_t VmoPool::Init(const zx::vmo* vmos, size_t num_vmos) {
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
-    buffers_ = fbl::move(buffers);
+    buffers_ = std::move(buffers);
     free_buffers_.clear_unsafe();
 
     zx_status_t status;

@@ -61,11 +61,25 @@ private:
 #if !defined _KERNEL && defined __Fuchsia__
 class VmoStorage {
 public:
-    DISALLOW_COPY_ASSIGN_AND_MOVE(VmoStorage);
+    DISALLOW_COPY_AND_ASSIGN_ALLOW_MOVE(VmoStorage);
     VmoStorage() :
         vmo_(ZX_HANDLE_INVALID),
         mapped_addr_(0),
         size_(0) {}
+
+    VmoStorage(VmoStorage&& rhs)
+        : vmo_(std::move(rhs.vmo_)), mapped_addr_(rhs.mapped_addr_), size_(rhs.size_) {
+        rhs.mapped_addr_ = 0;
+    }
+
+    VmoStorage& operator=(VmoStorage&& rhs) {
+        Release();
+        vmo_ = std::move(rhs.vmo_);
+        mapped_addr_ = rhs.mapped_addr_;
+        size_ = rhs.size_;
+        rhs.mapped_addr_ = 0;
+        return *this;
+    }
 
     ~VmoStorage() {
         Release();
@@ -133,12 +147,13 @@ public:
 
     void* GetData() { ZX_DEBUG_ASSERT(mapped_addr_ != 0); return (void*) mapped_addr_; }
     const void* GetData() const { ZX_DEBUG_ASSERT(mapped_addr_ != 0); return (void*) mapped_addr_; }
-    zx_handle_t GetVmo() const { ZX_DEBUG_ASSERT(mapped_addr_ != 0); return vmo_.get(); }
+    const zx::vmo& GetVmo() const { ZX_DEBUG_ASSERT(mapped_addr_ != 0); return vmo_; }
 private:
     void Release() {
         if (mapped_addr_ != 0) {
             zx_vmar_unmap(zx_vmar_root_self(), mapped_addr_, size_);
         }
+        mapped_addr_ = 0;
     }
     zx::vmo vmo_;
     uintptr_t mapped_addr_;

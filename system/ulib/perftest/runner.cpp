@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <perftest/runner.h>
 
@@ -283,8 +286,8 @@ void RegisterTest(const char* name, fbl::Function<TestFunc> test_func) {
     if (!g_tests) {
         g_tests = new internal::TestList;
     }
-    internal::NamedTest new_test{name, fbl::move(test_func)};
-    g_tests->push_back(fbl::move(new_test));
+    internal::NamedTest new_test{name, std::move(test_func)};
+    g_tests->push_back(std::move(new_test));
 }
 
 bool RunTest(const char* test_suite, const char* test_name,

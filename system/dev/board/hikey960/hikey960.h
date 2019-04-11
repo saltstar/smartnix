@@ -5,7 +5,7 @@
 #pragma once
 
 #include <ddk/io-buffer.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 #include <soc/hi3660/hi3660.h>
 
 // BTI IDs for our devices
@@ -14,6 +14,8 @@ enum {
     BTI_USB_DWC3,
     BTI_DSI,
     BTI_MALI,
+    BTI_UFS_DWC3,
+    BTI_SYSMEM,
 };
 
 typedef struct {
@@ -26,6 +28,9 @@ typedef struct {
 
 // hikey960-devices.c
 zx_status_t hikey960_add_devices(hikey960_t* bus);
+
+// hikey960-sysmem.c
+zx_status_t hikey960_sysmem_init(hikey960_t* hikey);
 
 // hikey960-i2c.c
 zx_status_t hikey960_i2c_init(hikey960_t* bus);

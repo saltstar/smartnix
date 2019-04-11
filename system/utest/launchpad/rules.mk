@@ -11,11 +11,14 @@ MODULE_TYPE := usertest
 MODULE_NAME := launchpad-test
 
 MODULE_SRCS += \
-	$(LOCAL_DIR)/launchpad.c
+	$(LOCAL_DIR)/launchpad.cpp
 
 MODULE_STATIC_LIBS := \
     system/ulib/elfload \
-    system/ulib/runtime
+    system/ulib/fbl \
+    system/ulib/runtime \
+    system/ulib/zx \
+    system/ulib/zxcpp
 
 MODULE_LIBS := \
     system/ulib/unittest \

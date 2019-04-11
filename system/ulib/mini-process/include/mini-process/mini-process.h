@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -46,6 +49,9 @@ zx_status_t start_mini_process_etc(zx_handle_t process, zx_handle_t thread,
                                    zx_handle_t vmar,
                                    zx_handle_t transferred_handle,
                                    zx_handle_t* cntrl_channel);
+
+// Starts a no-VDSO infinite-loop thread.
+zx_status_t start_mini_process_thread(zx_handle_t thread, zx_handle_t vmar);
 
 // Execute in the mini process any set of the MINIP_CMD_ commands above.
 // The |cntrl_channel| should be the same as the one returned by

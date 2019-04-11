@@ -26,17 +26,7 @@ static_assert((DLOG_MAX_RECORD & 3) == 0, "E_DONT_DO_THAT");
 
 static uint8_t DLOG_DATA[DLOG_SIZE];
 
-static dlog_t DLOG = {
-    .lock = SPIN_LOCK_INITIAL_VALUE,
-    .head = 0,
-    .tail = 0,
-    .data = DLOG_DATA,
-    .panic = false,
-    .event = EVENT_INITIAL_VALUE(DLOG.event, 0, EVENT_FLAG_AUTOUNSIGNAL),
-
-    .readers_lock = MUTEX_INITIAL_VALUE(DLOG.readers_lock),
-    .readers = LIST_INITIAL_VALUE(DLOG.readers),
-};
+static dlog_t DLOG(DLOG_DATA);
 
 static thread_t* notifier_thread;
 static thread_t* dumper_thread;
@@ -316,7 +306,7 @@ void dlog_serial_write(const char* data, size_t len) {
         __kernel_serial_write(data, len);
     } else {
         // Otherwise we can use a mutex and avoid time under spinlock
-        static mutex_t lock = MUTEX_INITIAL_VALUE(lock);
+        static mutex_t lock;
         mutex_acquire(&lock);
         platform_dputs_thread(data, len);
         mutex_release(&lock);
@@ -375,6 +365,12 @@ static int debuglog_dumper(void* arg) {
     return 0;
 }
 
+static void print_mmap(uintptr_t bias, void* begin, void* end, const char* perm) {
+    uintptr_t start = reinterpret_cast<uintptr_t>(begin);
+    size_t size = (uintptr_t)end - start;
+    dprintf(INFO, "{{{mmap:%#lx:%#lx:load:0:%s:%#lx}}}\n", start, size, perm, start + bias);
+}
+
 void dlog_bluescreen_init(void) {
     // if we're panicing, stop processing log writes
     // they'll fail over to kernel console and serial
@@ -390,6 +386,13 @@ void dlog_bluescreen_init(void) {
 
     // Log the ELF build ID in the format the symbolizer scripts understand.
     if (version.elf_build_id[0] != '\0') {
+        uintptr_t bias = KERNEL_BASE - reinterpret_cast<uintptr_t>(__code_start);
+        dprintf(INFO, "{{{module:0:kernel:elf:%s}}}\n", version.elf_build_id);
+        // These four mappings match the mappings printed by vm_init().
+        print_mmap(bias, __code_start, __code_end, "rx");
+        print_mmap(bias, __rodata_start, __rodata_end, "r");
+        print_mmap(bias, __data_start, __data_end, "rw");
+        print_mmap(bias, __bss_start, _end, "rw");
         dprintf(INFO, "dso: id=%s base=%#lx name=zircon.elf\n",
                 version.elf_build_id, (uintptr_t)__code_start);
     }

@@ -9,7 +9,6 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := driver
 
 MODULE_SRCS := \
-    $(LOCAL_DIR)/binding.c \
     $(LOCAL_DIR)/imx227.cpp \
 
 MODULE_HEADER_DEPS := \
@@ -29,8 +28,14 @@ MODULE_LIBS := \
     system/ulib/zircon \
     system/ulib/c \
 
-MODULE_FIDL_LIBS := \
-    system/fidl/zircon-camera \
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-clk \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-platform-bus \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-mipicsi \
+    system/banjo/ddk-protocol-ispimpl \
 
 include make/module.mk
 

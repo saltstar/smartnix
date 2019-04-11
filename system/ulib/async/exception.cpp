@@ -1,5 +1,10 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <lib/async/cpp/exception.h>
+
+#include <utility>
 
 namespace async {
 
@@ -55,7 +60,7 @@ zx_status_t ExceptionBase::Resume(zx_handle_t task, uint32_t options) {
 Exception::Exception(zx_handle_t task, uint32_t options,
                      Handler handler)
     : ExceptionBase(task, options, &Exception::CallHandler),
-      handler_(fbl::move(handler)) {}
+      handler_(std::move(handler)) {}
 
 Exception::~Exception() = default;
 

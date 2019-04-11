@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -18,5 +21,7 @@
 
 // Enable trace printf()s
 
-#define FS_TRACE_ERROR(fmt...) fprintf(stderr, fmt)
+#define FS_TRACE_DEBUG(fmt...)
+#define FS_TRACE_INFO(fmt...) printf(fmt)
 #define FS_TRACE_WARN(fmt...) fprintf(stderr, fmt)
+#define FS_TRACE_ERROR(fmt...) fprintf(stderr, fmt)

@@ -9,7 +9,7 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := userlib
 
 MODULE_SRCS := \
-    $(LOCAL_DIR)/sysmem.cpp
+    $(LOCAL_DIR)/sysmem.cpp \
 
 MODULE_COMPILEFLAGS += -fvisibility=hidden
 
@@ -22,6 +22,7 @@ MODULE_HEADER_DEPS := \
 MODULE_STATIC_LIBS := \
     system/ulib/async \
     system/ulib/fidl \
+    system/ulib/fidl-async \
     system/ulib/fbl \
     system/ulib/zx \
 

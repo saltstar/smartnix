@@ -5,13 +5,14 @@
 #include "hidctl.h"
 
 #include <ddk/debug.h>
-#include <zircon/compiler.h>
 #include <fbl/auto_lock.h>
-#include <fbl/type_support.h>
 #include <pretty/hexdump.h>
+#include <zircon/compiler.h>
 
 #include <stdio.h>
 #include <string.h>
+
+#include <utility>
 
 namespace hidctl {
 
@@ -48,7 +49,7 @@ zx_status_t HidCtl::DdkIoctl(uint32_t op, const void* in_buf, size_t in_len, voi
 
 
         auto hiddev = fbl::unique_ptr<hidctl::HidDevice>(
-                new hidctl::HidDevice(zxdev(), config, fbl::move(local)));
+                new hidctl::HidDevice(zxdev(), config, std::move(local)));
 
         status = hiddev->DdkAdd("hidctl-dev");
         if (status != ZX_OK) {
@@ -83,7 +84,7 @@ HidDevice::HidDevice(zx_device_t* device, const hid_ioctl_config* config, zx::so
     dev_class_(config->dev_class),
     report_desc_(new uint8_t[config->rpt_desc_len]),
     report_desc_len_(config->rpt_desc_len),
-    data_(fbl::move(data)) {
+    data_(std::move(data)) {
     ZX_DEBUG_ASSERT(data_.is_valid());
     memcpy(report_desc_.get(), config->rpt_desc, report_desc_len_);
     int ret = thrd_create_with_name(&thread_, hid_device_thread, reinterpret_cast<void*>(this),
@@ -117,10 +118,10 @@ zx_status_t HidDevice::HidbusStart(const hidbus_ifc_t* ifc) {
     zxlogf(TRACE, "hidctl: start\n");
 
     fbl::AutoLock lock(&lock_);
-    if (proxy_.is_valid()) {
+    if (client_.is_valid()) {
         return ZX_ERR_ALREADY_BOUND;
     }
-    proxy_ = ddk::HidbusIfcProxy(ifc);
+    client_ = ddk::HidbusIfcClient(ifc);
     return ZX_OK;
 }
 
@@ -128,7 +129,7 @@ void HidDevice::HidbusStop() {
     zxlogf(TRACE, "hidctl: stop\n");
 
     fbl::AutoLock lock(&lock_);
-    proxy_.clear();
+    client_.clear();
 }
 
 zx_status_t HidDevice::HidbusGetDescriptor(uint8_t desc_type, void** data, size_t* len) {
@@ -244,7 +245,7 @@ void HidDevice::Shutdown() {
     fbl::AutoLock lock(&lock_);
     if (data_.is_valid()) {
         // Prevent further writes to the socket
-        zx_status_t status = data_.write(ZX_SOCKET_SHUTDOWN_READ, nullptr, 0, nullptr);
+        zx_status_t status = data_.shutdown(ZX_SOCKET_SHUTDOWN_READ);
         ZX_DEBUG_ASSERT(status == ZX_OK);
         // Signal the thread to shutdown
         status = data_.signal(0, HID_SHUTDOWN);
@@ -271,8 +272,8 @@ zx_status_t HidDevice::Recv(uint8_t* buffer, uint32_t capacity) {
             zxlogf(TRACE, "hidctl: received %zu bytes\n", actual);
             hexdump8_ex(buffer, actual, 0);
         }
-        if (proxy_.is_valid()) {
-            proxy_.IoQueue(buffer, actual);
+        if (client_.is_valid()) {
+            client_.IoQueue(buffer, actual);
         }
     }
     return ZX_OK;

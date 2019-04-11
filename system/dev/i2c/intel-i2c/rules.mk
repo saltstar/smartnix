@@ -19,6 +19,14 @@ MODULE_LIBS := \
 
 MODULE_STATIC_LIBS := \
     system/ulib/ddk \
+    system/ulib/fidl \
     system/ulib/sync \
+
+MODULE_FIDL_LIBS := system/fidl/fuchsia-hardware-i2c
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-i2cimpl \
+    system/banjo/ddk-protocol-pci \
 
 include make/module.mk

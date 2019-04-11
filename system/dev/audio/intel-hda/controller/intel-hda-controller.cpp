@@ -17,6 +17,9 @@
 #include <intel-hda/utils/intel-hda-registers.h>
 #include <intel-hda/utils/intel-hda-proto.h>
 
+#include <atomic>
+#include <utility>
+
 #include "debug-logging.h"
 #include "intel-hda-codec.h"
 #include "intel-hda-controller.h"
@@ -27,7 +30,7 @@ namespace intel_hda {
 
 // static member variable declaration
 constexpr uint        IntelHDAController::RIRB_RESERVED_RESPONSE_SLOTS;
-fbl::atomic_uint32_t IntelHDAController::device_id_gen_(0u);
+std::atomic_uint32_t IntelHDAController::device_id_gen_(0u);
 
 // Device interface thunks
 #define DEV(_ctx)  static_cast<IntelHDAController*>(_ctx)
@@ -59,7 +62,7 @@ zx_protocol_device_t IntelHDAController::CONTROLLER_DEVICE_THUNKS = {
 #undef DEV
 
 IntelHDAController::IntelHDAController()
-    : state_(static_cast<StateStorage>(State::STARTING)),
+    : state_(State::STARTING),
       id_(device_id_gen_.fetch_add(1u)) {
     snprintf(log_prefix_, sizeof(log_prefix_), "IHDA Controller (unknown BDF)");
 }
@@ -132,7 +135,7 @@ fbl::RefPtr<IntelHDAStream> IntelHDAController::AllocateStream(IntelHDAStream::T
 
 void IntelHDAController::ReturnStream(fbl::RefPtr<IntelHDAStream>&& ptr) {
     fbl::AutoLock lock(&stream_pool_lock_);
-    ReturnStreamLocked(fbl::move(ptr));
+    ReturnStreamLocked(std::move(ptr));
 }
 
 void IntelHDAController::ReturnStreamLocked(fbl::RefPtr<IntelHDAStream>&& ptr) {
@@ -148,7 +151,7 @@ void IntelHDAController::ReturnStreamLocked(fbl::RefPtr<IntelHDAStream>&& ptr) {
     }
 
     ptr->Configure(IntelHDAStream::Type::INVALID, 0);
-    dst->insert(fbl::move(ptr));
+    dst->insert(std::move(ptr));
 }
 
 uint8_t IntelHDAController::AllocateStreamTagLocked(bool input) {
@@ -226,7 +229,7 @@ zx_status_t IntelHDAController::DeviceIoctl(uint32_t op,
 
     return HandleDeviceIoctl(op, out_buf, out_len, out_actual,
                              default_domain_,
-                             fbl::move(phandler),
+                             std::move(phandler),
                              nullptr);
 }
 

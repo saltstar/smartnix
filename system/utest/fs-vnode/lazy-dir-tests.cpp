@@ -5,7 +5,10 @@
 #include <fbl/vector.h>
 #include <fs/lazy-dir.h>
 #include <fs/pseudo-file.h>
+#include <fs/vfs.h>
 #include <unittest/unittest.h>
+
+#include <utility>
 
 namespace {
 
@@ -66,7 +69,7 @@ public:
     }
 
     void AddContent(TestContent content) {
-        contents_.push_back(fbl::move(content));
+        contents_.push_back(std::move(content));
     }
 
     fbl::RefPtr<fs::Vnode> last_output_file;

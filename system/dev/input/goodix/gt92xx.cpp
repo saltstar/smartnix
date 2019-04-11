@@ -5,10 +5,12 @@
 #include <ddk/binding.h>
 #include <ddk/debug.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/device.h>
 #include <fbl/auto_call.h>
 #include <fbl/auto_lock.h>
 #include <fbl/unique_ptr.h>
+
+#include <utility>
 
 #include "gt92xx.h"
 
@@ -67,7 +69,7 @@ int Gt92xxDevice::Thread() {
                 Read(GT_REG_REPORTS, reinterpret_cast<uint8_t*>(&reports),
                      static_cast<uint8_t>(sizeof(FingerReport) * kMaxPoints));
             if (status == ZX_OK) {
-                fbl::AutoLock lock(&proxy_lock_);
+                fbl::AutoLock lock(&client_lock_);
                 gt_rpt_.rpt_id = GT92XX_RPT_ID_TOUCH;
                 gt_rpt_.contact_count = num_reports;
                 // We are reusing same HID report as ft3x77 to simplify astro integration
@@ -78,8 +80,8 @@ int Gt92xxDevice::Thread() {
                     gt_rpt_.fingers[i].y = reports[i].x;
                     gt_rpt_.fingers[i].x = reports[i].y;
                 }
-                if (proxy_.is_valid()) {
-                    proxy_.IoQueue(reinterpret_cast<uint8_t*>(&gt_rpt_), sizeof(gt92xx_touch_t));
+                if (client_.is_valid()) {
+                    client_.IoQueue(reinterpret_cast<uint8_t*>(&gt_rpt_), sizeof(gt92xx_touch_t));
                 }
             }
             // Clear the touch status
@@ -106,14 +108,14 @@ zx_status_t Gt92xxDevice::Create(zx_device_t* device) {
     auto i2c = pdev.GetI2c(0);
     auto intr = pdev.GetGpio(0);
     auto reset = pdev.GetGpio(1);
-    if (!i2c || !intr || !reset) {
+    if (!i2c.is_valid() || !intr.is_valid() || !reset.is_valid()) {
         zxlogf(ERROR, "%s failed to allocate gpio or i2c\n", __func__);
         return ZX_ERR_NO_RESOURCES;
     }
     auto goodix_dev = fbl::make_unique<Gt92xxDevice>(device,
-                                                     fbl::move(*i2c),
-                                                     fbl::move(*intr),
-                                                     fbl::move(*reset));
+                                                     std::move(i2c),
+                                                     std::move(intr),
+                                                     std::move(reset));
 
     status = goodix_dev->Init();
     if (status != ZX_OK) {
@@ -133,7 +135,7 @@ zx_status_t Gt92xxDevice::Create(zx_device_t* device) {
                                     "gt92xx-thread");
     ZX_DEBUG_ASSERT(ret == thrd_success);
 
-    status = goodix_dev->DdkAdd("gt92xx HidDevice\n");
+    status = goodix_dev->DdkAdd("gt92xx HidDevice");
     if (status != ZX_OK) {
         zxlogf(ERROR, "gt92xx: Could not create hid device: %d\n", status);
         return status;
@@ -180,7 +182,7 @@ zx_status_t Gt92xxDevice::Init() {
     // during startup
     Write(GT_REG_TOUCH_STATUS, 0);
 
-    status = int_gpio_.GetInterrupt(ZX_INTERRUPT_MODE_EDGE_HIGH, irq_.reset_and_get_address());
+    status = int_gpio_.GetInterrupt(ZX_INTERRUPT_MODE_EDGE_HIGH, &irq_);
 
     return status;
 }
@@ -225,8 +227,8 @@ zx_status_t Gt92xxDevice::ShutDown() {
     irq_.destroy();
     thrd_join(thread_, NULL);
     {
-        fbl::AutoLock lock(&proxy_lock_);
-        proxy_.clear();
+        fbl::AutoLock lock(&client_lock_);
+        client_.clear();
     }
     return ZX_OK;
 }
@@ -273,17 +275,17 @@ zx_status_t Gt92xxDevice::HidbusSetProtocol(uint8_t protocol) {
 }
 
 void Gt92xxDevice::HidbusStop() {
-    fbl::AutoLock lock(&proxy_lock_);
-    proxy_.clear();
+    fbl::AutoLock lock(&client_lock_);
+    client_.clear();
 }
 
 zx_status_t Gt92xxDevice::HidbusStart(const hidbus_ifc_t* ifc) {
-    fbl::AutoLock lock(&proxy_lock_);
-    if (proxy_.is_valid()) {
+    fbl::AutoLock lock(&client_lock_);
+    if (client_.is_valid()) {
         zxlogf(ERROR, "gt92xx: Already bound!\n");
         return ZX_ERR_ALREADY_BOUND;
     } else {
-        proxy_ = ddk::HidbusIfcProxy(ifc);
+        client_ = ddk::HidbusIfcClient(ifc);
         zxlogf(INFO, "gt92xx: started\n");
     }
     return ZX_OK;

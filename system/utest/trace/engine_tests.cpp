@@ -6,6 +6,9 @@
 
 #include <threads.h>
 
+#include <atomic>
+#include <utility>
+
 #include <fbl/function.h>
 #include <fbl/string.h>
 #include <fbl/string_printf.h>
@@ -13,8 +16,23 @@
 #include <lib/zx/event.h>
 #include <trace/event.h>
 #include <trace-provider/handler.h>
+#include <trace-test-utils/squelch.h>
 
 namespace {
+
+using trace_site_atomic_state_t = std::atomic<trace_site_state_t>;
+
+// These are internal values to the trace engine. They are not exported to any
+// user-visible header, so we define our own copies here.
+constexpr trace_site_state_t kSiteStateDisabled = 1u;
+constexpr trace_site_state_t kSiteStateEnabled = 2u;
+constexpr trace_site_state_t kSiteStateFlagsMask = 3u;
+
+trace_site_state_t get_site_state(trace_site_t& site) {
+    auto state_ptr = reinterpret_cast<trace_site_atomic_state_t*>(&site.state);
+    return state_ptr->load(std::memory_order_relaxed);
+}
+
 int RunClosure(void* arg) {
     auto closure = static_cast<fbl::Closure*>(arg);
     (*closure)();
@@ -25,7 +43,7 @@ int RunClosure(void* arg) {
 void RunThread(fbl::Closure closure) {
     thrd_t thread;
     int result = thrd_create(&thread, RunClosure,
-                             new fbl::Closure(fbl::move(closure)));
+                             new fbl::Closure(std::move(closure)));
     ZX_ASSERT(result == thrd_success);
 
     result = thrd_join(thread, nullptr);
@@ -56,6 +74,15 @@ bool test_state() {
     BEGIN_TRACE_TEST;
 
     EXPECT_EQ(TRACE_STOPPED, trace_state());
+
+    fixture_start_tracing();
+    EXPECT_EQ(TRACE_STARTED, trace_state());
+
+    fixture_stop_tracing();
+    EXPECT_EQ(TRACE_STOPPED, trace_state());
+
+    // Do the test twice so that we test starting again after just having
+    // stopped.
 
     fixture_start_tracing();
     EXPECT_EQ(TRACE_STARTED, trace_state());
@@ -96,6 +123,136 @@ bool TestIsCategoryEnabled() {
     EXPECT_FALSE(trace_is_category_enabled("+enabled"));
     EXPECT_FALSE(trace_is_category_enabled("-disabled"));
     EXPECT_FALSE(trace_is_category_enabled(""));
+
+    END_TRACE_TEST;
+}
+
+bool TestAcquireContextForCategory() {
+    BEGIN_TRACE_TEST;
+
+    trace_string_ref_t category_ref;
+    trace_context_t* context;
+
+    context = trace_acquire_context_for_category("+enabled", &category_ref);
+    EXPECT_NULL(context);
+    context = trace_acquire_context_for_category("-disabled", &category_ref);
+    EXPECT_NULL(context);
+
+    fixture_start_tracing();
+    context = trace_acquire_context_for_category("+enabled", &category_ref);
+    EXPECT_NONNULL(context);
+    EXPECT_TRUE(trace_is_inline_string_ref(&category_ref) ||
+                trace_is_indexed_string_ref(&category_ref));
+    trace_release_context(context);
+    context = trace_acquire_context_for_category("-disabled", &category_ref);
+    EXPECT_NULL(context);
+
+    fixture_stop_tracing();
+    context = trace_acquire_context_for_category("+enabled", &category_ref);
+    EXPECT_NULL(context);
+    context = trace_acquire_context_for_category("-disabled", &category_ref);
+    EXPECT_NULL(context);
+
+    END_TRACE_TEST;
+}
+
+bool TestAcquireContextForCategoryCached() {
+    BEGIN_TRACE_TEST;
+
+    // Note that this test is also testing internal cache state management.
+
+    trace_string_ref_t category_ref;
+    trace_context_t* context;
+    trace_site_t enabled_category_state{};
+    trace_site_t disabled_category_state{};
+
+    context = trace_acquire_context_for_category_cached(
+        "+enabled", &enabled_category_state, &category_ref);
+    EXPECT_NULL(context);
+    EXPECT_EQ(get_site_state(enabled_category_state) & kSiteStateFlagsMask,
+              kSiteStateDisabled);
+    EXPECT_TRUE(get_site_state(enabled_category_state) & ~kSiteStateFlagsMask);
+
+    context = trace_acquire_context_for_category_cached(
+        "-disabled", &disabled_category_state, &category_ref);
+    EXPECT_NULL(context);
+    EXPECT_EQ(get_site_state(disabled_category_state) & kSiteStateFlagsMask,
+              kSiteStateDisabled);
+    EXPECT_TRUE(get_site_state(disabled_category_state) & ~kSiteStateFlagsMask);
+
+    fixture_start_tracing();
+
+    context = trace_acquire_context_for_category_cached(
+        "+enabled", &enabled_category_state, &category_ref);
+    EXPECT_NONNULL(context);
+    EXPECT_TRUE(trace_is_inline_string_ref(&category_ref) ||
+                trace_is_indexed_string_ref(&category_ref));
+    EXPECT_EQ(get_site_state(enabled_category_state) & kSiteStateFlagsMask,
+              kSiteStateEnabled);
+    EXPECT_TRUE(get_site_state(enabled_category_state) & ~kSiteStateFlagsMask);
+    trace_release_context(context);
+
+    context = trace_acquire_context_for_category_cached(
+        "-disabled", &disabled_category_state, &category_ref);
+    EXPECT_NULL(context);
+    EXPECT_EQ(get_site_state(disabled_category_state) & kSiteStateFlagsMask,
+              kSiteStateDisabled);
+    EXPECT_TRUE(get_site_state(disabled_category_state) & ~kSiteStateFlagsMask);
+
+    // Don't call |fixture_stop_tracing()| here as that shuts down the
+    // async loop.
+    fixture_stop_engine();
+    fixture_wait_engine_stopped();
+
+    // Stopping the engine should have flushed the cache.
+    EXPECT_EQ(get_site_state(enabled_category_state), 0);
+    EXPECT_EQ(get_site_state(disabled_category_state), 0);
+
+    // Put some values back in the cache while we're stopped.
+    context = trace_acquire_context_for_category_cached(
+        "+enabled", &enabled_category_state, &category_ref);
+    EXPECT_NULL(context);
+    EXPECT_EQ(get_site_state(enabled_category_state) & kSiteStateFlagsMask,
+              kSiteStateDisabled);
+    context = trace_acquire_context_for_category_cached(
+        "-disabled", &disabled_category_state, &category_ref);
+    EXPECT_NULL(context);
+    EXPECT_EQ(get_site_state(disabled_category_state) & kSiteStateFlagsMask,
+              kSiteStateDisabled);
+
+    // Starting the engine should have flushed the cache again.
+    fixture_start_engine();
+
+    EXPECT_EQ(get_site_state(enabled_category_state), 0);
+    EXPECT_EQ(get_site_state(disabled_category_state), 0);
+
+    fixture_stop_tracing();
+
+    END_TRACE_TEST;
+}
+
+bool TestFlushCategoryCache() {
+    BEGIN_TRACE_TEST;
+
+    trace_string_ref_t category_ref;
+    trace_context_t* context;
+    trace_site_t disabled_category_state{};
+
+    context = trace_acquire_context_for_category_cached(
+        "-disabled", &disabled_category_state, &category_ref);
+    EXPECT_NULL(context);
+    EXPECT_EQ(get_site_state(disabled_category_state) & kSiteStateFlagsMask,
+              kSiteStateDisabled);
+    EXPECT_TRUE(get_site_state(disabled_category_state) & ~kSiteStateFlagsMask);
+
+    EXPECT_EQ(trace_engine_flush_category_cache(), ZX_OK);
+    EXPECT_EQ(get_site_state(disabled_category_state), 0);
+
+    fixture_start_tracing();
+
+    EXPECT_EQ(trace_engine_flush_category_cache(), ZX_ERR_BAD_STATE);
+
+    fixture_stop_tracing();
 
     END_TRACE_TEST;
 }
@@ -437,40 +594,41 @@ bool TestCircularMode() {
     EXPECT_FALSE(fixture_wait_buffer_full_notification());
 
     // Prepare a squelcher to remove timestamps.
-    FixtureSquelch* ts_squelch;
-    ASSERT_TRUE(fixture_create_squelch("ts: ([0-9]+)", &ts_squelch));
+    std::unique_ptr<trace_testing::Squelcher> ts_squelcher =
+        trace_testing::Squelcher::Create("ts: ([0-9]+)");
 
     // These records come from the durable buffer.
     const char expected_initial_records[] = "\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"k1\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"k1\")\n\
 String(index: 5, \"k2\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", Instant(scope: global), {k2: int32(2)})\n\
 ";
 
     fbl::Vector<trace::Record> records;
+    size_t skip_count;
     const size_t kDataRecordOffset = 7;
     ASSERT_N_RECORDS(kDataRecordOffset + 1, /*empty*/, expected_initial_records,
-                     &records);
+                     &records, &skip_count);
+
+    // This is the index of the data record in the full list of records.
+    const size_t kDataRecordIndex = skip_count + kDataRecordOffset;
 
     // Verify all trailing records are the same (sans timestamp).
-    auto test_record = records[kDataRecordOffset].ToString();
-    auto test_str = fixture_squelch(ts_squelch, test_record.c_str());
-    for (size_t i = kDataRecordOffset + 1; i < records.size(); ++i) {
+    auto test_record = records[kDataRecordIndex].ToString();
+    auto test_str = ts_squelcher->Squelch(test_record.c_str());
+    for (size_t i = kDataRecordIndex + 1; i < records.size(); ++i) {
         // FIXME(dje): Moved this here from outside the for loop to get things
         // working. Why was it necessary?
         auto test_cstr = test_str.c_str();
-        auto record_str = fixture_squelch(ts_squelch,
-                                          records[i].ToString().c_str());
+        auto record_str = ts_squelcher->Squelch(records[i].ToString().c_str());
         auto record_cstr = record_str.c_str();
         EXPECT_STR_EQ(test_cstr, record_cstr, "bad data record");
     }
-
-    fixture_destroy_squelch(ts_squelch);
 
     END_TRACE_TEST;
 }
@@ -569,18 +727,19 @@ bool TestStreamingMode() {
     // should have the new kind of record. And the newer records should be
     // read after the older ones.
 
-    FixtureSquelch* ts_squelch;
-    ASSERT_TRUE(fixture_create_squelch("ts: ([0-9]+)", &ts_squelch));
+    // Prepare a squelcher to remove timestamps.
+    std::unique_ptr<trace_testing::Squelcher> ts_squelcher =
+        trace_testing::Squelcher::Create("ts: ([0-9]+)");
 
     const char expected_initial_records[] =
         // These records come from the durable buffer.
         "\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"k1\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"k1\")\n\
 String(index: 5, \"k2\")\n\
 String(index: 6, \"k3\")\n"
         // This record is the first record in the rolling buffer
@@ -592,19 +751,22 @@ Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", Instant(scope: glo
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", Instant(scope: global), {k3: int32(3)})\n";
 
     fbl::Vector<trace::Record> records;
+    size_t skip_count;
     const size_t kDataRecordOffset = 8;
     ASSERT_N_RECORDS(kDataRecordOffset + 1, /*empty*/, expected_initial_records,
-                     &records);
+                     &records, &skip_count);
+
+    // This is the index of the data record in the full list of records.
+    const size_t kDataRecordIndex = skip_count + kDataRecordOffset;
 
     // Verify the first set of data records are the same (sans timestamp).
-    auto test_record = records[kDataRecordOffset].ToString();
-    auto test_str = fixture_squelch(ts_squelch, test_record.c_str());
+    auto test_record = records[kDataRecordIndex].ToString();
+    auto test_str = ts_squelcher->Squelch(test_record.c_str());
     size_t num_data_records = 1;
     size_t i;
-    for (i = kDataRecordOffset + 1; i < records.size(); ++i) {
+    for (i = kDataRecordIndex + 1; i < records.size(); ++i) {
         auto test_cstr = test_str.c_str();
-        auto record_str = fixture_squelch(ts_squelch,
-                                          records[i].ToString().c_str());
+        auto record_str = ts_squelcher->Squelch(records[i].ToString().c_str());
         auto record_cstr = record_str.c_str();
         if (strcmp(test_cstr, record_cstr) != 0)
             break;
@@ -623,16 +785,13 @@ Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", Instant(scope: glo
 
     // All remaining records should match (sans timestamp).
     test_record = records[i].ToString();
-    test_str = fixture_squelch(ts_squelch, test_record.c_str());
+    test_str = ts_squelcher->Squelch(test_record.c_str());
     for (i = i + 1; i < records.size(); ++i) {
         auto test_cstr = test_str.c_str();
-        auto record_str = fixture_squelch(ts_squelch,
-                                          records[i].ToString().c_str());
+        auto record_str = ts_squelcher->Squelch(records[i].ToString().c_str());
         auto record_cstr = record_str.c_str();
         EXPECT_STR_EQ(test_cstr, record_cstr, "bad data record");
     }
-
-    fixture_destroy_squelch(ts_squelch);
 
     END_TRACE_TEST;
 }
@@ -685,6 +844,9 @@ RUN_TEST(TestNormalShutdown)
 RUN_TEST(TestHardShutdown)
 RUN_TEST(TestIsEnabled)
 RUN_TEST(TestIsCategoryEnabled)
+RUN_TEST(TestAcquireContextForCategory)
+RUN_TEST(TestAcquireContextForCategoryCached)
+RUN_TEST(TestFlushCategoryCache)
 RUN_TEST(TestGenerateNonce)
 RUN_TEST(TestObserver)
 RUN_TEST(TestObserverErrors)

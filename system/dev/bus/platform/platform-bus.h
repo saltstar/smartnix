@@ -7,22 +7,24 @@
 #include <ddk/device.h>
 #include <ddktl/device.h>
 #include <ddktl/protocol/clk.h>
-#include <ddktl/protocol/gpio-impl.h>
-#include <ddktl/protocol/i2c-impl.h>
+#include <ddktl/protocol/gpioimpl.h>
+#include <ddktl/protocol/i2cimpl.h>
 #include <ddktl/protocol/iommu.h>
-#include <ddktl/protocol/platform-bus.h>
+#include <ddktl/protocol/platform/bus.h>
 #include <fbl/array.h>
 #include <fbl/intrusive_wavl_tree.h>
 #include <fbl/mutex.h>
-#include <fbl/optional.h>
 #include <fbl/unique_ptr.h>
 #include <fbl/vector.h>
 #include <lib/sync/completion.h>
-#include <lib/zx/handle.h>
+#include <lib/zx/iommu.h>
+#include <lib/zx/resource.h>
 #include <lib/zx/vmo.h>
 #include <stdint.h>
 #include <threads.h>
 #include <zircon/types.h>
+
+#include <optional>
 
 #include "platform-device.h"
 #include "platform-protocol-device.h"
@@ -35,7 +37,8 @@ class PlatformBus;
 using PlatformBusType = ddk::Device<PlatformBus, ddk::GetProtocolable>;
 
 // This is the main class for the platform bus driver.
-class PlatformBus : public PlatformBusType, public ddk::PBusProtocol<PlatformBus>,
+class PlatformBus : public PlatformBusType,
+                    public ddk::PBusProtocol<PlatformBus, ddk::base_protocol>,
                     public ddk::IommuProtocol<PlatformBus> {
 public:
     static zx_status_t Create(zx_device_t* parent, const char* name, zx::vmo zbi);
@@ -55,31 +58,28 @@ public:
     zx_status_t PBusProtocolDeviceAdd(uint32_t proto_id, const pbus_dev_t* dev);
     zx_status_t PBusRegisterProtocol(uint32_t proto_id, const void* protocol, size_t protocol_size,
                                      const platform_proxy_cb_t* proxy_cb);
-    const char* PBusGetBoardName();
+    zx_status_t PBusGetBoardInfo(pdev_board_info_t* out_info);
     zx_status_t PBusSetBoardInfo(const pbus_board_info_t* info);
 
     // IOMMU protocol implementation.
-    zx_status_t IommuGetBti(uint32_t iommu_index, uint32_t bti_id, zx_handle_t* out_handle);
+    zx_status_t IommuGetBti(uint32_t iommu_index, uint32_t bti_id, zx::bti* out_bti);
 
     // Returns the resource handle to be used for creating MMIO regions, IRQs, and SMC ranges.
     // Currently this just returns the root resource, but we may change this to a more
     // limited resource in the future.
-    zx_handle_t GetResource() const { return get_root_resource(); }
+    zx::unowned_resource GetResource() const { return zx::unowned_resource(get_root_resource()); }
 
     // Used by PlatformDevice to queue I2C transactions on an I2C bus.
     zx_status_t I2cTransact(uint32_t txid, rpc_i2c_req_t* req, const pbus_i2c_channel_t* channel,
                             zx_handle_t channel_handle);
 
-    // Helper for PlatformDevice.
-    zx_status_t GetBoardInfo(pdev_board_info_t* out_info);
-
     zx_status_t GetZbiMetadata(uint32_t type, uint32_t extra, const void** out_metadata,
                                uint32_t* out_size);
 
     // Protocol accessors for PlatformDevice.
-    inline ddk::ClkProtocolProxy* clk() { return &*clk_; }
-    inline ddk::GpioImplProtocolProxy* gpio() { return &*gpio_; }
-    inline ddk::I2cImplProtocolProxy* i2c() { return &*i2c_; }
+    inline ddk::ClkProtocolClient* clk() { return &*clk_; }
+    inline ddk::GpioImplProtocolClient* gpio() { return &*gpio_; }
+    inline ddk::I2cImplProtocolClient* i2c() { return &*i2c_; }
 
 private:
     // This class is a wrapper for a platform_proxy_cb_t added via pbus_register_protocol().
@@ -126,10 +126,10 @@ private:
     pdev_board_info_t board_info_;
 
     // Protocols that are optionally provided by the board driver.
-    fbl::optional<ddk::ClkProtocolProxy> clk_;
-    fbl::optional<ddk::GpioImplProtocolProxy> gpio_;
-    fbl::optional<ddk::IommuProtocolProxy> iommu_;
-    fbl::optional<ddk::I2cImplProtocolProxy> i2c_;
+    std::optional<ddk::ClkProtocolClient> clk_;
+    std::optional<ddk::GpioImplProtocolClient> gpio_;
+    std::optional<ddk::IommuProtocolClient> iommu_;
+    std::optional<ddk::I2cImplProtocolClient> i2c_;
 
     // Completion used by WaitProtocol().
     sync_completion_t proto_completion_ __TA_GUARDED(proto_completion_mutex_);
@@ -143,7 +143,7 @@ private:
     fbl::Vector<fbl::unique_ptr<PlatformI2cBus>> i2c_buses_;
 
     // Dummy IOMMU.
-    zx::handle iommu_handle_;
+    zx::iommu iommu_handle_;
 
     fbl::WAVLTree<uint32_t, fbl::unique_ptr<ProtoProxy>> proto_proxys_
                                                 __TA_GUARDED(proto_proxys_mutex_);

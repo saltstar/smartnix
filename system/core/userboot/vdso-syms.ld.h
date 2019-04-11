@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // For each function in the vDSO ABI, define a symbol in the linker script
 // pointing to its address.  The vDSO is loaded immediately after the

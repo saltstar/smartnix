@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <zircon/syscalls.h>
 #include <zircon/types.h>
@@ -6,6 +9,8 @@
 #include <dispatcher-pool/dispatcher-event-source.h>
 #include <dispatcher-pool/dispatcher-execution-domain.h>
 #include <dispatcher-pool/dispatcher-thread-pool.h>
+
+#include <utility>
 
 namespace dispatcher {
 
@@ -70,9 +75,9 @@ zx_status_t EventSource::ActivateLocked(zx::handle handle, fbl::RefPtr<Execution
     if (res != ZX_OK)
         return res;
 
-    handle_ = fbl::move(handle);
-    domain_ = fbl::move(domain);
-    thread_pool_ = fbl::move(thread_pool);
+    handle_ = std::move(handle);
+    domain_ = std::move(domain);
+    thread_pool_ = std::move(thread_pool);
 
     return ZX_OK;
 }

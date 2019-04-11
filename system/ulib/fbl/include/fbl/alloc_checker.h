@@ -1,6 +1,10 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
+#include <new>
 #include <stddef.h>
 
 namespace fbl {
@@ -28,6 +32,8 @@ private:
 };
 
 } // namespace fbl
+void* operator new(size_t size, std::align_val_t align, fbl::AllocChecker* ac) noexcept;
+void* operator new[](size_t size, std::align_val_t align, fbl::AllocChecker* ac) noexcept;
 
 void* operator new(size_t size, fbl::AllocChecker* ac) noexcept;
 void* operator new[](size_t size, fbl::AllocChecker* ac) noexcept;

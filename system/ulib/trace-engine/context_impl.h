@@ -1,14 +1,40 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
+#include <atomic>
+
 #include <zircon/assert.h>
 
-#include <fbl/atomic.h>
 #include <fbl/mutex.h>
 #include <lib/zx/event.h>
 #include <trace-engine/buffer_internal.h>
 #include <trace-engine/context.h>
 #include <trace-engine/handler.h>
+
+// Two preprocessor symbols control what symbols we export in a .so:
+// EXPORT and EXPORT_NO_DDK:
+// - EXPORT is for symbols exported to both driver and non-driver versions of
+//   the library ("non-driver" is the normal case).
+// - EXPORT_NO_DDK is for symbols *not* exported in the DDK.
+// A third variant is supported which is to export nothing. This is for cases
+// like libvulkan which want tracing but do not have access to
+// libtrace-engine.so.
+// Two preprocessor symbols are provided by the build system to select which
+// variant we are building: STATIC_LIBRARY and DDK_TRACING. Either neither of
+// them are defined (normal case), or exactly one of them is defined.
+#if defined(STATIC_LIBRARY)
+#define EXPORT
+#define EXPORT_NO_DDK
+#elif defined(DDK_TRACING)
+#define EXPORT __EXPORT
+#define EXPORT_NO_DDK
+#else
+#define EXPORT __EXPORT
+#define EXPORT_NO_DDK __EXPORT
+#endif
 
 using trace::internal::trace_buffer_header;
 
@@ -46,7 +72,7 @@ struct trace_context {
     trace_buffering_mode_t buffering_mode() const { return buffering_mode_; }
 
     uint64_t num_records_dropped() const {
-        return num_records_dropped_.load(fbl::memory_order_relaxed);
+        return num_records_dropped_.load(std::memory_order_relaxed);
     }
 
     bool UsingDurableBuffer() const {
@@ -177,12 +203,12 @@ private:
     }
 
     bool IsDurableBufferFull() const {
-        return durable_buffer_full_mark_.load(fbl::memory_order_relaxed) != 0;
+        return durable_buffer_full_mark_.load(std::memory_order_relaxed) != 0;
     }
 
     // Return true if |buffer_number| is ready to be written to.
     bool IsRollingBufferReady(int buffer_number) const {
-        return rolling_buffer_full_mark_[buffer_number].load(fbl::memory_order_relaxed) == 0;
+        return rolling_buffer_full_mark_[buffer_number].load(std::memory_order_relaxed) == 0;
     }
 
     // Return true if the other rolling buffer is ready to be written to.
@@ -191,7 +217,7 @@ private:
     }
 
     uint32_t CurrentWrappedCount() const {
-        auto current = rolling_buffer_current_.load(fbl::memory_order_relaxed);
+        auto current = rolling_buffer_current_.load(std::memory_order_relaxed);
         return GetWrappedCount(current);
     }
 
@@ -220,11 +246,11 @@ private:
         uint64_t full_offset_plus_counter =
             MakeOffsetPlusCounter(rolling_buffer_size_, wrapped_count);
         rolling_buffer_current_.store(full_offset_plus_counter,
-                                      fbl::memory_order_relaxed);
+                                      std::memory_order_relaxed);
     }
 
     void MarkRecordDropped() {
-        num_records_dropped_.fetch_add(1, fbl::memory_order_relaxed);
+        num_records_dropped_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void NotifyRollingBufferFullLocked(uint32_t wrapped_count,
@@ -264,13 +290,13 @@ private:
     // This only used in circular and streaming modes.
     // Starts at |durable_buffer_start| and grows from there.
     // May exceed |durable_buffer_end| when the buffer is full.
-    fbl::atomic<uint64_t> durable_buffer_current_;
+    std::atomic<uint64_t> durable_buffer_current_;
 
     // Offset beyond the last successful allocation, or zero if not full.
     // This only used in circular and streaming modes: There is no separate
     // buffer for durable records in oneshot mode.
     // Only ever set to non-zero once in the lifetime of the trace context.
-    fbl::atomic<uint64_t> durable_buffer_full_mark_;
+    std::atomic<uint64_t> durable_buffer_full_mark_;
 
     // Allocation pointer of the current buffer for non-durable records,
     // plus a wrapped counter. These are combined into one so that they can
@@ -288,18 +314,18 @@ private:
     //
     // This value is also used for durable records in oneshot mode: in
     // oneshot mode durable and non-durable records share the same buffer.
-    fbl::atomic<uint64_t> rolling_buffer_current_;
+    std::atomic<uint64_t> rolling_buffer_current_;
 
     // Offset beyond the last successful allocation, or zero if not full.
     // Only ever set to non-zero once when the buffer fills.
     // This will only be set in oneshot and streaming modes.
-    fbl::atomic<uint64_t> rolling_buffer_full_mark_[2];
+    std::atomic<uint64_t> rolling_buffer_full_mark_[2];
 
     // A count of the number of records that have been dropped.
-    fbl::atomic<uint64_t> num_records_dropped_{0};
+    std::atomic<uint64_t> num_records_dropped_{0};
 
     // A count of the number of records that have been dropped.
-    fbl::atomic<uint64_t> num_records_dropped_after_buffer_switch_{0};
+    std::atomic<uint64_t> num_records_dropped_after_buffer_switch_{0};
 
     // Set to true if the engine needs to stop tracing for some reason.
     bool tracing_artificially_stopped_ __TA_GUARDED(buffer_switch_mutex_) = false;
@@ -313,10 +339,10 @@ private:
     trace_handler_t* const handler_;
 
     // The next thread index to be assigned.
-    fbl::atomic<trace_thread_index_t> next_thread_index_{
+    std::atomic<trace_thread_index_t> next_thread_index_{
         TRACE_ENCODED_THREAD_REF_MIN_INDEX};
 
     // The next string table index to be assigned.
-    fbl::atomic<trace_string_index_t> next_string_index_{
+    std::atomic<trace_string_index_t> next_string_index_{
         TRACE_ENCODED_STRING_REF_MIN_INDEX};
 };

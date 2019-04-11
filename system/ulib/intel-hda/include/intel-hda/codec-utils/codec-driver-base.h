@@ -1,9 +1,12 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/protocol/intel-hda-codec.h>
+#include <ddk/protocol/intelhda/codec.h>
 #include <lib/zx/handle.h>
 #include <fbl/intrusive_wavl_tree.h>
 #include <fbl/mutex.h>

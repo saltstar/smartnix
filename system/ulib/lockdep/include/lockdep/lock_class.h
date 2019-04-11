@@ -1,10 +1,12 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <zircon/compiler.h>
 
 #include <fbl/type_info.h>
-#include <fbl/type_support.h>
 
 #include <lockdep/common.h>
 #include <lockdep/global_reference.h>

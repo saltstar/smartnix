@@ -1,3 +1,6 @@
+# Copyright 2018 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 # host blobfs lib
 
@@ -7,7 +10,9 @@ MODULE := $(LOCAL_DIR).hostlib
 
 MODULE_TYPE := hostlib
 
-MODULE_SRCS := $(LOCAL_DIR)/common.cpp
+MODULE_SRCS := \
+    $(LOCAL_DIR)/common.cpp \
+    $(LOCAL_DIR)/file_size_recorder.cpp \
 
 MODULE_COMPILEFLAGS := \
     -Werror-implicit-function-declaration \

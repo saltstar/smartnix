@@ -1,3 +1,6 @@
+# Copyright 2018 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 LOCAL_INC := $(LOCAL_DIR)/include/lib/tee-client-api
@@ -22,7 +25,7 @@ MODULE_PACKAGE_INCS := \
 MODULE_SO_NAME := tee-client-api
 MODULE_EXPORT := so
 
-MODULE_FIDL_LIBS := system/fidl/zircon-tee
+MODULE_FIDL_LIBS := system/fidl/fuchsia-hardware-tee
 
 MODULE_STATIC_LIBS := system/ulib/fidl
 

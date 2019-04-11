@@ -7,14 +7,15 @@
 #include <fbl/auto_lock.h>
 #include <fbl/limits.h>
 #include <fbl/ref_ptr.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
+#include <ktl/move.h>
+#include <new>
 #include <platform.h>
 #include <trace.h>
 #include <vm/vm_aspace.h>
 #include <vm/vm_object_paged.h>
 #include <vm/vm_object_physical.h>
 #include <zircon/time.h>
-#include <zxcpp/new.h>
 
 #include "context_table_state.h"
 #include "device_context.h"
@@ -25,15 +26,15 @@
 namespace intel_iommu {
 
 IommuImpl::IommuImpl(volatile void* register_base,
-                     fbl::unique_ptr<const uint8_t[]> desc, size_t desc_len)
-        : desc_(fbl::move(desc)), desc_len_(desc_len), mmio_(register_base) {
+                     ktl::unique_ptr<const uint8_t[]> desc, size_t desc_len)
+        : desc_(ktl::move(desc)), desc_len_(desc_len), mmio_(register_base) {
           memset(&irq_block_, 0, sizeof(irq_block_));
     // desc_len_ is currently unused, but we stash it so we can use the length
     // of it later in case we need it.  This silences a warning in Clang.
     desc_len_ = desc_len;
 }
 
-zx_status_t IommuImpl::Create(fbl::unique_ptr<const uint8_t[]> desc_bytes, size_t desc_len,
+zx_status_t IommuImpl::Create(ktl::unique_ptr<const uint8_t[]> desc_bytes, size_t desc_len,
                               fbl::RefPtr<Iommu>* out) {
     zx_status_t status = ValidateIommuDesc(desc_bytes, desc_len);
     if (status != ZX_OK) {
@@ -58,7 +59,7 @@ zx_status_t IommuImpl::Create(fbl::unique_ptr<const uint8_t[]> desc_bytes, size_
     }
 
     fbl::AllocChecker ac;
-    auto instance = fbl::AdoptRef<IommuImpl>(new (&ac) IommuImpl(vaddr, fbl::move(desc_bytes),
+    auto instance = fbl::AdoptRef<IommuImpl>(new (&ac) IommuImpl(vaddr, ktl::move(desc_bytes),
                                                                  desc_len));
     if (!ac.check()) {
         kernel_aspace->FreeRegion(reinterpret_cast<vaddr_t>(vaddr));
@@ -70,7 +71,7 @@ zx_status_t IommuImpl::Create(fbl::unique_ptr<const uint8_t[]> desc_bytes, size_
         return status;
     }
 
-    *out = fbl::move(instance);
+    *out = ktl::move(instance);
     return ZX_OK;
 }
 
@@ -102,7 +103,7 @@ IommuImpl::~IommuImpl() {
 // specific devices to function correctly.  There is typically one region for
 // the i915 gpu (initial framebuffer) and one for the XHCI controller
 // (scratch space for the BIOS before the OS takes ownership of the controller).
-zx_status_t IommuImpl::ValidateIommuDesc(const fbl::unique_ptr<const uint8_t[]>& desc_bytes,
+zx_status_t IommuImpl::ValidateIommuDesc(const ktl::unique_ptr<const uint8_t[]>& desc_bytes,
                                          size_t desc_len) {
     auto desc = reinterpret_cast<const zx_iommu_desc_intel_t*>(desc_bytes.get());
 
@@ -618,13 +619,13 @@ zx_status_t IommuImpl::WaitForValueLocked(RegType* reg,
     return ZX_ERR_TIMED_OUT;
 }
 
-void IommuImpl::FaultHandler(void* ctx) {
+interrupt_eoi IommuImpl::FaultHandler(void* ctx) {
     auto self = static_cast<IommuImpl*>(ctx);
     auto status = reg::FaultStatus::Get().ReadFrom(&self->mmio_);
 
     if (!status.primary_pending_fault()) {
         TRACEF("Non primary fault\n");
-        return;
+        return IRQ_EOI_DEACTIVATE;
     }
 
     auto caps = reg::Capability::Get().ReadFrom(&self->mmio_);
@@ -661,6 +662,7 @@ void IommuImpl::FaultHandler(void* ctx) {
     // TODO(teisenbe): How do we guarantee we get an interrupt on the next fault/if we left a fault unprocessed?
     status.set_primary_fault_overflow(1);
     status.WriteTo(&self->mmio_);
+    return IRQ_EOI_DEACTIVATE;
 }
 
 zx_status_t IommuImpl::ConfigureFaultEventInterruptLocked() {
@@ -738,7 +740,7 @@ zx_status_t IommuImpl::GetOrCreateContextTableLocked(ds::Bdf bdf, ContextTableSt
     }
 
     // Couldn't find the ContextTable, so create it.
-    fbl::unique_ptr<ContextTableState> table;
+    ktl::unique_ptr<ContextTableState> table;
     zx_status_t status = ContextTableState::Create(static_cast<uint8_t>(bdf.bus()),
                                                    supports_extended_context_,
                                                    bdf.dev() >= 16 /* upper */,
@@ -748,7 +750,7 @@ zx_status_t IommuImpl::GetOrCreateContextTableLocked(ds::Bdf bdf, ContextTableSt
     }
 
     *tbl = table.get();
-    context_tables_.push_back(fbl::move(table));
+    context_tables_.push_back(ktl::move(table));
 
     return ZX_OK;
 }

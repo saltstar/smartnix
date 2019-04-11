@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <errno.h>
 #include <fcntl.h>
@@ -13,9 +16,9 @@
 
 #include <fuchsia/io/c/fidl.h>
 #include <lib/fdio/namespace.h>
-#include <lib/fdio/remoteio.h>
 #include <lib/fdio/util.h>
 #include <lib/fdio/vfs.h>
+#include <lib/zxio/null.h>
 
 #include "private.h"
 #include "private-remoteio.h"
@@ -32,14 +35,14 @@
 // doing the local directory walk part of an OPEN operation.
 //
 // If an OPEN path matches one of the local vnodes exactly, a
-// fdio_directory object is created and returned.  This object
+// zxio_dir object is created and returned.  This object
 // handles further OPEN operations, as well as READDIR and STAT.
 // It favors local children over the remote -- so, for example,
 // READDIR first returns the vnode's local children, then forwards
 // the request to the remote, but filters the results (removing
 // matches of its own children).
 
-typedef struct fdio_directory mxdir_t;
+typedef struct zxio_dir zxio_dir_t;
 typedef struct fdio_vnode mxvn_t;
 
 struct fdio_vnode {
@@ -62,9 +65,8 @@ struct fdio_namespace {
 // The directory represents a local directory (either / or
 // some directory between / and a mount point), so it has
 // to emulate directory behavior.
-struct fdio_directory {
-    // base fdio object
-    fdio_t io;
+struct zxio_dir {
+    zxio_t io;
 
     mxvn_t* vn;
     fdio_ns_t* ns;
@@ -73,6 +75,9 @@ struct fdio_directory {
     // TODO: rewind support (when we have rewinddir)
     atomic_int_fast32_t seq;
 };
+
+static_assert(sizeof(zxio_dir_t) <= sizeof(zxio_storage_t),
+              "zxio_dir_t must fit inside zxio_storage_t.");
 
 static fdio_t* fdio_dir_create_locked(fdio_ns_t* fs, mxvn_t* vn);
 
@@ -174,18 +179,18 @@ static void vn_destroy_children_locked(mxvn_t* parent) {
     }
 }
 
-static zx_status_t mxdir_close(fdio_t* io) {
-    mxdir_t* dir = (mxdir_t*) io;
+static zxio_dir_t* fdio_get_zxio_dir(fdio_t* io) {
+    return (zxio_dir_t*)fdio_get_zxio(io);
+}
+
+static zx_status_t zxio_dir_close(fdio_t* io) {
+    zxio_dir_t* dir = fdio_get_zxio_dir(io);
     mtx_lock(&dir->ns->lock);
     dir->ns->refcount--;
     mtx_unlock(&dir->ns->lock);
     dir->ns = NULL;
     dir->vn = NULL;
     return ZX_OK;
-}
-
-static zx_status_t mxdir_clone(fdio_t* io, zx_handle_t* handles, uint32_t* types) {
-    return ZX_ERR_NOT_SUPPORTED;
 }
 
 static zx_status_t ns_walk_locked(mxvn_t** _vn, const char** _path) {
@@ -290,10 +295,10 @@ zx_status_t fdio_ns_open(fdio_ns_t* ns, const char* path, uint32_t flags, zx_han
 
 // Expects a canonical path (no ..) with no leading
 // slash and no trailing slash
-static zx_status_t mxdir_open(fdio_t* io, const char* path,
+static zx_status_t zxio_dir_open(fdio_t* io, const char* path,
                               uint32_t flags, uint32_t mode,
                               fdio_t** out) {
-    mxdir_t* dir = (mxdir_t*) io;
+    zxio_dir_t* dir = fdio_get_zxio_dir(io);
     mxvn_t* vn = dir->vn;
     zx_status_t r = ZX_OK;
 
@@ -340,7 +345,7 @@ static zx_status_t fill_dirent(vdirent_t* de, size_t delen,
     return sz;
 }
 
-static zx_status_t mxdir_readdir_locked(mxdir_t* dir, void* buf, size_t len) {
+static zx_status_t zxio_dir_readdir_locked(zxio_dir_t* dir, void* buf, size_t len) {
     void *ptr = buf;
 
     zx_status_t r = fill_dirent(ptr, len, ".", 1, VTYPE_TO_DTYPE(V_TYPE_DIR));
@@ -361,24 +366,24 @@ static zx_status_t mxdir_readdir_locked(mxdir_t* dir, void* buf, size_t len) {
     return ptr - buf;
 }
 
-static zx_status_t mxdir_get_attr(fdio_t* io, vnattr_t* attr) {
+static zx_status_t zxio_dir_get_attr(fdio_t* io, fuchsia_io_NodeAttributes* attr) {
     memset(attr, 0, sizeof(*attr));
     attr->mode = V_TYPE_DIR | V_IRUSR;
-    attr->inode = fuchsia_io_INO_UNKNOWN;
-    attr->nlink = 1;
+    attr->id = fuchsia_io_INO_UNKNOWN;
+    attr->link_count = 1;
     return ZX_OK;
 }
 
-static zx_status_t mxdir_rewind(fdio_t* io) {
+static zx_status_t zxio_dir_rewind(fdio_t* io) {
     return ZX_OK;
 }
 
-static zx_status_t mxdir_readdir(fdio_t* io, void* ptr, size_t max, size_t* actual) {
-    mxdir_t* dir = (mxdir_t*) io;
+static zx_status_t zxio_dir_readdir(fdio_t* io, void* ptr, size_t max, size_t* actual) {
+    zxio_dir_t* dir = fdio_get_zxio_dir(io);
     mtx_lock(&dir->ns->lock);
     int n = atomic_fetch_add(&dir->seq, 1);
     if (n == 0) {
-        *actual = mxdir_readdir_locked(dir, ptr, max);
+        *actual = zxio_dir_readdir_locked(dir, ptr, max);
     } else {
         *actual = 0;
     }
@@ -386,27 +391,16 @@ static zx_status_t mxdir_readdir(fdio_t* io, void* ptr, size_t max, size_t* actu
     return ZX_OK;
 }
 
-static zx_status_t mxdir_unlink(fdio_t* io, const char* path, size_t len) {
+static zx_status_t zxio_dir_unlink(fdio_t* io, const char* path, size_t len) {
     return ZX_ERR_UNAVAILABLE;
 }
 
-static ssize_t mxdir_ioctl(fdio_t* io, uint32_t op, const void* in_buf,
-                           size_t in_len, void* out_buf, size_t out_len) {
-    return ZX_ERR_NOT_SUPPORTED;
-}
-
 static fdio_ops_t dir_ops = {
-    .read = fdio_default_read,
-    .read_at = fdio_default_read_at,
-    .write = fdio_default_write,
-    .write_at = fdio_default_write_at,
-    .seek = fdio_default_seek,
-    .get_attr = mxdir_get_attr,
-    .misc = fdio_default_misc,
-    .close = mxdir_close,
-    .open = mxdir_open,
-    .clone = mxdir_clone,
-    .ioctl = mxdir_ioctl,
+    .get_attr = zxio_dir_get_attr,
+    .close = zxio_dir_close,
+    .open = zxio_dir_open,
+    .clone = fdio_default_clone,
+    .ioctl = fdio_default_ioctl,
     .wait_begin = fdio_default_wait_begin,
     .wait_end = fdio_default_wait_end,
     .unwrap = fdio_default_unwrap,
@@ -414,10 +408,9 @@ static fdio_ops_t dir_ops = {
     .get_vmo = fdio_default_get_vmo,
     .get_token = fdio_default_get_token,
     .set_attr = fdio_default_set_attr,
-    .sync = fdio_default_sync,
-    .readdir = mxdir_readdir,
-    .rewind = mxdir_rewind,
-    .unlink = mxdir_unlink,
+    .readdir = zxio_dir_readdir,
+    .rewind = zxio_dir_rewind,
+    .unlink = zxio_dir_unlink,
     .truncate = fdio_default_truncate,
     .rename = fdio_default_rename,
     .link = fdio_default_link,
@@ -431,17 +424,20 @@ static fdio_ops_t dir_ops = {
 };
 
 static fdio_t* fdio_dir_create_locked(fdio_ns_t* ns, mxvn_t* vn) {
-    mxdir_t* dir = calloc(1, sizeof(*dir));
-    if (dir == NULL) {
+    fdio_t* io = fdio_alloc(sizeof(fdio_t));
+    if (io == NULL) {
         return NULL;
     }
+    io->ops = &dir_ops;
+    io->magic = FDIO_MAGIC;
+    atomic_init(&io->refcount, 1);
+    memset(&io->storage, 0, sizeof(io->storage));
+    zxio_null_init(&io->storage.io);
+    zxio_dir_t* dir = fdio_get_zxio_dir(io);
     dir->ns = ns;
     dir->vn = vn;
-    dir->io.ops = &dir_ops;
-    dir->io.magic = FDIO_MAGIC;
-    atomic_init(&dir->io.refcount, 1);
     atomic_init(&dir->seq, 0);
-    return &dir->io;
+    return io;
 }
 
 __EXPORT
@@ -713,7 +709,7 @@ zx_status_t fdio_ns_export(fdio_ns_t* ns, fdio_flat_namespace_t** out) {
     }
     // We've allocated enough memory for the flat struct
     // followed by count handles, followed by count types,
-    // follewed by count path ptrs followed by enough bytes
+    // followed by count path ptrs followed by enough bytes
     // for all the path strings.  Point es.* at the right
     // slices of that memory:
     es.handle = (zx_handle_t*) (flat + 1);

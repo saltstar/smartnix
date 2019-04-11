@@ -19,6 +19,8 @@
 #include <fbl/auto_lock.h>
 #include <lib/sync/completion.h>
 
+#include <utility>
+
 namespace nand {
 
 namespace {
@@ -30,8 +32,8 @@ struct BlockOperationContext {
     zx_status_t status;
 };
 
-void CompletionCallback(nand_op_t* op, zx_status_t status) {
-    auto* ctx = static_cast<BlockOperationContext*>(op->cookie);
+void CompletionCallback(void* cookie, zx_status_t status, nand_operation_t* op) {
+    auto* ctx = static_cast<BlockOperationContext*>(cookie);
 
     zxlogf(TRACE, "Completion status: %d\n", status);
     ctx->status = status;
@@ -42,8 +44,8 @@ void CompletionCallback(nand_op_t* op, zx_status_t status) {
 } // namespace
 
 zx_status_t AmlBadBlock::Create(Config config, fbl::RefPtr<BadBlock>* out) {
-    // Query parent to get its zircon_nand_Info and size for nand_op_t.
-    zircon_nand_Info nand_info;
+    // Query parent to get its fuchsia_hardware_nand_Info and size for nand_operation_t.
+    fuchsia_hardware_nand_Info nand_info;
     size_t parent_op_size;
     config.nand_proto.ops->query(config.nand_proto.ctx, &nand_info, &parent_op_size);
 
@@ -89,8 +91,8 @@ zx_status_t AmlBadBlock::Create(Config config, fbl::RefPtr<BadBlock>* out) {
     }
 
     // Construct all the things.
-    *out = fbl::MakeRefCountedChecked<AmlBadBlock>(&ac, fbl::move(data_vmo), fbl::move(oob_vmo),
-                                                   fbl::move(nand_op), config, nand_info,
+    *out = fbl::MakeRefCountedChecked<AmlBadBlock>(&ac, std::move(data_vmo), std::move(oob_vmo),
+                                                   std::move(nand_op), config, nand_info,
                                                    reinterpret_cast<BlockStatus*>(vaddr_table),
                                                    table_len,
                                                    reinterpret_cast<OobMetadata*>(vaddr_oob));
@@ -104,13 +106,11 @@ zx_status_t AmlBadBlock::EraseBlock(uint32_t block) {
     sync_completion_t completion;
     BlockOperationContext op_ctx = {.completion_event = &completion,
                                     .status = ZX_ERR_INTERNAL};
-    auto* nand_op = reinterpret_cast<nand_op_t*>(nand_op_.get());
+    auto* nand_op = reinterpret_cast<nand_operation_t*>(nand_op_.get());
     nand_op->erase.command = NAND_OP_ERASE;
     nand_op->erase.first_block = block;
     nand_op->erase.num_blocks = 1;
-    nand_op->completion_cb = CompletionCallback;
-    nand_op->cookie = &op_ctx;
-    nand_.Queue(nand_op);
+    nand_.Queue(nand_op, CompletionCallback, &op_ctx);
 
     // Wait on completion.
     sync_completion_wait(&completion, ZX_TIME_INFINITE);
@@ -166,7 +166,7 @@ zx_status_t AmlBadBlock::WritePages(uint32_t nand_page, uint32_t num_pages) {
     BlockOperationContext op_ctx = {.completion_event = &completion,
                                     .status = ZX_ERR_INTERNAL};
 
-    auto* nand_op = reinterpret_cast<nand_op_t*>(nand_op_.get());
+    auto* nand_op = reinterpret_cast<nand_operation_t*>(nand_op_.get());
     nand_op->rw.command = NAND_OP_WRITE;
     nand_op->rw.data_vmo = data_vmo_.get();
     nand_op->rw.oob_vmo = oob_vmo_.get();
@@ -174,9 +174,7 @@ zx_status_t AmlBadBlock::WritePages(uint32_t nand_page, uint32_t num_pages) {
     nand_op->rw.offset_nand = nand_page;
     nand_op->rw.offset_data_vmo = 0;
     nand_op->rw.offset_oob_vmo = 0;
-    nand_op->completion_cb = CompletionCallback;
-    nand_op->cookie = &op_ctx;
-    nand_.Queue(nand_op);
+    nand_.Queue(nand_op, CompletionCallback, &op_ctx);
 
     // Wait on completion.
     sync_completion_wait(&completion, ZX_TIME_INFINITE);
@@ -230,7 +228,7 @@ zx_status_t AmlBadBlock::ReadPages(uint32_t nand_page, uint32_t num_pages) {
     sync_completion_t completion;
     BlockOperationContext op_ctx = {.completion_event = &completion,
                                     .status = ZX_ERR_INTERNAL};
-    auto* nand_op = reinterpret_cast<nand_op_t*>(nand_op_.get());
+    auto* nand_op = reinterpret_cast<nand_operation_t*>(nand_op_.get());
     nand_op->rw.command = NAND_OP_READ;
     nand_op->rw.data_vmo = data_vmo_.get();
     nand_op->rw.oob_vmo = oob_vmo_.get();
@@ -238,9 +236,7 @@ zx_status_t AmlBadBlock::ReadPages(uint32_t nand_page, uint32_t num_pages) {
     nand_op->rw.offset_nand = nand_page;
     nand_op->rw.offset_data_vmo = 0;
     nand_op->rw.offset_oob_vmo = 0;
-    nand_op->completion_cb = CompletionCallback;
-    nand_op->cookie = &op_ctx;
-    nand_.Queue(nand_op);
+    nand_.Queue(nand_op, CompletionCallback, &op_ctx);
 
     // Wait on completion.
     sync_completion_wait(&completion, ZX_TIME_INFINITE);

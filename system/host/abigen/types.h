@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -47,6 +50,12 @@ struct TypeSpec {
     std::string as_cpp_cast(const std::string& arg) const;
 };
 
+// The tokens of a line of requirements.
+using Requirement = std::vector<std::string>;
+
+// The tokens of a line of top-of-md description in the "NAME" block.
+using TopDescription = std::vector<std::string>;
+
 struct Syscall {
     // Move-only.
     Syscall(Syscall&&) = default;
@@ -59,6 +68,8 @@ struct Syscall {
     std::vector<TypeSpec> ret_spec;
     std::vector<TypeSpec> arg_spec;
     std::vector<std::string> attributes;
+    std::vector<Requirement> requirements;
+    TopDescription top_description;
 
     Syscall(const FileCtx& sc_fc, const std::string& sc_name)
         : fc(sc_fc), name(sc_name) {}

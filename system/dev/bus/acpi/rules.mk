@@ -19,9 +19,6 @@ MODULE_COMPILEFLAGS += -Wno-null-pointer-arithmetic
 endif
 MODULE_CFLAGS += -fno-strict-aliasing
 
-ifeq ($(call TOBOOL, $(ENABLE_USER_PCI)), true)
-MODULE_DEFINES := ENABLE_USER_PCI=1
-endif
 
 MODULE_COMPILEFLAGS += -Ithird_party/lib/acpica/source/include \
 					   -I$($LOCAL_DIR)/include
@@ -29,6 +26,7 @@ MODULE_COMPILEFLAGS += -Ithird_party/lib/acpica/source/include \
 MODULE_SRCS := \
     $(LOCAL_DIR)/bus-acpi.c \
     $(LOCAL_DIR)/cpu-trace.c \
+    $(LOCAL_DIR)/sysmem.c \
     $(LOCAL_DIR)/debug.c \
     $(LOCAL_DIR)/dev/dev-battery.c \
     $(LOCAL_DIR)/dev/dev-cros-ec/dev.cpp \
@@ -42,17 +40,19 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/iommu.c \
     $(LOCAL_DIR)/methods.cpp \
     $(LOCAL_DIR)/nhlt.c \
-    $(LOCAL_DIR)/pci.c \
-    $(LOCAL_DIR)/pci.cpp \
     $(LOCAL_DIR)/pciroot.cpp \
     $(LOCAL_DIR)/power.c \
     $(LOCAL_DIR)/resources.c \
     $(LOCAL_DIR)/util.c \
 
+MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-hardware-power
+
 MODULE_STATIC_LIBS := \
     system/ulib/ddk \
     system/ulib/ddktl \
     system/ulib/fbl \
+    system/ulib/fidl \
     system/ulib/hid \
     system/ulib/pci \
     system/ulib/region-alloc \
@@ -64,6 +64,26 @@ MODULE_LIBS := \
     system/ulib/c \
     system/ulib/driver \
     system/ulib/zircon \
+
+# Userspace PCI feature flag. The scaffolding for the userspace pci bus driver is
+# in pci.cpp. If not enabled then the kernel pci bus driver initialization code
+# in ACPI (kpci.c)  will be built instead.
+ifeq ($(call TOBOOL, $(ENABLE_USER_PCI)), true)
+MODULE_DEFINES := ENABLE_USER_PCI=1
+MODULE_SRCS += $(LOCAL_DIR)/pci.cpp
+else
+MODULE_SRCS += $(LOCAL_DIR)/kpci.c
+endif
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-acpi \
+    system/banjo/ddk-protocol-hidbus \
+    system/banjo/ddk-protocol-intelhda-dsp \
+    system/banjo/ddk-protocol-pciroot \
+    system/banjo/ddk-protocol-platform-bus \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-scpi \
+    system/banjo/ddk-protocol-sysmem \
 
 else # !ARCH=x86
 

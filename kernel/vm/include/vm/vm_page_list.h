@@ -5,13 +5,13 @@
 #include <fbl/canary.h>
 #include <fbl/intrusive_wavl_tree.h>
 #include <fbl/macros.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 #include <vm/vm.h>
 #include <zircon/types.h>
 
 struct vm_page;
 
-class VmPageListNode final : public fbl::WAVLTreeContainable<fbl::unique_ptr<VmPageListNode>> {
+class VmPageListNode final : public fbl::WAVLTreeContainable<ktl::unique_ptr<VmPageListNode>> {
 public:
     explicit VmPageListNode(uint64_t offset);
     ~VmPageListNode();
@@ -27,7 +27,7 @@ public:
     // for every valid page in the node call the passed in function
     template <typename T>
     zx_status_t ForEveryPage(T func, uint64_t start_offset, uint64_t end_offset) {
-        DEBUG_ASSERT(IS_PAGE_ALIGNED(start_offset) && IS_PAGE_ALIGNED(end_offset));
+        DEBUG_ASSERT(end_offset >= start_offset);
         size_t start = 0;
         size_t end = kPageFanOut;
         if (start_offset > obj_offset_) {
@@ -53,7 +53,7 @@ public:
     // for every valid page in the node call the passed in function
     template <typename T>
     zx_status_t ForEveryPage(T func, uint64_t start_offset, uint64_t end_offset) const {
-        DEBUG_ASSERT(IS_PAGE_ALIGNED(start_offset) && IS_PAGE_ALIGNED(end_offset));
+        DEBUG_ASSERT(end_offset >= start_offset);
         size_t start = 0;
         size_t end = kPageFanOut;
         if (start_offset > obj_offset_) {
@@ -94,6 +94,40 @@ private:
 
     uint64_t obj_offset_ = 0;
     vm_page* pages_[kPageFanOut] = {};
+};
+
+class VmPageList;
+
+// Class which holds the list of vm_page structs removed from a VmPageList
+// by TakePages. The list include information about uncommitted pages.
+class VmPageSpliceList final {
+public:
+    VmPageSpliceList();
+    VmPageSpliceList(VmPageSpliceList&& other);
+    VmPageSpliceList& operator=(VmPageSpliceList&& other_tree);
+    ~VmPageSpliceList();
+
+    // Pops the next page off of the splice. If the next page was
+    // not committed, returns null.
+    vm_page* Pop();
+
+    // Returns true after the whole collection has been processed by Pop.
+    bool IsDone() const { return pos_ >= length_; }
+
+    DISALLOW_COPY_AND_ASSIGN_ALLOW_MOVE(VmPageSpliceList);
+private:
+    VmPageSpliceList(uint64_t offset, uint64_t length);
+    void FreeAllPages();
+
+    uint64_t offset_;
+    uint64_t length_;
+    uint64_t pos_ = 0;
+
+    VmPageListNode head_ = VmPageListNode(0);
+    fbl::WAVLTree<uint64_t, ktl::unique_ptr<VmPageListNode>> middle_;
+    VmPageListNode tail_ = VmPageListNode(0);
+
+    friend VmPageList;
 };
 
 class VmPageList final {
@@ -138,7 +172,6 @@ public:
     // walk the page tree, calling the passed in function on every tree node
     template <typename T>
     zx_status_t ForEveryPageInRange(T per_page_func, uint64_t start_offset, uint64_t end_offset) {
-        DEBUG_ASSERT(IS_PAGE_ALIGNED(start_offset) && IS_PAGE_ALIGNED(end_offset));
         // Find the first node with a start after start_offset; if start_offset
         // is in a node, it'll be in the one before it.
         auto start = --list_.upper_bound(start_offset);
@@ -162,7 +195,6 @@ public:
     template <typename T>
     zx_status_t ForEveryPageInRange(T per_page_func, uint64_t start_offset,
                                     uint64_t end_offset) const {
-        DEBUG_ASSERT(IS_PAGE_ALIGNED(start_offset) && IS_PAGE_ALIGNED(end_offset));
         // Find the first node with a start after start_offset; if start_offset
         // is in a node, it'll be in the one before it.
         auto start = --list_.upper_bound(start_offset);
@@ -185,10 +217,17 @@ public:
 
     zx_status_t AddPage(vm_page*, uint64_t offset);
     vm_page* GetPage(uint64_t offset);
-    zx_status_t FreePage(uint64_t offset);
+    // Removes the page at |offset| from the list. Returns true if a page was
+    // present, false otherwise.  If a page was removed, returns it in |page|.
+    bool RemovePage(uint64_t offset, vm_page** page);
     size_t FreeAllPages();
+    // Frees all pages in the range [start_offset, end_offset).
+    void FreePages(uint64_t start_offset, uint64_t end_offset);
     bool IsEmpty();
 
+    // Takes the pages in the range [offset, length) out of this page list.
+    VmPageSpliceList TakePages(uint64_t offset, uint64_t length);
+
 private:
-    fbl::WAVLTree<uint64_t, fbl::unique_ptr<VmPageListNode>> list_;
+    fbl::WAVLTree<uint64_t, ktl::unique_ptr<VmPageListNode>> list_;
 };

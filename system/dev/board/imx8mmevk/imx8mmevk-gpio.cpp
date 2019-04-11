@@ -6,8 +6,8 @@
 
 #include <ddk/platform-defs.h>
 #include <ddk/protocol/gpio.h>
-#include <ddk/protocol/platform-bus.h>
-#include <ddktl/protocol/gpio-impl.h>
+#include <ddk/protocol/platform/bus.h>
+#include <ddktl/protocol/gpioimpl.h>
 #include <soc/imx8m-mini/imx8m-mini-hw.h>
 #include <soc/imx8m-mini/imx8m-mini-iomux.h>
 
@@ -179,15 +179,14 @@ zx_status_t Board::StartGpio() {
         return status;
     }
 
-    status = device_get_protocol(parent(), ZX_PROTOCOL_GPIO_IMPL, &gpio_impl_);
+    gpio_impl_ = ddk::GpioImplProtocolClient(parent());
     if (status != ZX_OK) {
         ERROR("GetProtocol() error: %d\n", status);
         return status;
     }
 
-    ddk::GpioImplProtocolProxy gpio(&gpio_impl_);
     for (const auto& mux : iomux) {
-        status = gpio.SetAltFunction(0, mux);
+        status = gpio_impl_.SetAltFunction(0, mux);
         if (status != ZX_OK) {
             iomux_cfg_struct mode = GET_MUX_MODE_VAL(mux);
             iomux_cfg_struct ctl_off = GET_MUX_CTL_OFF_VAL(mux);

@@ -1,11 +1,13 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-#include <zircon/assert.h>
-#include <zircon/compiler.h>
-#include <lib/zx/channel.h>
 #include <fbl/algorithm.h>
 #include <fbl/auto_lock.h>
-#include <fbl/limits.h>
+#include <lib/zx/channel.h>
 #include <string.h>
+#include <zircon/assert.h>
+#include <zircon/compiler.h>
 
 #include <dispatcher-pool/dispatcher-thread-pool.h>
 
@@ -13,6 +15,8 @@
 #include <intel-hda/codec-utils/stream-base.h>
 #include <intel-hda/utils/intel-hda-proto.h>
 #include <intel-hda/utils/utils.h>
+
+#include <utility>
 
 #include "debug-logging.h"
 
@@ -101,10 +105,10 @@ zx_status_t IntelHDACodecDriverBase::Bind(zx_device_t* codec_dev, const char* na
         codec->ProcessClientDeactivate(channel);
     });
 
-    res = device_channel->Activate(fbl::move(channel),
+    res = device_channel->Activate(std::move(channel),
                                    default_domain_,
-                                   fbl::move(phandler),
-                                   fbl::move(chandler));
+                                   std::move(phandler),
+                                   std::move(chandler));
     if (res != ZX_OK) {
         fbl::AutoLock device_channel_lock(&device_channel_lock_);
         device_channel_.reset();
@@ -217,7 +221,7 @@ zx_status_t IntelHDACodecDriverBase::ProcessClientRequest(dispatcher::Channel* c
     }
 
     if (resp_size < sizeof(resp.hdr)) {
-        DEBUG_LOG("Bad length (%u) reading from device channel (expectd at least %zu)!\n",
+        DEBUG_LOG("Bad length (%u) reading from device channel (expected at least %zu)!\n",
                   resp_size, sizeof(resp.hdr));
         return ZX_ERR_INVALID_ARGS;
     }
@@ -232,7 +236,7 @@ zx_status_t IntelHDACodecDriverBase::ProcessClientRequest(dispatcher::Channel* c
                       resp.hdr.transaction_id);
             return ZX_ERR_BAD_STATE;
         } else {
-            return ProcessStreamResponse(stream, resp, resp_size, fbl::move(rxed_handle));
+            return ProcessStreamResponse(stream, resp, resp_size, std::move(rxed_handle));
         }
     } else {
         switch(resp.hdr.cmd) {
@@ -243,13 +247,13 @@ zx_status_t IntelHDACodecDriverBase::ProcessClientRequest(dispatcher::Channel* c
             if (!payload.unsolicited())
                 return ProcessSolicitedResponse(payload);
 
-            // If this is an unsolicited reponse, check to see if the tag is
+            // If this is an unsolicited response, check to see if the tag is
             // owned by a stream or not.  If it is, dispatch the payload to the
             // stream, otherwise give it to the codec.
             uint32_t stream_id;
             zx_status_t res = MapUnsolTagToStreamId(payload.unsol_tag(), &stream_id);
             if (res != ZX_OK) {
-                DEBUG_LOG("Received unexpected unsolicited reponse (tag %u)\n",
+                DEBUG_LOG("Received unexpected unsolicited response (tag %u)\n",
                           payload.unsol_tag());
                 return ZX_OK;
             }
@@ -259,7 +263,7 @@ zx_status_t IntelHDACodecDriverBase::ProcessClientRequest(dispatcher::Channel* c
 
             auto stream = GetActiveStream(stream_id);
             if (stream == nullptr) {
-                DEBUG_LOG("Received unsolicited reponse (tag %u) for inactive stream (id %u)\n",
+                DEBUG_LOG("Received unsolicited response (tag %u) for inactive stream (id %u)\n",
                           payload.unsol_tag(), stream_id);
                 return ZX_OK;
             } else {
@@ -312,7 +316,7 @@ zx_status_t IntelHDACodecDriverBase::ProcessStreamResponse(
             return res;
         }
 
-        return stream->ProcessSetStreamFmt(resp.set_stream_fmt, fbl::move(channel));
+        return stream->ProcessSetStreamFmt(resp.set_stream_fmt, std::move(channel));
     }
 
     default:
@@ -402,7 +406,7 @@ zx_status_t IntelHDACodecDriverBase::ActivateStream(
         device_channel = device_channel_;
     }
 
-    // Add this channel to the set of active channels.  If we encounte a key
+    // Add this channel to the set of active channels.  If we encounter a key
     // collision, then something is wrong with our codec driver implementation.
     // Fail the activation.
     {

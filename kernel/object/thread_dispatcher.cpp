@@ -22,7 +22,6 @@
 #include <zircon/syscalls/debug.h>
 #include <zircon/types.h>
 
-#include <object/c_user_thread.h>
 #include <object/excp_port.h>
 #include <object/handle.h>
 #include <object/job_dispatcher.h>
@@ -41,7 +40,7 @@ zx_status_t ThreadDispatcher::Create(fbl::RefPtr<ProcessDispatcher> process, uin
                                      fbl::RefPtr<Dispatcher>* out_dispatcher,
                                      zx_rights_t* out_rights) {
     fbl::AllocChecker ac;
-    auto disp = fbl::AdoptRef(new (&ac) ThreadDispatcher(fbl::move(process), flags));
+    auto disp = fbl::AdoptRef(new (&ac) ThreadDispatcher(ktl::move(process), flags));
     if (!ac.check())
         return ZX_ERR_NO_MEMORY;
 
@@ -50,13 +49,13 @@ zx_status_t ThreadDispatcher::Create(fbl::RefPtr<ProcessDispatcher> process, uin
         return result;
 
     *out_rights = default_rights();
-    *out_dispatcher = fbl::move(disp);
+    *out_dispatcher = ktl::move(disp);
     return ZX_OK;
 }
 
 ThreadDispatcher::ThreadDispatcher(fbl::RefPtr<ProcessDispatcher> process,
                                    uint32_t flags)
-    : process_(fbl::move(process)) {
+    : process_(ktl::move(process)) {
     LTRACE_ENTRY_OBJ;
 }
 
@@ -120,7 +119,7 @@ zx_status_t ThreadDispatcher::Initialize(const char* name, size_t len) {
     thread_set_user_callback(&thread_, &ThreadUserCallback);
 
     // set the per-thread pointer
-    lkthread->user_thread = reinterpret_cast<void*>(this);
+    lkthread->user_thread = this;
 
     // associate the proc's address space with this thread
     process_->aspace()->AttachToThread(lkthread);
@@ -176,19 +175,32 @@ zx_status_t ThreadDispatcher::Start(uintptr_t entry, uintptr_t sp,
     user_arg2_ = arg2;
 
     // add ourselves to the process, which may fail if the process is in a dead state
-    auto ret = process_->AddThread(this, initial_thread);
+    bool suspended;
+    auto ret = process_->AddThread(this, initial_thread, &suspended);
     if (ret < 0)
         return ret;
 
+    // update our suspend count to account for our parent state
+    if (suspended)
+        suspend_count_++;
+
     // bump the ref on this object that the LK thread state will now own until the lk thread has exited
     AddRef();
-
-    // mark ourselves as running and resume the kernel thread
-    SetStateLocked(ThreadState::Lifecycle::RUNNING);
-
     thread_.user_tid = get_koid();
     thread_.user_pid = process_->get_koid();
-    thread_resume(&thread_);
+
+    // start the thread in RUNNING state, if we're starting suspended it will transition to
+    // SUSPENDED when it checks thread signals before executing any user code
+    SetStateLocked(ThreadState::Lifecycle::RUNNING);
+
+    if (suspend_count_ == 0) {
+        thread_resume(&thread_);
+    } else {
+        // thread_suspend() only fails if the underlying thread is already dead, which we should
+        // ignore here to match the behavior of thread_resume(); our Exiting() callback will run
+        // shortly to clean us up
+        thread_suspend(&thread_);
+    }
 
     return ZX_OK;
 }
@@ -251,17 +263,33 @@ zx_status_t ThreadDispatcher::Suspend() {
 
     LTRACEF("%p: state %s\n", this, ThreadLifecycleToString(state_.lifecycle()));
 
-    if (state_.lifecycle() != ThreadState::Lifecycle::RUNNING &&
-        state_.lifecycle() != ThreadState::Lifecycle::SUSPENDED)
-        return ZX_ERR_BAD_STATE;
-
+    // Update |suspend_count_| in all cases so that we can always verify a sane value - it's
+    // possible both Suspend() and Resume() get called while the thread is DYING.
     DEBUG_ASSERT(suspend_count_ >= 0);
     suspend_count_++;
-    if (suspend_count_ == 1)
-        return thread_suspend(&thread_);
 
-    // It was already suspended.
-    return ZX_OK;
+    switch (state_.lifecycle()) {
+    case ThreadState::Lifecycle::INITIAL:
+        // Unreachable, thread leaves INITIAL state before Create() returns.
+        DEBUG_ASSERT(false);
+        __UNREACHABLE;
+    case ThreadState::Lifecycle::INITIALIZED:
+        // If the thread hasn't started yet, don't actually try to suspend it. We need to let
+        // Start() run first to set up userspace entry data, which will then suspend if the count
+        // is still >0 at that time.
+        return ZX_OK;
+    case ThreadState::Lifecycle::RUNNING:
+    case ThreadState::Lifecycle::SUSPENDED:
+        if (suspend_count_ == 1)
+            return thread_suspend(&thread_);
+        return ZX_OK;
+    case ThreadState::Lifecycle::DYING:
+    case ThreadState::Lifecycle::DEAD:
+        return ZX_ERR_BAD_STATE;
+    }
+
+    DEBUG_ASSERT(false);
+    return ZX_ERR_BAD_STATE;
 }
 
 void ThreadDispatcher::Resume() {
@@ -273,18 +301,33 @@ void ThreadDispatcher::Resume() {
 
     LTRACEF("%p: state %s\n", this, ThreadLifecycleToString(state_.lifecycle()));
 
-    // It's possible the thread never transitioned from RUNNING -> SUSPENDED.
-    // But if it's dying or dead then bail.
-    if (state_.lifecycle() != ThreadState::Lifecycle::RUNNING &&
-        state_.lifecycle() != ThreadState::Lifecycle::SUSPENDED) {
-        return;
-    }
-
     DEBUG_ASSERT(suspend_count_ > 0);
     suspend_count_--;
-    if (suspend_count_ == 0)
-        thread_resume(&thread_);
-    // Otherwise there's still an out-standing Suspend() call so keep it suspended.
+
+    switch (state_.lifecycle()) {
+    case ThreadState::Lifecycle::INITIAL:
+        // Unreachable, thread leaves INITIAL state before Create() returns.
+        DEBUG_ASSERT(false);
+        __UNREACHABLE;
+    case ThreadState::Lifecycle::INITIALIZED:
+        break;
+    case ThreadState::Lifecycle::RUNNING:
+    case ThreadState::Lifecycle::SUSPENDED:
+        // It's possible the thread never transitioned from RUNNING -> SUSPENDED.
+        if (suspend_count_ == 0)
+            thread_resume(&thread_);
+        break;
+    case ThreadState::Lifecycle::DYING:
+    case ThreadState::Lifecycle::DEAD:
+        // If it's dying or dead then bail.
+        break;
+    }
+}
+
+bool ThreadDispatcher::IsDyingOrDead() const {
+    Guard<fbl::Mutex> guard{get_lock()};
+    return state_.lifecycle() == ThreadState::Lifecycle::DYING ||
+           state_.lifecycle() == ThreadState::Lifecycle::DEAD;
 }
 
 static void ThreadCleanupDpc(dpc_t* d) {
@@ -386,8 +429,9 @@ void ThreadDispatcher::Resuming() {
 }
 
 // low level LK callback in thread's context just before exiting
-void ThreadDispatcher::ThreadUserCallback(enum thread_user_state_change new_state, void* arg) {
-    ThreadDispatcher* t = reinterpret_cast<ThreadDispatcher*>(arg);
+void ThreadDispatcher::ThreadUserCallback(enum thread_user_state_change new_state, thread_t* arg) {
+    ThreadDispatcher* t = arg->user_thread;
+    DEBUG_ASSERT(t != nullptr);
 
     switch (new_state) {
     case THREAD_USER_STATE_EXIT:
@@ -481,7 +525,7 @@ zx_status_t ThreadDispatcher::SetExceptionPort(fbl::RefPtr<ExceptionPort> eport)
     return ZX_OK;
 }
 
-bool ThreadDispatcher::ResetExceptionPort(bool quietly) {
+bool ThreadDispatcher::ResetExceptionPort() {
     canary_.Assert();
 
     fbl::RefPtr<ExceptionPort> eport;
@@ -517,8 +561,7 @@ bool ThreadDispatcher::ResetExceptionPort(bool quietly) {
         eport->OnTargetUnbind();
     }
 
-    if (!quietly)
-        OnExceptionPortRemoval(eport);
+    OnExceptionPortRemoval(eport);
     return true;
 }
 
@@ -650,15 +693,11 @@ zx_status_t ThreadDispatcher::MarkExceptionHandledWorker(PortDispatcher* eport,
     if (!InExceptionLocked())
         return ZX_ERR_BAD_STATE;
 
-    // TODO(brettw) ZX-2720 Remove this test when all callers are updated to use
-    // the exception port variant, and then always validate |eport|.
-    if (eport != nullptr) {
-        // The exception port isn't used directly but is instead proof that the caller has
-        // permission to resume from the exception. So validate that it corresponds to the
-        // task being resumed.
-        if (!exception_wait_port_->PortMatches(eport, false))
-            return ZX_ERR_ACCESS_DENIED;
-    }
+    // The exception port isn't used directly but is instead proof that the caller has
+    // permission to resume from the exception. So validate that it corresponds to the
+    // task being resumed.
+    if (!exception_wait_port_->PortMatches(eport, /* allow_null */ false))
+        return ZX_ERR_ACCESS_DENIED;
 
     // The thread can be in several states at this point. Alas this is a bit complicated because
     // there is a window in the middle of ExceptionHandlerExchange between the thread going to sleep
@@ -775,6 +814,9 @@ zx_status_t ThreadDispatcher::GetInfoForUserspace(zx_info_thread_t* info) {
             break;
         case Blocked::INTERRUPT:
             info->state = ZX_THREAD_STATE_BLOCKED_INTERRUPT;
+            break;
+        case Blocked::PAGER:
+            info->state = ZX_THREAD_STATE_BLOCKED_PAGER;
             break;
         default:
             DEBUG_ASSERT_MSG(false, "unexpected blocked reason: %d",
@@ -968,13 +1010,6 @@ zx_status_t ThreadDispatcher::SetPriority(int32_t priority) {
     // The priority was already validated by the Profile dispatcher.
     thread_set_priority(&thread_, priority);
     return ZX_OK;
-}
-
-void get_user_thread_process_name(const void* user_thread,
-                                  char out_name[ZX_MAX_NAME_LEN]) {
-    const ThreadDispatcher* ut =
-        reinterpret_cast<const ThreadDispatcher*>(user_thread);
-    ut->process()->get_name(out_name);
 }
 
 const char* ThreadLifecycleToString(ThreadState::Lifecycle lifecycle) {

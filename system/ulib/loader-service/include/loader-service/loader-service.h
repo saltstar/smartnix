@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -38,12 +41,10 @@ zx_status_t loader_service_create_fs(async_dispatcher_t* dispatcher, loader_serv
 //
 // Requests will be processed on the given |async|. If |async| is NULL, this
 // library will create a new thread and listen for requests on that thread.
-// Paths and objects will be loaded relative to |root_dir_fd| and data will be
-// published relative to |data_sink_dir_fd|; the two file descriptors
-// are consumed on success.
+// Paths and objects will be loaded relative to |root_dir_fd|, and the loader
+// service will take ownership of |root_dir_fd|.
 zx_status_t loader_service_create_fd(async_dispatcher_t* dispatcher,
                                      int root_dir_fd,
-                                     int data_sink_dir_fd,
                                      loader_service_t** out);
 
 // Returns a new dl_set_loader_service-compatible loader service channel.
@@ -84,4 +85,5 @@ zx_status_t loader_service_create(async_dispatcher_t* dispatcher,
 // The |finalizer| in |loader_service_ops_t| will be called shortly before |svc|
 // destroys itself.
 zx_status_t loader_service_release(loader_service_t* svc);
+
 __END_CDECLS

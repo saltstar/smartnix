@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "generator.h"
 
@@ -29,6 +32,34 @@ bool JsonGenerator::syscall(std::ofstream& os, const Syscall& sc) {
          index != sc.attributes.size(); ++index) {
         os << "        \"" << sc.attributes[index] << "\"";
         if (index < sc.attributes.size() - 1) {
+            os << ",";
+        }
+        os << "\n";
+    }
+    os << "      ],\n";
+
+    // Top description.
+    os << "      \"top_description\": [\n";
+    os << "        ";
+    for (size_t i = 0; i < sc.top_description.size(); ++i) {
+        os << "\"" << sc.top_description[i] << "\"";
+        if (i < sc.top_description.size() - 1) {
+            os << ", ";
+        }
+    }
+    os << "\n      ],\n";
+
+    // Requirements.
+    os << "      \"requirements\": [\n";
+    for (size_t i = 0; i < sc.requirements.size(); ++i) {
+        os << "        ";
+        for (size_t j = 0; j < sc.requirements[i].size(); ++j) {
+            os << "\"" << sc.requirements[i][j] << "\"";
+            if (j < sc.requirements[i].size() - 1) {
+                os << ", ";
+            }
+        }
+        if (i < sc.requirements.size() - 1) {
             os << ",";
         }
         os << "\n";

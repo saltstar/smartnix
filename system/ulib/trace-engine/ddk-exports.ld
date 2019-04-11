@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Fuchsia Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 
 /*
  * This is an input linker script used in linking libdriver.so.
@@ -13,6 +18,7 @@
 /* Context acquire/release. */
 EXTERN(trace_acquire_context)
 EXTERN(trace_acquire_context_for_category)
+EXTERN(trace_acquire_context_for_category_cached)
 EXTERN(trace_release_context)
 
 /* Basic events. */
@@ -30,11 +36,16 @@ EXTERN(trace_context_write_instant_event_record)
 
 /* Misc. */
 EXTERN(trace_generate_nonce)
+EXTERN(trace_state)
 EXTERN(trace_is_category_enabled)
 EXTERN(trace_context_is_category_enabled)
 EXTERN(trace_context_begin_write_blob_record)
 EXTERN(trace_context_write_blob_record)
+EXTERN(trace_context_write_kernel_object_record_for_handle)
+EXTERN(trace_context_register_current_thread)
+EXTERN(trace_context_register_string_literal)
 EXTERN(trace_context_register_vthread)
+EXTERN(trace_engine_flush_category_cache)
 
 /* The observer API. */
 EXTERN(trace_register_observer)

@@ -1,9 +1,13 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <blobfs/journal.h>
-
 #include <fbl/unique_ptr.h>
 #include <lib/cksum.h>
 #include <zircon/types.h>
+
+#include <utility>
 
 namespace blobfs {
 
@@ -16,10 +20,10 @@ static int JournalThread(void* arg) {
     return 0;
 }
 
-JournalEntry::JournalEntry(Journal* journal, EntryStatus status, size_t header_index,
+JournalEntry::JournalEntry(JournalBase* journal, EntryStatus status, size_t header_index,
                            size_t commit_index, fbl::unique_ptr<WritebackWork> work)
         : journal_(journal), status_(static_cast<uint32_t>(status)), block_count_(0),
-          header_index_(header_index), commit_index_(commit_index), work_(fbl::move(work)) {
+          header_index_(header_index), commit_index_(commit_index), work_(std::move(work)) {
     if (status != EntryStatus::kInit) {
         // In the case of a sync request or error, return early.
         ZX_DEBUG_ASSERT(status == EntryStatus::kSync || status == EntryStatus::kError);
@@ -62,7 +66,7 @@ fbl::unique_ptr<WritebackWork> JournalEntry::TakeWork() {
         work_->SetSyncCallback(CreateSyncCallback());
     }
 
-    return fbl::move(work_);
+    return std::move(work_);
 }
 
 ReadyCallback JournalEntry::CreateReadyCallback() {
@@ -73,38 +77,41 @@ ReadyCallback JournalEntry::CreateReadyCallback() {
 }
 
 SyncCallback JournalEntry::CreateSyncCallback() {
-    return [this] (zx_status_t status) {
-        EntryStatus last_status;
-        // The callback sets the state of the JournalEntry based on the status of writeback.
-        if (status == ZX_OK) {
-            last_status = SetStatus(EntryStatus::kPersisted);
-            ZX_DEBUG_ASSERT(last_status == EntryStatus::kWaiting);
-        } else {
-            SetStatus(EntryStatus::kError);
-        }
-
-        // Signal the journal that an entry is complete and ready for processing.
-        journal_->SendSignal(status);
+    return [this] (zx_status_t result) {
+        // Signal the journal that an entry is ready for processing.
+        journal_->ProcessEntryResult(result, this);
     };
+}
+
+void JournalEntry::SetStatusFromResult(zx_status_t result) {
+    // Set the state of the JournalEntry based on the last received result.
+    if (result != ZX_OK) {
+        SetStatus(EntryStatus::kError);
+        return;
+    }
+
+    EntryStatus last_status = SetStatus(EntryStatus::kPersisted);
+    ZX_DEBUG_ASSERT(last_status == EntryStatus::kWaiting);
 }
 
 void JournalEntry::SetChecksum(uint32_t checksum) {
     commit_block_.checksum = checksum;
 }
 
-zx_status_t Journal::Create(Blobfs* blobfs, uint64_t journal_blocks, uint64_t start_block,
-                            fbl::unique_ptr<Journal>* out) {
+zx_status_t Journal::Create(TransactionManager* transaction_manager, uint64_t journal_blocks,
+                            uint64_t start_block, fbl::unique_ptr<Journal>* out) {
     // Create the buffer with 1 less than total journal blocks.
     // (1 block must be reserved for journal info).
     zx_status_t status;
     fbl::unique_ptr<Buffer> buffer;
-    if ((status = Buffer::Create(blobfs, journal_blocks - 1, "blobfs-journal", &buffer)) != ZX_OK) {
+    if ((status = Buffer::Create(transaction_manager, journal_blocks - 1, "blobfs-journal",
+                                 &buffer)) != ZX_OK) {
         return status;
     }
 
     // Create another buffer for the journal info block.
     fbl::unique_ptr<Buffer> info;
-    if ((status = Buffer::Create(blobfs, 1, "blobfs-journal-info", &info)) != ZX_OK) {
+    if ((status = Buffer::Create(transaction_manager, 1, "blobfs-journal-info", &info)) != ZX_OK) {
         return status;
     }
 
@@ -112,20 +119,29 @@ zx_status_t Journal::Create(Blobfs* blobfs, uint64_t journal_blocks, uint64_t st
     info->ReserveIndex();
 
     // Create the Journal with the newly created vmos.
-    fbl::unique_ptr<Journal> journal(new Journal(blobfs, fbl::move(info), fbl::move(buffer),
-                                                 start_block));
+    fbl::unique_ptr<Journal> journal(new Journal(transaction_manager, std::move(info),
+                                                 std::move(buffer), start_block));
 
     // Load contents of journal from disk.
     if ((status = journal->Load()) != ZX_OK) {
-        fprintf(stderr, "Journal: Failed to load from disk: %d\n", status);
+        FS_TRACE_ERROR("Journal: Failed to load from disk: %d\n", status);
         return status;
     }
 
-    *out = fbl::move(journal);
+    *out = std::move(journal);
     return ZX_OK;
 }
 
 Journal::~Journal() {
+    // Ensure that thread teardown has completed, or that it was never brought up to begin with.
+    ZX_DEBUG_ASSERT(!IsRunning());
+
+    // Ensure that work and producer queues are currently empty.
+    ZX_DEBUG_ASSERT(work_queue_.is_empty());
+    ZX_DEBUG_ASSERT(producer_queue_.is_empty());
+}
+
+zx_status_t Journal::Teardown() {
     WritebackState state;
 
     {
@@ -137,14 +153,17 @@ Journal::~Journal() {
         cnd_signal(&consumer_cvar_);
     }
 
+    zx_status_t status = ZX_OK;
     if (state != WritebackState::kInit && state != WritebackState::kReady) {
         // Block until the thread completes itself.
-        thrd_join(thread_, nullptr);
+        int result = -1;
+        int success = thrd_join(thread_, &result);
+        if (result != 0 || success != thrd_success) {
+            status = ZX_ERR_INTERNAL;
+        }
     }
 
-    // Ensure that work and producer queues are currently empty.
-    ZX_DEBUG_ASSERT(work_queue_.is_empty());
-    ZX_DEBUG_ASSERT(producer_queue_.is_empty());
+    return status;
 }
 
 zx_status_t Journal::Load() {
@@ -152,7 +171,7 @@ zx_status_t Journal::Load() {
     ZX_DEBUG_ASSERT(state_ == WritebackState::kInit);
 
     // Load info block and journal entries into their respective buffers.
-    fs::ReadTxn txn(blobfs_);
+    fs::ReadTxn txn(transaction_manager_);
     info_->Load(&txn, start_block_);
     entries_->Load(&txn, start_block_ + 1);
     zx_status_t status = txn.Transact();
@@ -165,7 +184,7 @@ zx_status_t Journal::Load() {
 
     // Verify the journal magic matches.
     if (info->magic != kJournalMagic) {
-        fprintf(stderr, "Journal info bad magic\n");
+        FS_TRACE_ERROR("Journal info bad magic\n");
         return ZX_ERR_BAD_STATE;
     }
 
@@ -178,7 +197,7 @@ zx_status_t Journal::Load() {
         info->checksum = crc32(0, info_ptr, sizeof(JournalInfo));
 
         if (old_checksum != info->checksum) {
-            fprintf(stderr, "Journal info checksum corrupt\n");
+            FS_TRACE_ERROR("Journal info checksum corrupt\n");
             return ZX_ERR_BAD_STATE;
         }
     }
@@ -249,16 +268,17 @@ zx_status_t Journal::InitWriteback() {
     ZX_DEBUG_ASSERT(state_ == WritebackState::kReady);
 
     if (entries_->start() > 0 || entries_->length() > 0) {
-        fprintf(stderr, "Cannot initialize journal writeback - entries may still exist.\n");
+        FS_TRACE_ERROR("Cannot initialize journal writeback - entries may still exist.\n");
         return ZX_ERR_BAD_STATE;
     }
 
     if (thrd_create_with_name(&thread_, JournalThread, this, "blobfs-journal") !=
         thrd_success) {
-        fprintf(stderr, "Failed to create journal thread.\n");
+        FS_TRACE_ERROR("Failed to create journal thread.\n");
         return ZX_ERR_NO_RESOURCES;
     }
 
+    state_ = WritebackState::kRunning;
     return ZX_OK;
 }
 
@@ -281,6 +301,8 @@ zx_status_t Journal::Enqueue(fbl::unique_ptr<WritebackWork> work) {
         // If we are in "read only" mode, set an error status.
         status = ZX_ERR_BAD_STATE;
     } else if (blocks) {
+        ZX_DEBUG_ASSERT(state_ == WritebackState::kRunning);
+
         // If the work contains no blocks (i.e. it is a sync work), proceed to create an entry
         // without enqueueing any data to the buffer.
 
@@ -293,8 +315,7 @@ zx_status_t Journal::Enqueue(fbl::unique_ptr<WritebackWork> work) {
 
         if (IsReadOnly()) {
             // The Journal is in a bad state and is no longer accepting new entries.
-            ZX_ASSERT_MSG(status == ZX_ERR_BAD_STATE,
-                          "Requested txn (%zu blocks) larger than journal buffer", blocks);
+            status = ZX_ERR_BAD_STATE;
         } else {
             // Assign header index of journal entry to the next available value before we attempt to
             // copy the meat of the entry to the buffer.
@@ -317,7 +338,7 @@ zx_status_t Journal::Enqueue(fbl::unique_ptr<WritebackWork> work) {
     }
 
     // Create the journal entry and push it onto the work queue.
-    fbl::unique_ptr<JournalEntry> entry = CreateEntry(header_index, commit_index, fbl::move(work));
+    fbl::unique_ptr<JournalEntry> entry = CreateEntry(header_index, commit_index, std::move(work));
 
     if (entry->GetStatus() == EntryStatus::kInit) {
         // If we have a non-sync work, there is some extra preparation we need to do.
@@ -327,7 +348,7 @@ zx_status_t Journal::Enqueue(fbl::unique_ptr<WritebackWork> work) {
             // part of this step.
             PrepareWork(entry.get(), &work);
             ZX_DEBUG_ASSERT(work != nullptr);
-            status = EnqueueEntryWork(fbl::move(work));
+            status = EnqueueEntryWork(std::move(work));
         } else {
             // If the status is not okay (i.e. we are in a readonly state), do no additional
             // processing but set the entry state to error.
@@ -336,7 +357,7 @@ zx_status_t Journal::Enqueue(fbl::unique_ptr<WritebackWork> work) {
     }
 
     // Queue the entry to be processed asynchronously.
-    work_queue_.push(fbl::move(entry));
+    work_queue_.push(std::move(entry));
 
     // Signal the JournalThread that there is at least one entry ready to be processed.
     SendSignalLocked(status);
@@ -354,6 +375,16 @@ void Journal::SendSignalLocked(zx_status_t status) {
     cnd_signal(&consumer_cvar_);
 }
 
+bool Journal::IsRunning() const {
+    switch (state_) {
+    case WritebackState::kRunning:
+    case WritebackState::kReadOnly:
+        return true;
+    default:
+        return false;
+    }
+}
+
 fbl::unique_ptr<JournalEntry> Journal::CreateEntry(uint64_t header_index, uint64_t commit_index,
                                                    fbl::unique_ptr<WritebackWork> work) {
     EntryStatus status = EntryStatus::kInit;
@@ -369,7 +400,7 @@ fbl::unique_ptr<JournalEntry> Journal::CreateEntry(uint64_t header_index, uint64
     }
 
     return fbl::make_unique<JournalEntry>(this, status, header_index, commit_index,
-                                          fbl::move(work));
+                                          std::move(work));
 }
 
 void Journal::PrepareWork(JournalEntry* entry, fbl::unique_ptr<WritebackWork>* out) {
@@ -393,7 +424,16 @@ void Journal::PrepareWork(JournalEntry* entry, fbl::unique_ptr<WritebackWork>* o
     // Make sure the work is prepared for the writeback queue.
     work->SetReadyCallback(entry->CreateReadyCallback());
     work->SetSyncCallback(entry->CreateSyncCallback());
-    *out = fbl::move(work);
+    *out = std::move(work);
+}
+
+void Journal::ProcessEntryResult(zx_status_t result, JournalEntry* entry) {
+    fbl::AutoLock lock(&lock_);
+    // Since it is possible for the entry to be deleted immediately after updating its status
+    // (if the journal is being processed at the time), it is safer to update the entry status
+    // under the journal lock.
+    entry->SetStatusFromResult(result);
+    SendSignalLocked(result);
 }
 
 void Journal::PrepareBuffer(JournalEntry* entry) {
@@ -450,14 +490,14 @@ void Journal::PrepareDelete(JournalEntry* entry, WritebackWork* work) {
 
 fbl::unique_ptr<WritebackWork> Journal::CreateWork() {
     fbl::unique_ptr<WritebackWork> work;
-    blobfs_->CreateWork(&work, nullptr);
+    transaction_manager_->CreateWork(&work, nullptr);
     ZX_DEBUG_ASSERT(work != nullptr);
-    return fbl::move(work);
+    return work;
 }
 
 zx_status_t Journal::EnqueueEntryWork(fbl::unique_ptr<WritebackWork> work) {
     entries_->ValidateTransaction(work.get());
-    return blobfs_->EnqueueWork(fbl::move(work), EnqueueType::kData);
+    return transaction_manager_->EnqueueWork(std::move(work), EnqueueType::kData);
 }
 
 bool Journal::VerifyEntryMetadata(size_t header_index, uint64_t last_timestamp, bool expect_valid) {
@@ -469,7 +509,7 @@ bool Journal::VerifyEntryMetadata(size_t header_index, uint64_t last_timestamp, 
         // should not be replayed. This is only a journal replay "error" if, according to the
         // journal super block, we still have some entries left to process (i.e. length_ > 0).
         if (expect_valid) {
-            fprintf(stderr, "Journal Replay Error: invalid header found.\n");
+            FS_TRACE_ERROR("Journal Replay Error: invalid header found.\n");
         }
 
         return false;
@@ -479,12 +519,12 @@ bool Journal::VerifyEntryMetadata(size_t header_index, uint64_t last_timestamp, 
     CommitBlock* commit = GetCommitBlock(commit_index);
 
     if (commit->magic != kEntryCommitMagic) {
-        fprintf(stderr, "Journal Replay Error: commit magic does not match expected\n");
+        FS_TRACE_ERROR("Journal Replay Error: commit magic does not match expected\n");
         return false;
     }
 
     if (commit->timestamp != header->timestamp) {
-        fprintf(stderr, "Journal Replay Error: commit timestamp does not match expected\n");
+        FS_TRACE_ERROR("Journal Replay Error: commit timestamp does not match expected\n");
         return false;
     }
 
@@ -494,7 +534,7 @@ bool Journal::VerifyEntryMetadata(size_t header_index, uint64_t last_timestamp, 
     // Since we already found a valid header, we expect this to be a valid entry. If something
     // in the commit block does not match what we expect, this is an error.
     if (commit->checksum != checksum) {
-        fprintf(stderr, "Journal Replay Error: commit checksum does not match expected\n");
+        FS_TRACE_ERROR("Journal Replay Error: commit checksum does not match expected\n");
         return false;
     }
 
@@ -529,9 +569,9 @@ zx_status_t Journal::ReplayEntry(size_t header_index, size_t remaining_length,
     // journal itself is not corrupt (at least up to this point), we would expect replay to
     // succeed on a subsequent attempt, so we should keep any existing entries intact. (i.e.,
     // do not reset the journal metadata in this failure case).
-    zx_status_t status = EnqueueEntryWork(fbl::move(work));
+    zx_status_t status = EnqueueEntryWork(std::move(work));
     if (status != ZX_OK) {
-        fprintf(stderr, "Journal replay failed with status %d\n", status);
+        FS_TRACE_ERROR("Journal replay failed with status %d\n", status);
     }
 
     return status;
@@ -549,14 +589,14 @@ zx_status_t Journal::CommitReplay() {
     entries_->AddTransaction(0, start_block_ + 1, 1, work.get());
 
     zx_status_t status;
-    if ((status = EnqueueEntryWork(fbl::move(work))) != ZX_OK) {
-        fprintf(stderr, "Journal replay failed with status %d\n", status);
+    if ((status = EnqueueEntryWork(std::move(work))) != ZX_OK) {
+        FS_TRACE_ERROR("Journal replay failed with status %d\n", status);
         return status;
     }
 
     // Write out the updated info block to disk.
     if ((status = WriteInfo(entries_->start(), entries_->length())) != ZX_OK) {
-        fprintf(stderr, "Journal replay failed with status %d\n", status);
+        FS_TRACE_ERROR("Journal replay failed with status %d\n", status);
         return status;
     }
 
@@ -570,8 +610,8 @@ zx_status_t Journal::CommitReplay() {
         sync_completion_signal(&completion);
     });
 
-    if ((status = EnqueueEntryWork(fbl::move(work))) != ZX_OK) {
-        fprintf(stderr, "Journal replay failed with status %d\n", status);
+    if ((status = EnqueueEntryWork(std::move(work))) != ZX_OK) {
+        FS_TRACE_ERROR("Journal replay failed with status %d\n", status);
         return status;
     }
 
@@ -591,7 +631,7 @@ zx_status_t Journal::WriteInfo(uint64_t start, uint64_t length) {
     }
 
     fbl::unique_ptr<WritebackWork> work;
-    blobfs_->CreateWork(&work, nullptr);
+    transaction_manager_->CreateWork(&work, nullptr);
 
     info->start_block = start;
     info->num_blocks = length;
@@ -604,7 +644,7 @@ zx_status_t Journal::WriteInfo(uint64_t start, uint64_t length) {
 
     info_->AddTransaction(0, start_block_, 1, work.get());
     info_->ValidateTransaction(work.get());
-    return blobfs_->EnqueueWork(fbl::move(work), EnqueueType::kData);
+    return transaction_manager_->EnqueueWork(std::move(work), EnqueueType::kData);
 }
 
 void Journal::EnsureSpaceLocked(size_t blocks) {
@@ -690,7 +730,7 @@ void Journal::ProcessQueues(JournalProcessor* processor) {
         // TODO(planders): For each entry that we process, we can potentially verify that the
         //                 indices fit within the expected start/len of the journal buffer, and do
         //                 not collide with other entries.
-        processor->ProcessWorkEntry(fbl::move(entry));
+        processor->ProcessWorkEntry(std::move(entry));
     }
 
     // Since the processor queues are accessed exclusively by the async thread,
@@ -766,12 +806,6 @@ void Journal::ProcessQueues(JournalProcessor* processor) {
 }
 
 void Journal::ProcessLoop() {
-    {
-        fbl::AutoLock lock(&lock_);
-        ZX_DEBUG_ASSERT(state_ == WritebackState::kReady);
-        state_ = WritebackState::kRunning;
-    }
-
     JournalProcessor processor(this);
     while (true) {
         ProcessQueues(&processor);
@@ -786,6 +820,7 @@ void Journal::ProcessLoop() {
             producer_queue_.is_empty()) {
             // Only return if we are unmounting AND all entries in all queues have been
             // processed. This includes producers which are currently waiting to be enqueued.
+            state_ = WritebackState::kComplete;
             break;
         }
 
@@ -807,7 +842,7 @@ void JournalProcessor::ProcessWorkEntry(fbl::unique_ptr<JournalEntry> entry) {
     // Enqueue the entry into the wait_queue, even in the case of error. This is so that
     // all works contained by journal entries will be processed in the second step, even if
     // we do not plan to send them along to the writeback queue.
-    wait_queue_.push(fbl::move(entry));
+    wait_queue_.push(std::move(entry));
 }
 
 void JournalProcessor::ProcessWaitQueue() {
@@ -873,7 +908,7 @@ void JournalProcessor::ProcessQueue(EntryQueue* in_queue, EntryQueue* out_queue)
 
         if (result == ProcessResult::kContinue) {
             ZX_DEBUG_ASSERT(out_queue != nullptr);
-            out_queue->push(fbl::move(entry));
+            out_queue->push(std::move(entry));
         } else {
             ZX_DEBUG_ASSERT(result == ProcessResult::kRemove);
         }
@@ -969,7 +1004,7 @@ ProcessResult JournalProcessor::ProcessWaitDefault(JournalEntry* entry) {
     EntryStatus last_status = entry->SetStatus(EntryStatus::kWaiting);
     ZX_DEBUG_ASSERT(last_status == EntryStatus::kPersisted);
     fbl::unique_ptr<WritebackWork> work = entry->TakeWork();
-    journal_->EnqueueEntryWork(fbl::move(work));
+    journal_->EnqueueEntryWork(std::move(work));
     return ProcessResult::kContinue;
 }
 
@@ -996,8 +1031,8 @@ ProcessResult JournalProcessor::ProcessSyncDefault(JournalEntry* entry) {
     // This is a sync request. Since there is no actual data to update,
     // we can just verify it and send it along to the next queue.
     ZX_DEBUG_ASSERT(entry->BlockCount() == 0);
-    ZX_DEBUG_ASSERT(entry->GetHeaderIndex() == journal_->entries_->capacity());
-    ZX_DEBUG_ASSERT(entry->GetCommitIndex() == journal_->entries_->capacity());
+    ZX_DEBUG_ASSERT(entry->GetHeaderIndex() == journal_->GetCapacity());
+    ZX_DEBUG_ASSERT(entry->GetCommitIndex() == journal_->GetCapacity());
 
     // Always push the sync entry into the output queue.
     return ProcessResult::kContinue;
@@ -1009,7 +1044,7 @@ ProcessResult JournalProcessor::ProcessSyncComplete(JournalEntry* entry) {
 
     // Remove and enqueue the sync work.
     fbl::unique_ptr<WritebackWork> work = entry->TakeWork();
-    journal_->EnqueueEntryWork(fbl::move(work));
+    journal_->EnqueueEntryWork(std::move(work));
 
     // The sync entry is complete; do not re-enqueue it.
     return ProcessResult::kRemove;

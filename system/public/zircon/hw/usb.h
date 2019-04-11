@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -56,10 +59,14 @@ __BEGIN_CDECLS;
 #define USB_CLASS_DIAGNOSTIC                0xdc
 #define USB_CLASS_WIRELESS                  0xe0
 #define USB_CLASS_MISC                      0xef
+#define USB_CLASS_APPLICATION_SPECIFIC      0xfe
 #define USB_CLASS_VENDOR                    0xFf
 
 #define USB_SUBCLASS_MSC_SCSI               0x06
 #define USB_PROTOCOL_MSC_BULK_ONLY          0x50
+
+#define USB_SUBCLASS_DFU                    0x01
+#define USB_PROTOCOL_DFU                    0x02
 
 /* Descriptor Types */
 #define USB_DT_DEVICE                      0x01
@@ -93,6 +100,7 @@ __BEGIN_CDECLS;
 #define USB_ENDPOINT_IN                    0x80
 #define USB_ENDPOINT_OUT                   0x00
 #define USB_ENDPOINT_DIR_MASK              0x80
+#define USB_ENDPOINT_NUM_MASK              0x1F
 
 /* Endpoint types (bmAttributes) */
 #define USB_ENDPOINT_CONTROL               0x00
@@ -234,5 +242,17 @@ typedef struct {
     uint8_t bDescriptorType;    // USB_DT_CS_INTERFACE
     uint8_t bDescriptorSubType;
 } __attribute__ ((packed)) usb_cs_interface_descriptor_t;
+
+typedef struct {
+    uint8_t bLength;
+    uint8_t bDescriptorType;    // USB_DT_STRING
+    uint16_t wLangIds[127];
+} __attribute__ ((packed)) usb_langid_desc_t;
+
+typedef struct {
+    uint8_t bLength;
+    uint8_t bDescriptorType;    // USB_DT_STRING
+    uint16_t code_points[127];
+} __attribute__ ((packed)) usb_string_desc_t;
 
 __END_CDECLS;

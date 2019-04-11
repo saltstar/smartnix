@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef LIB_FIDL_CPP_VECTOR_VIEW_H_
 #define LIB_FIDL_CPP_VECTOR_VIEW_H_
@@ -10,6 +13,7 @@ template<typename T>
 class VectorView : public fidl_vector_t {
 public:
     VectorView() : fidl_vector_t{} {}
+    VectorView(uint64_t count, T* data) : fidl_vector_t{count, data} {}
 
     uint64_t count() const { return fidl_vector_t::count; }
     void set_count(uint64_t count) { fidl_vector_t::count = count; }

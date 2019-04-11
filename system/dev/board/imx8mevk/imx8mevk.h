@@ -5,9 +5,9 @@
 #pragma once
 
 #include <ddk/device.h>
-#include <ddk/protocol/gpio-impl.h>
+#include <ddk/protocol/gpioimpl.h>
 #include <ddk/protocol/iommu.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 
 // BTI IDs for our devices
 enum {
@@ -17,7 +17,7 @@ enum {
     BTI_DISPLAY,
     BTI_GPU,
     BTI_SDHCI,
-
+    BTI_SYSMEM,
 };
 
 typedef struct {
@@ -29,6 +29,7 @@ typedef struct {
     uint32_t soc_pid;
 } imx8mevk_bus_t;
 
+zx_status_t imx8m_sysmem_init(imx8mevk_bus_t* bus);
 zx_status_t imx8m_gpio_init(imx8mevk_bus_t* bus);
 zx_status_t imx_usb_init(imx8mevk_bus_t* bus);
 zx_status_t imx_i2c_init(imx8mevk_bus_t* bus);

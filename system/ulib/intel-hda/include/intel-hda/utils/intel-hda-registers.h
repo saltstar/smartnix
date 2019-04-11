@@ -1,12 +1,15 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
+#include <type_traits>
 #include <zircon/assert.h>
 #include <zircon/compiler.h>
 #include <zircon/types.h>
-#include <fbl/type_support.h>
-#include <stddef.h>
-#include <stdint.h>
 
 /**
  * Register definitions taken from
@@ -357,7 +360,7 @@ static inline T REG_RD(const T* reg) {
 
 template <typename T, typename U>
 static inline void REG_WR(T* reg, U val) {
-    static_assert(fbl::is_unsigned_integer<T>::value, "");
+    static_assert(std::is_unsigned_v<T>, "");
     ZX_DEBUG_ASSERT(static_cast<T>(-1) >= val);
     *(reinterpret_cast<volatile T*>(reg)) = static_cast<T>(val);
 }
@@ -379,4 +382,3 @@ template <typename T> static inline void REG_CLR_BITS(T* reg, T bits) {
 }  // namespace audio
 
 #endif  // __cplusplus
-

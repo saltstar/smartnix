@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Standard Includes
 #include <assert.h>
@@ -19,9 +22,9 @@
 #include <ddk/platform-defs.h>
 #include <ddk/protocol/block.h>
 #include <ddk/protocol/gpio.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddk/protocol/platform-device-lib.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 #include <ddk/protocol/sdmmc.h>
 #include <ddk/protocol/sdhci.h>
 #include <hw/reg.h>
@@ -310,7 +313,7 @@ static void imx_sdhci_cmd_stage_complete_locked(imx_sdhci_device_t* dev) {
     SDHCI_TRACE("Got CC interrupt\n");
 
     if (!dev->cmd_req) {
-        SDHCI_TRACE("Spurious CC interupt\n");
+        SDHCI_TRACE("Spurious CC interrupt\n");
         return;
     }
 
@@ -346,7 +349,7 @@ static void imx_sdhci_data_stage_read_ready_locked(imx_sdhci_device_t* dev) {
     }
 
     if (dev->data_req->cmd_idx == MMC_SEND_TUNING_BLOCK) {
-        // tuning commnad is done here
+        // tuning command is done here
         imx_sdhci_complete_request_locked(dev, dev->data_req, ZX_OK);
         return;
     }
@@ -612,7 +615,7 @@ static zx_status_t imx_sdhci_start_req_locked(imx_sdhci_device_t* dev, sdmmc_req
     SDHCI_TRACE("start_req cmd=0x%08x (data %d dma %d bsy %d) blkcnt %u blksiz %u\n",
                   cmd, has_data, req->use_dma, imx_sdmmc_cmd_rsp_busy(cmd), blkcnt, blksiz);
 
-    // Every command requires that the Commnad Inhibit bit is unset
+    // Every command requires that the Command Inhibit bit is unset
     uint32_t inhibit_mask = IMX_SDHC_PRES_STATE_CIHB;
 
     // Busy type commands must also wait for the DATA Inhibit to be 0 unless it's an abort
@@ -1132,7 +1135,7 @@ static zx_status_t imx_sdhci_bind(void* ctx, zx_device_t* parent) {
         goto fail;
     }
 
-    status = pdev_map_mmio_buffer2(&dev->pdev, 0, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&dev->pdev, 0, ZX_CACHE_POLICY_UNCACHED_DEVICE,
                                     &dev->mmios);
     if (status != ZX_OK) {
         SDHCI_ERROR("pdev_map_mmio_buffer failed %d\n", status);

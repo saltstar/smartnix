@@ -1,3 +1,9 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// These definitions are used for communication between the cpu-trace
+// device driver and the kernel only.
 
 #pragma once
 
@@ -332,17 +338,17 @@ __BEGIN_CDECLS
 // Properties of perf data collection on this system.
 typedef struct {
     // The H/W Performance Monitor version.
-    uint32_t pm_version;
+    uint16_t pm_version;
     // The number of fixed events.
-    uint32_t num_fixed_events;
+    uint16_t num_fixed_events;
     // The number of programmable events.
-    uint32_t num_programmable_events;
+    uint16_t num_programmable_events;
     // The number of misc events.
-    uint32_t num_misc_events;
+    uint16_t num_misc_events;
     // For fixed events that are counters, the width in bits.
-    uint32_t fixed_counter_width;
+    uint16_t fixed_counter_width;
     // For programmable events that are counters, the width in bits.
-    uint32_t programmable_counter_width;
+    uint16_t programmable_counter_width;
     // The PERF_CAPABILITIES MSR.
     uint64_t perf_capabilities;
     // The size of the LBR (Last Branch Record) stack.
@@ -350,14 +356,14 @@ typedef struct {
     // LBR is supported by the chip because the device is not recognized as
     // supporting it.
     uint32_t lbr_stack_size;
-} zx_x86_ipm_properties_t;
+} zx_x86_pmu_properties_t;
 
 // This is for passing buffer specs to the kernel.
 typedef struct {
     zx_handle_t vmo;
-} zx_x86_ipm_buffer_t;
+} zx_x86_pmu_buffer_t;
 
-// IPM configuration.
+// PMU configuration.
 typedef struct {
     // IA32_PERF_GLOBAL_CTRL
     uint64_t global_ctrl;
@@ -411,7 +417,7 @@ typedef struct {
 
     // IA32_PERFEVTSEL_*
     uint64_t programmable_events[IPM_MAX_PROGRAMMABLE_COUNTERS];
-} zx_x86_ipm_config_t;
+} zx_x86_pmu_config_t;
 
 ///////////////////////////////////////////////////////////////////////////////
 

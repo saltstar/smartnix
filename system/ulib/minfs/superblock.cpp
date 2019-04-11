@@ -14,12 +14,14 @@
 #include <minfs/block-txn.h>
 #include <minfs/superblock.h>
 
+#include <utility>
+
 namespace minfs {
 
 #ifdef __Fuchsia__
 
 SuperblockManager::SuperblockManager(const Superblock* info, fzl::OwnedVmoMapper mapper) :
-    mapping_(fbl::move(mapper)) {}
+    mapping_(std::move(mapper)) {}
 
 #else
 
@@ -47,16 +49,16 @@ zx_status_t SuperblockManager::Create(Bcache* bc, const Superblock* info,
     }
 
     vmoid_t info_vmoid;
-    if ((status = bc->AttachVmo(mapper.vmo().get(), &info_vmoid)) != ZX_OK) {
+    if ((status = bc->AttachVmo(mapper.vmo(), &info_vmoid)) != ZX_OK) {
         return status;
     }
     memcpy(mapper.start(), info, sizeof(Superblock));
 
-    auto sb = fbl::unique_ptr<SuperblockManager>(new SuperblockManager(info, fbl::move(mapper)));
+    auto sb = fbl::unique_ptr<SuperblockManager>(new SuperblockManager(info, std::move(mapper)));
 #else
     auto sb = fbl::unique_ptr<SuperblockManager>(new SuperblockManager(info));
 #endif
-    *out = fbl::move(sb);
+    *out = std::move(sb);
     return ZX_OK;
 }
 

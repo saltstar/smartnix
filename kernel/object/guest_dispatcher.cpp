@@ -11,14 +11,14 @@ zx_status_t GuestDispatcher::Create(fbl::RefPtr<Dispatcher>* guest_dispatcher,
                                     zx_rights_t* guest_rights,
                                     fbl::RefPtr<Dispatcher>* vmar_dispatcher,
                                     zx_rights_t* vmar_rights) {
-    fbl::unique_ptr<Guest> guest;
+    ktl::unique_ptr<Guest> guest;
     zx_status_t status = Guest::Create(&guest);
     if (status != ZX_OK) {
         return status;
     }
 
     fbl::AllocChecker ac;
-    auto disp = fbl::AdoptRef(new (&ac) GuestDispatcher(fbl::move(guest)));
+    auto disp = fbl::AdoptRef(new (&ac) GuestDispatcher(ktl::move(guest)));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
@@ -30,17 +30,17 @@ zx_status_t GuestDispatcher::Create(fbl::RefPtr<Dispatcher>* guest_dispatcher,
     }
 
     *guest_rights = default_rights();
-    *guest_dispatcher = fbl::move(disp);
+    *guest_dispatcher = ktl::move(disp);
     return ZX_OK;
 }
 
-GuestDispatcher::GuestDispatcher(fbl::unique_ptr<Guest> guest)
-    : guest_(fbl::move(guest)) {}
+GuestDispatcher::GuestDispatcher(ktl::unique_ptr<Guest> guest)
+    : guest_(ktl::move(guest)) {}
 
 GuestDispatcher::~GuestDispatcher() {}
 
 zx_status_t GuestDispatcher::SetTrap(uint32_t kind, zx_vaddr_t addr, size_t len,
                                      fbl::RefPtr<PortDispatcher> port, uint64_t key) {
     canary_.Assert();
-    return guest_->SetTrap(kind, addr, len, fbl::move(port), key);
+    return guest_->SetTrap(kind, addr, len, ktl::move(port), key);
 }

@@ -16,6 +16,7 @@
 #include <err.h>
 #include <fbl/alloc_checker.h>
 #include <kernel/cmdline.h>
+#include <lib/acpi_tables.h>
 #include <lib/debuglog.h>
 #include <libzbi/zbi-cpp.h>
 #include <lk/init.h>
@@ -24,7 +25,6 @@
 #include <platform/console.h>
 #include <platform/keyboard.h>
 #include <platform/pc.h>
-#include <platform/pc/acpi.h>
 #include <platform/pc/bootloader.h>
 #include <platform/pc/smbios.h>
 #include <string.h>
@@ -34,9 +34,8 @@
 #include <vm/physmap.h>
 #include <vm/pmm.h>
 #include <vm/vm_aspace.h>
-#include <zircon/boot/image.h>
 #include <zircon/boot/e820.h>
-#include <zircon/boot/multiboot.h>
+#include <zircon/boot/image.h>
 #include <zircon/pixelformat.h>
 #include <zircon/types.h>
 
@@ -49,7 +48,6 @@ extern "C" {
 
 #define LOCAL_TRACE 0
 
-extern multiboot_info_t* _multiboot_info;
 extern zbi_header_t* _zbi_base;
 
 pc_bootloader_info_t bootloader;
@@ -80,6 +78,12 @@ static bool early_console_disabled;
 
 zbi_result_t process_zbi_item(zbi_header_t* hdr, void* payload, void* cookie) {
     switch (hdr->type) {
+    case ZBI_TYPE_PLATFORM_ID:
+        if (hdr->length >= sizeof(zbi_platform_id_t)) {
+            memcpy(&bootloader.platform_id, payload, sizeof(zbi_platform_id_t));
+            bootloader.platform_id_size = sizeof(zbi_platform_id_t);
+        }
+        break;
     case ZBI_TYPE_ACPI_RSDP:
         if (hdr->length >= sizeof(uint64_t)) {
             bootloader.acpi_rsdp = *((uint64_t*)payload);
@@ -169,24 +173,6 @@ static void process_zbi(zbi_header_t* hdr, uintptr_t phys) {
 extern bool halt_on_panic;
 
 static void platform_save_bootloader_data(void) {
-    if (_multiboot_info != NULL) {
-        multiboot_info_t* mi = (multiboot_info_t*)X86_PHYS_TO_VIRT(_multiboot_info);
-        printf("multiboot: info @ %p flags %#x\n", mi, mi->flags);
-
-        if ((mi->flags & MB_INFO_CMD_LINE) && mi->cmdline) {
-            const char* cmdline = (const char*)X86_PHYS_TO_VIRT(mi->cmdline);
-            printf("multiboot: cmdline @ %p\n", cmdline);
-            cmdline_append(cmdline);
-        }
-        if ((mi->flags & MB_INFO_MODS) && mi->mods_addr) {
-            module_t* mod = (module_t*)X86_PHYS_TO_VIRT(mi->mods_addr);
-            if (mi->mods_count > 0) {
-                printf("multiboot: ramdisk @ %08x..%08x\n", mod->mod_start, mod->mod_end);
-                process_zbi(reinterpret_cast<zbi_header_t*>(X86_PHYS_TO_VIRT(mod->mod_start)),
-                                 mod->mod_start);
-            }
-        }
-    }
     if (_zbi_base != NULL) {
         zbi_header_t* bd = (zbi_header_t*)X86_PHYS_TO_VIRT(_zbi_base);
         process_zbi(bd, (uintptr_t)_zbi_base);
@@ -508,7 +494,6 @@ zx_status_t platform_mexec_patch_zbi(uint8_t* bootdata, const size_t len) {
                ctx.ret);
         return ctx.ret;
     }
-
     zbi::Zbi image(bootdata, len);
     zbi_result_t result;
 
@@ -525,6 +510,19 @@ zx_status_t platform_mexec_patch_zbi(uint8_t* bootdata, const size_t len) {
         return ZX_ERR_INTERNAL;
     }
 
+    // Append platform id
+    if (bootloader.platform_id_size) {
+        result = image.AppendSection(sizeof(bootloader.platform_id),
+                                     ZBI_TYPE_PLATFORM_ID, kNoZbiExtra,
+                                     kNoZbiFlags,
+                                     reinterpret_cast<uint8_t *>(&bootloader.platform_id));
+        if (result != ZBI_RESULT_OK) {
+            printf("mexec: Failed to append platform id to bootdata. "
+                   "len = %lu, section length = %lu, retcode = %d\n", len,
+                   sizeof(bootloader.platform_id), result);
+            return ZX_ERR_INTERNAL;
+        }
+    }
     // Append information about the framebuffer to the bootdata
     if (bootloader.fb.base) {
         result = image.AppendSection(sizeof(bootloader.fb),
@@ -786,9 +784,11 @@ void platform_early_init(void) {
 }
 
 static void platform_init_smp(void) {
-    uint32_t num_cpus = 0;
+    const AcpiTableProvider acpi_table_provider;
+    const AcpiTables acpi_tables(&acpi_table_provider);
 
-    zx_status_t status = platform_enumerate_cpus(NULL, 0, &num_cpus);
+    uint32_t num_cpus = 0;
+    auto status = acpi_tables.cpu_count(&num_cpus);
     if (status != ZX_OK) {
         TRACEF("failed to enumerate CPUs, disabling SMP\n");
         return;
@@ -796,8 +796,8 @@ static void platform_init_smp(void) {
 
     // allocate 2x the table for temporary work
     fbl::AllocChecker ac;
-    fbl::unique_ptr<uint32_t[]> apic_ids =
-        fbl::unique_ptr<uint32_t[]>(new (&ac) uint32_t[num_cpus * 2]);
+    ktl::unique_ptr<uint32_t[]> apic_ids =
+        ktl::unique_ptr<uint32_t[]>(new (&ac) uint32_t[num_cpus * 2]);
     if (!ac.check()) {
         TRACEF("failed to allocate apic_ids table, disabling SMP\n");
         return;
@@ -808,7 +808,7 @@ static void platform_init_smp(void) {
 
     // find the list of all cpu apic ids into a temporary list
     uint32_t real_num_cpus;
-    status = platform_enumerate_cpus(apic_ids_temp, num_cpus, &real_num_cpus);
+    status = acpi_tables.cpu_apic_ids(apic_ids_temp, num_cpus, &real_num_cpus);
     if (status != ZX_OK || num_cpus != real_num_cpus) {
         TRACEF("failed to enumerate CPUs, disabling SMP\n");
         return;

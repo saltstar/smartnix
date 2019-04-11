@@ -1,9 +1,12 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <stdlib.h>
 #include <string.h>
 #include <launchpad/launchpad.h>
 #include <launchpad/vmo.h>
-#include <lib/zircon-internal/crashlogger.h>
+#include <lib/backtrace-request/backtrace-request.h>
 #include <zircon/process.h>
 #include <zircon/syscalls.h>
 #include <zircon/syscalls/port.h>
@@ -14,7 +17,8 @@
 
 #define TU_FAIL_ERRCODE 10
 
-void* tu_malloc(size_t size) {
+void* tu_malloc(size_t size)
+{
     void* result = malloc(size);
     if (result == NULL) {
         // TODO(dje): printf may try to malloc too ...
@@ -24,7 +28,8 @@ void* tu_malloc(size_t size) {
     return result;
 }
 
-void* tu_calloc(size_t nmemb, size_t size) {
+void* tu_calloc(size_t nmemb, size_t size)
+{
     void* result = calloc(nmemb, size);
     if (result == NULL) {
         // TODO(dje): printf may try to malloc too ...
@@ -34,14 +39,16 @@ void* tu_calloc(size_t nmemb, size_t size) {
     return result;
 }
 
-char* tu_strdup(const char* s) {
+char* tu_strdup(const char* s)
+{
     size_t len = strlen(s) + 1;
     char* r = tu_malloc(len);
     strcpy(r, s);
     return r;
 }
 
-char* tu_asprintf(const char* fmt, ...) {
+char* tu_asprintf(const char* fmt, ...)
+{
     va_list args;
     char* result;
     va_start(args, fmt);
@@ -53,20 +60,22 @@ char* tu_asprintf(const char* fmt, ...) {
     return result;
 }
 
-void tu_fatal(const char *what, zx_status_t status) {
+void tu_fatal(const char *what, zx_status_t status)
+{
     const char* reason = zx_status_get_string(status);
     unittest_printf_critical("\nFATAL: %s failed, rc %d (%s)\n", what, status, reason);
 
     // Request a backtrace to assist debugging.
     unittest_printf_critical("FATAL: backtrace follows:\n");
     unittest_printf_critical("       (using sw breakpoint request to crashlogger)\n");
-    zx_crashlogger_request_backtrace();
+    backtrace_request();
 
     unittest_printf_critical("FATAL: exiting process\n");
     exit(TU_FAIL_ERRCODE);
 }
 
-void tu_handle_close(zx_handle_t handle) {
+void tu_handle_close(zx_handle_t handle)
+{
     zx_status_t status = zx_handle_close(handle);
     // TODO(dje): It's still an open question as to whether errors other than ZX_ERR_BAD_HANDLE are "advisory".
     if (status < 0) {
@@ -74,7 +83,8 @@ void tu_handle_close(zx_handle_t handle) {
     }
 }
 
-zx_handle_t tu_handle_duplicate(zx_handle_t handle) {
+zx_handle_t tu_handle_duplicate(zx_handle_t handle)
+{
     zx_handle_t copy = ZX_HANDLE_INVALID;
     zx_status_t status =
         zx_handle_duplicate(handle, ZX_RIGHT_SAME_RIGHTS, &copy);
@@ -87,7 +97,8 @@ zx_handle_t tu_handle_duplicate(zx_handle_t handle) {
 // See, e.g., musl/include/threads.h.
 
 void tu_thread_create_c11(thrd_t* t, thrd_start_t entry, void* arg,
-                          const char* name) {
+                          const char* name)
+{
     int ret = thrd_create_with_name(t, entry, arg, name);
     if (ret != thrd_success) {
         // tu_fatal takes zx_status_t values.
@@ -105,7 +116,8 @@ void tu_thread_create_c11(thrd_t* t, thrd_start_t entry, void* arg,
 zx_status_t tu_wait(uint32_t num_objects,
                     const zx_handle_t* handles,
                     const zx_signals_t* signals,
-                    zx_signals_t* pending) {
+                    zx_signals_t* pending)
+{
     zx_wait_item_t items[num_objects];
     for (uint32_t n = 0; n < num_objects; n++) {
         items[n].handle = handles[n];
@@ -143,7 +155,8 @@ void tu_channel_read(zx_handle_t handle, uint32_t flags, void* bytes, uint32_t* 
         tu_fatal(__func__, status);
 }
 
-bool tu_channel_wait_readable(zx_handle_t channel) {
+bool tu_channel_wait_readable(zx_handle_t channel)
+{
     zx_signals_t signals = ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED;
     zx_signals_t pending;
     zx_status_t result = tu_wait(1, &channel, &signals, &pending);
@@ -160,7 +173,8 @@ zx_handle_t tu_launch(zx_handle_t job, const char* name,
                       int argc, const char* const* argv,
                       const char* const* envp,
                       size_t num_handles, zx_handle_t* handles,
-                      uint32_t* handle_ids) {
+                      uint32_t* handle_ids)
+{
     launchpad_t* lp;
     launchpad_create(job, name, &lp);
     launchpad_load_from_file(lp, argv[0]);
@@ -181,7 +195,8 @@ launchpad_t* tu_launch_fdio_init(zx_handle_t job, const char* name,
                                  int argc, const char* const* argv,
                                  const char* const* envp,
                                  size_t hnds_count, zx_handle_t* handles,
-                                 uint32_t* ids) {
+                                 uint32_t* ids)
+{
     // This is the first part of launchpad_launch_fdio_etc.
     // It does everything except start the process running.
     launchpad_t* lp;
@@ -200,7 +215,8 @@ launchpad_t* tu_launch_fdio_init(zx_handle_t job, const char* name,
    return lp;
 }
 
-zx_handle_t tu_launch_fdio_fini(launchpad_t* lp) {
+zx_handle_t tu_launch_fdio_fini(launchpad_t* lp)
+{
     zx_handle_t proc;
     zx_status_t status;
     if ((status = launchpad_go(lp, &proc, NULL)) < 0)
@@ -208,7 +224,8 @@ zx_handle_t tu_launch_fdio_fini(launchpad_t* lp) {
     return proc;
 }
 
-void tu_process_wait_signaled(zx_handle_t process) {
+void tu_process_wait_signaled(zx_handle_t process)
+{
     zx_signals_t signals = ZX_PROCESS_TERMINATED;
     zx_signals_t pending;
     zx_status_t result = tu_wait(1, &process, &signals, &pending);
@@ -220,7 +237,8 @@ void tu_process_wait_signaled(zx_handle_t process) {
     }
 }
 
-bool tu_process_has_exited(zx_handle_t process) {
+bool tu_process_has_exited(zx_handle_t process)
+{
     zx_info_process_t info;
     zx_status_t status;
     if ((status = zx_object_get_info(process, ZX_INFO_PROCESS, &info,
@@ -229,7 +247,8 @@ bool tu_process_has_exited(zx_handle_t process) {
     return info.exited;
 }
 
-int tu_process_get_return_code(zx_handle_t process) {
+int tu_process_get_return_code(zx_handle_t process)
+{
     zx_info_process_t info;
     zx_status_t status;
     if ((status = zx_object_get_info(process, ZX_INFO_PROCESS, &info,
@@ -243,12 +262,14 @@ int tu_process_get_return_code(zx_handle_t process) {
     return info.return_code;
 }
 
-int tu_process_wait_exit(zx_handle_t process) {
+int tu_process_wait_exit(zx_handle_t process)
+{
     tu_process_wait_signaled(process);
     return tu_process_get_return_code(process);
 }
 
-zx_handle_t tu_process_get_thread(zx_handle_t process, zx_koid_t tid) {
+zx_handle_t tu_process_get_thread(zx_handle_t process, zx_koid_t tid)
+{
     zx_handle_t thread;
     zx_status_t status = zx_object_get_child(process, tid, ZX_RIGHT_SAME_RIGHTS, &thread);
     if (status == ZX_ERR_NOT_FOUND)
@@ -258,7 +279,8 @@ zx_handle_t tu_process_get_thread(zx_handle_t process, zx_koid_t tid) {
     return thread;
 }
 
-size_t tu_process_get_threads(zx_handle_t process, zx_koid_t* threads, size_t max_threads) {
+size_t tu_process_get_threads(zx_handle_t process, zx_koid_t* threads, size_t max_threads)
+{
     size_t num_threads;
     size_t buf_size = max_threads * sizeof(threads[0]);
     zx_status_t status = zx_object_get_info(process, ZX_INFO_PROCESS_THREADS,
@@ -268,7 +290,8 @@ size_t tu_process_get_threads(zx_handle_t process, zx_koid_t* threads, size_t ma
     return num_threads;
 }
 
-zx_handle_t tu_job_create(zx_handle_t job) {
+zx_handle_t tu_job_create(zx_handle_t job)
+{
     zx_handle_t child_job;
     zx_status_t status = zx_job_create(job, 0, &child_job);
     if (status < 0)
@@ -276,7 +299,8 @@ zx_handle_t tu_job_create(zx_handle_t job) {
     return child_job;
 }
 
-zx_handle_t tu_io_port_create(void) {
+zx_handle_t tu_io_port_create(void)
+{
     zx_handle_t handle;
     zx_status_t status = zx_port_create(0, &handle);
     if (status < 0)
@@ -284,7 +308,8 @@ zx_handle_t tu_io_port_create(void) {
     return handle;
 }
 
-void tu_set_exception_port(zx_handle_t handle, zx_handle_t eport, uint64_t key, uint32_t options) {
+void tu_set_exception_port(zx_handle_t handle, zx_handle_t eport, uint64_t key, uint32_t options)
+{
     if (handle == 0)
         handle = zx_process_self();
     zx_status_t status = zx_task_bind_exception_port(handle, eport, key, options);
@@ -292,7 +317,8 @@ void tu_set_exception_port(zx_handle_t handle, zx_handle_t eport, uint64_t key, 
         tu_fatal(__func__, status);
 }
 
-void tu_object_wait_async(zx_handle_t handle, zx_handle_t port, zx_signals_t signals) {
+void tu_object_wait_async(zx_handle_t handle, zx_handle_t port, zx_signals_t signals)
+{
     uint64_t key = tu_get_koid(handle);
     uint32_t options = ZX_WAIT_ASYNC_REPEATING;
     zx_status_t status = zx_object_wait_async(handle, port, key, signals, options);
@@ -300,26 +326,30 @@ void tu_object_wait_async(zx_handle_t handle, zx_handle_t port, zx_signals_t sig
         tu_fatal(__func__, status);
 }
 
-void tu_handle_get_basic_info(zx_handle_t handle, zx_info_handle_basic_t* info) {
+void tu_handle_get_basic_info(zx_handle_t handle, zx_info_handle_basic_t* info)
+{
     zx_status_t status = zx_object_get_info(handle, ZX_INFO_HANDLE_BASIC,
                                             info, sizeof(*info), NULL, NULL);
     if (status < 0)
         tu_fatal(__func__, status);
 }
 
-zx_koid_t tu_get_koid(zx_handle_t handle) {
+zx_koid_t tu_get_koid(zx_handle_t handle)
+{
     zx_info_handle_basic_t info;
     tu_handle_get_basic_info(handle, &info);
     return info.koid;
 }
 
-zx_koid_t tu_get_related_koid(zx_handle_t handle) {
+zx_koid_t tu_get_related_koid(zx_handle_t handle)
+{
     zx_info_handle_basic_t info;
     tu_handle_get_basic_info(handle, &info);
     return info.related_koid;
 }
 
-zx_handle_t tu_get_thread(zx_handle_t proc, zx_koid_t tid) {
+zx_handle_t tu_get_thread(zx_handle_t proc, zx_koid_t tid)
+{
     zx_handle_t thread;
     zx_status_t status = zx_object_get_child(proc, tid, ZX_RIGHT_SAME_RIGHTS, &thread);
     if (status != ZX_OK)
@@ -327,7 +357,8 @@ zx_handle_t tu_get_thread(zx_handle_t proc, zx_koid_t tid) {
     return thread;
 }
 
-zx_info_thread_t tu_thread_get_info(zx_handle_t thread) {
+zx_info_thread_t tu_thread_get_info(zx_handle_t thread)
+{
     zx_info_thread_t info;
     zx_status_t status = zx_object_get_info(thread, ZX_INFO_THREAD, &info, sizeof(info), NULL, NULL);
     if (status < 0)
@@ -335,24 +366,28 @@ zx_info_thread_t tu_thread_get_info(zx_handle_t thread) {
     return info;
 }
 
-uint32_t tu_thread_get_state(zx_handle_t thread) {
+uint32_t tu_thread_get_state(zx_handle_t thread)
+{
     zx_info_thread_t info = tu_thread_get_info(thread);
     return info.state;
 }
 
-bool tu_thread_is_dying_or_dead(zx_handle_t thread) {
+bool tu_thread_is_dying_or_dead(zx_handle_t thread)
+{
     zx_info_thread_t info = tu_thread_get_info(thread);
     return (info.state == ZX_THREAD_STATE_DYING ||
             info.state == ZX_THREAD_STATE_DEAD);
 }
 
-void tu_task_kill(zx_handle_t task) {
+void tu_task_kill(zx_handle_t task)
+{
     zx_status_t status = zx_task_kill(task);
     if (status < 0)
         tu_fatal("zx_task_kill", status);
 }
 
-int tu_run_program(const char *progname, int argc, const char** argv) {
+int tu_run_program(const char *progname, int argc, const char** argv)
+{
     launchpad_t* lp;
 
     unittest_printf("%s: running %s\n", __func__, progname);
@@ -373,7 +408,8 @@ int tu_run_program(const char *progname, int argc, const char** argv) {
     return rc;
 }
 
-int tu_run_command(const char* progname, const char* cmd) {
+int tu_run_command(const char* progname, const char* cmd)
+{
     const char* argv[] = {
         "/boot/bin/sh",
         "-c",

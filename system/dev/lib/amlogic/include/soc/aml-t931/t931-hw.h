@@ -18,6 +18,52 @@
 #define T931_I2C2_BASE                  (T931_CBUS_BASE + 0x1d000)
 #define T931_I2C3_BASE                  (T931_CBUS_BASE + 0x1c000)
 
+#define T931_PWM_LENGTH                 0x1000 // applies to each PWM bank
+#define T931_PWM_AB_BASE                0xffd1b000
+#define T931_PWM_PWM_A                  0x0
+#define T931_PWM_PWM_B                  0x4
+#define T931_PWM_MISC_REG_AB            0x8
+#define T931_DS_A_B                     0xc
+#define T931_PWM_TIME_AB                0x10
+#define T931_PWM_A2                     0x14
+#define T931_PWM_B2                     0x18
+#define T931_PWM_BLINK_AB               0x1c
+
+#define T931_PWM_CD_BASE                0xffd1a000
+#define T931_PWM_PWM_C                  0x0
+#define T931_PWM_PWM_D                  0x4
+#define T931_PWM_MISC_REG_CD            0x8
+#define T931_DS_C_D                     0xc
+#define T931_PWM_TIME_CD                0x10
+#define T931_PWM_C2                     0x14
+#define T931_PWM_D2                     0x18
+#define T931_PWM_BLINK_CD               0x1c
+
+#define T931_PWM_EF_BASE                0xffd19000
+#define T931_PWM_PWM_E                  0x0
+#define T931_PWM_PWM_F                  0x4
+#define T931_PWM_MISC_REG_EF            0x8
+#define T931_DS_E_F                     0xc
+#define T931_PWM_TIME_EF                0x10
+#define T931_PWM_E2                     0x14
+#define T931_PWM_F2                     0x18
+#define T931_PWM_BLINK_EF               0x1c
+
+#define T931_AO_PWM_AB_BASE             0xff807000
+#define T931_AO_PWM_CD_BASE             0xff802000
+#define T931_AO_PWM_LENGTH              0x1000
+
+#define T931_UART_LENGTH                0x1000 // applies to each UART bank
+#define T931_UART_A_BASE                0xffd24000
+#define T931_UART_B_BASE                0xffd23000
+#define T931_UART_C_BASE                0xffd22000
+#define T931_UART_WFIFO                 0x0
+#define T931_UART_RFIFO                 0x4
+#define T931_UART_CONTROL               0x8
+#define T931_UART_STATUS                0xc
+#define T931_UART_MISC                  0x10
+#define T931_UART_REGS                  0x14
+
 #define T931_DOS_BASE                   0xff620000
 #define T931_DOS_LENGTH                 0x10000
 
@@ -29,6 +75,9 @@
 
 #define T931_AOBUS_BASE                 0xff800000
 #define T931_AOBUS_LENGTH               0x100000
+
+#define T931_VPU_BASE                   0xff900000
+#define T931_VPU_LENGTH                 0x40000
 
 #define T931_CBUS_BASE                  0xffd00000
 #define T931_CBUS_LENGTH                0x100000
@@ -68,6 +117,11 @@
 #define T931_USBPHY21_BASE              0xff63a000
 #define T931_USBPHY21_LENGTH            0x2000
 
+// eMMC/SD register blocks
+#define T931_SD_EMMC_A_BASE             0xffE03000
+#define T931_SD_EMMC_A_LENGTH           0x2000
+#define T931_SD_EMMC_B_BASE             0xffE05000
+#define T931_SD_EMMC_B_LENGTH           0x2000
 #define T931_SD_EMMC_C_BASE             0xffE07000
 #define T931_SD_EMMC_C_LENGTH           0x2000
 
@@ -95,8 +149,13 @@
 #define T931_RESET7_LEVEL             0x9c
 
 // IRQs
+#define T931_VIU1_VSYNC_IRQ             35
+#define T931_I2C0_IRQ                   53
 #define T931_DEMUX_IRQ                  55
+#define T931_UART_A_IRQ                 58
+#define T931_USB0_IRQ                   62
 #define T931_PARSER_IRQ                 64
+#define T931_I2C3_IRQ                   71
 #define T931_DOS_MBOX_0_IRQ             75
 #define T931_DOS_MBOX_1_IRQ             76
 #define T931_DOS_MBOX_2_IRQ             77
@@ -108,17 +167,19 @@
 #define T931_GPIO_IRQ_5                 101
 #define T931_GPIO_IRQ_6                 102
 #define T931_GPIO_IRQ_7                 103
-#define T931_I2C0_IRQ                   53
-#define T931_I2C1_IRQ                   246
-#define T931_I2C2_IRQ                   247
-#define T931_I2C3_IRQ                   71
-#define T931_I2C_AO_0_IRQ               227
-#define T931_USB0_IRQ                   62
-#define T931_SD_EMMC_C_IRQ              223
+#define T931_UART_B_IRQ                 107
+#define T931_RDMA_DONE                  121
+#define T931_UART_C_IRQ                 125
 #define T931_MALI_IRQ_GP                192
 #define T931_MALI_IRQ_GPMMU             193
 #define T931_MALI_IRQ_PP                194
 #define T931_MIPI_ADAPTER_IRQ           211
+#define T931_SD_EMMC_A_IRQ              221
+#define T931_SD_EMMC_B_IRQ              222
+#define T931_SD_EMMC_C_IRQ              223
+#define T931_I2C_AO_0_IRQ               227
+#define T931_I2C1_IRQ                   246
+#define T931_I2C2_IRQ                   247
 
 // Alternate Functions for EMMC
 #define T931_EMMC_D0                    T931_GPIOBOOT(0)
@@ -145,3 +206,41 @@
 #define T931_EMMC_CMD_FN                1
 #define T931_EMMC_DS                    T931_GPIOBOOT(15)
 #define T931_EMMC_DS_FN                 1
+
+// Alternate Functions for SDIO
+#define T931_SDIO_D0                    T931_GPIOX(0)
+#define T931_SDIO_D0_FN                 1
+#define T931_SDIO_D1                    T931_GPIOX(1)
+#define T931_SDIO_D1_FN                 1
+#define T931_SDIO_D2                    T931_GPIOX(2)
+#define T931_SDIO_D2_FN                 1
+#define T931_SDIO_D3                    T931_GPIOX(3)
+#define T931_SDIO_D3_FN                 1
+#define T931_SDIO_CLK                   T931_GPIOX(4)
+#define T931_SDIO_CLK_FN                1
+#define T931_SDIO_CMD                   T931_GPIOX(5)
+#define T931_SDIO_CMD_FN                1
+#define T931_WIFI_REG_ON                T931_GPIOX(6)
+#define T931_WIFI_REG_ON_FN             0
+#define T931_WIFI_HOST_WAKE             T931_GPIOX(7)
+#define T931_WIFI_HOST_WAKE_FN          0
+#define T931_WIFI_LPO_CLK               T931_GPIOX(16)
+#define T931_WIFI_LPO_CLK_FN            1 // PWM_E
+
+// Alternate Functions for UART
+#define T931_UART_A_TX                  T931_GPIOX(12)
+#define T931_UART_A_TX_FN               1
+#define T931_UART_A_RX                  T931_GPIOX(13)
+#define T931_UART_A_RX_FN               1
+#define T931_UART_A_CTS                 T931_GPIOX(14)
+#define T931_UART_A_CTS_FN              1
+#define T931_UART_A_RTS                 T931_GPIOX(15)
+#define T931_UART_A_RTS_FN              1
+
+#define T931_EE_PDM_BASE                (0xff640000)
+#define T931_EE_PDM_LENGTH              (0x2000)
+
+#define T931_EE_AUDIO_BASE              (0xff642000)
+#define T931_EE_AUDIO_LENGTH            (0x1000)
+
+#define T931_HIFI_PLL_RATE              1536000000

@@ -1,8 +1,12 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fs-management/mount.h>
 
 #include <errno.h>
 #include <fcntl.h>
+#include <new>
 #include <string.h>
 #include <unistd.h>
 
@@ -17,7 +21,6 @@
 #include <zircon/device/vfs.h>
 #include <zircon/processargs.h>
 #include <zircon/syscalls.h>
-#include <zxcpp/new.h>
 
 namespace {
 

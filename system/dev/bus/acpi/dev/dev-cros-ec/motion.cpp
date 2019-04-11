@@ -33,11 +33,13 @@
 
 #include <acpica/acpi.h>
 
+#include <utility>
+
 #include "../../include/errors.h"
 
 AcpiCrOsEcMotionDevice::AcpiCrOsEcMotionDevice(fbl::RefPtr<AcpiCrOsEc> ec, zx_device_t* parent,
                                                ACPI_HANDLE acpi_handle)
-    : DeviceType(parent), ec_(fbl::move(ec)), acpi_handle_(acpi_handle) {
+    : DeviceType(parent), ec_(std::move(ec)), acpi_handle_(acpi_handle) {
 }
 
 AcpiCrOsEcMotionDevice::~AcpiCrOsEcMotionDevice() {
@@ -97,8 +99,8 @@ zx_status_t AcpiCrOsEcMotionDevice::ConsumeFifoLocked() {
 
 void AcpiCrOsEcMotionDevice::QueueHidReportLocked(const uint8_t* data, size_t len) {
     // Default unit is lux
-    if (proxy_.is_valid()) {
-        proxy_.IoQueue(data, len);
+    if (client_.is_valid()) {
+        client_.IoQueue(data, len);
     }
 }
 
@@ -115,11 +117,11 @@ zx_status_t AcpiCrOsEcMotionDevice::HidbusStart(const hidbus_ifc_t* ifc) {
     zxlogf(TRACE, "acpi-cros-ec-motion: hid bus start\n");
 
     fbl::AutoLock guard(&hid_lock_);
-    if (proxy_.is_valid()) {
+    if (client_.is_valid()) {
         return ZX_ERR_ALREADY_BOUND;
     }
 
-    proxy_ = ddk::HidbusIfcProxy(ifc);
+    client_ = ddk::HidbusIfcClient(ifc);
 
     zx_status_t status = FifoInterruptEnable(true);
     if (status != ZX_OK) {
@@ -160,7 +162,7 @@ void AcpiCrOsEcMotionDevice::HidbusStop() {
 
     fbl::AutoLock guard(&hid_lock_);
 
-    proxy_.clear();
+    client_.clear();
     FifoInterruptEnable(false);
 
     // Disable all sensors
@@ -479,7 +481,7 @@ zx_status_t AcpiCrOsEcMotionDevice::Create(fbl::RefPtr<AcpiCrOsEc> ec, zx_device
 
     fbl::AllocChecker ac;
     fbl::unique_ptr<AcpiCrOsEcMotionDevice> dev(
-            new (&ac) AcpiCrOsEcMotionDevice(fbl::move(ec), parent, acpi_handle));
+            new (&ac) AcpiCrOsEcMotionDevice(std::move(ec), parent, acpi_handle));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
@@ -503,7 +505,7 @@ zx_status_t AcpiCrOsEcMotionDevice::Create(fbl::RefPtr<AcpiCrOsEc> ec, zx_device
         return acpi_to_zx_status(acpi_status);
     }
 
-    *out = fbl::move(dev);
+    *out = std::move(dev);
     return ZX_OK;
 }
 
@@ -802,6 +804,6 @@ zx_status_t AcpiCrOsEcMotionDevice::BuildHidDescriptor() {
     }
 
     hid_descriptor_len_ = total_size;
-    hid_descriptor_ = fbl::move(desc);
+    hid_descriptor_ = std::move(desc);
     return ZX_OK;
 }

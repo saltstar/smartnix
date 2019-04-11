@@ -1,8 +1,8 @@
 
 #pragma once
 
-#include <zircon/rights.h>
 #include <object/dispatcher.h>
+#include <zircon/rights.h>
 
 class GuestDispatcher;
 class Vcpu;
@@ -17,16 +17,20 @@ public:
     ~VcpuDispatcher();
 
     zx_obj_type_t get_type() const { return ZX_OBJ_TYPE_VCPU; }
+    const fbl::RefPtr<GuestDispatcher>& guest() const { return guest_; }
 
     zx_status_t Resume(zx_port_packet_t* packet);
-    zx_status_t Interrupt(uint32_t vector);
+    // Adds an interrupt vector to the list of pending interrupts. If the VCPU
+    // is running, this returns a CPU mask that can be used to interrupt it.
+    cpu_mask_t PhysicalInterrupt(uint32_t vector);
+    void VirtualInterrupt(uint32_t vector);
     zx_status_t ReadState(uint32_t kind, void* buffer, size_t len) const;
     zx_status_t WriteState(uint32_t kind, const void* buffer, size_t len);
 
 private:
     fbl::Canary<fbl::magic("VCPD")> canary_;
     fbl::RefPtr<GuestDispatcher> guest_;
-    fbl::unique_ptr<Vcpu> vcpu_;
+    ktl::unique_ptr<Vcpu> vcpu_;
 
-    explicit VcpuDispatcher(fbl::RefPtr<GuestDispatcher> guest, fbl::unique_ptr<Vcpu> vcpu);
+    explicit VcpuDispatcher(fbl::RefPtr<GuestDispatcher> guest, ktl::unique_ptr<Vcpu> vcpu);
 };

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <runtests-utils/runtests-utils.h>
 
@@ -15,13 +18,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <memory>
+
 #include <fbl/auto_call.h>
 #include <fbl/string.h>
 #include <fbl/string_buffer.h>
 #include <fbl/string_piece.h>
 #include <fbl/string_printf.h>
-#include <fbl/unique_ptr.h>
 #include <fbl/vector.h>
+
+#include <utility>
 
 namespace runtests {
 
@@ -95,13 +101,13 @@ fbl::String JoinPath(const fbl::StringPiece parent, const fbl::StringPiece child
     return fbl::String::Concat({parent, child});
 }
 
-int WriteSummaryJSON(const fbl::Vector<fbl::unique_ptr<Result>>& results,
+int WriteSummaryJSON(const fbl::Vector<std::unique_ptr<Result>>& results,
                      const fbl::StringPiece output_file_basename,
                      const fbl::StringPiece syslog_path,
                      FILE* summary_json) {
     int test_count = 0;
     fprintf(summary_json, "{\n  \"tests\": [\n");
-    for (const fbl::unique_ptr<Result>& result : results) {
+    for (const auto& result : results) {
         if (test_count != 0) {
             fprintf(summary_json, ",\n");
         }
@@ -194,6 +200,31 @@ int ResolveGlobs(const fbl::Vector<fbl::String>& globs,
     return 0;
 }
 
+bool IsSharedLibraryName(fbl::StringPiece filename) {
+    struct ExcludePattern {
+        fbl::StringPiece prefix;
+        fbl::StringPiece suffix;
+    };
+    static const fbl::Vector<ExcludePattern> kExcludePatterns = {
+        {"lib", ".so"},
+        {"lib", ".dylib"},
+    };
+
+    for (const auto& exclusion : kExcludePatterns) {
+        if (filename.length() < exclusion.prefix.length() + exclusion.suffix.length()) {
+            continue;
+        }
+
+        fbl::StringPiece start(filename.begin(), exclusion.prefix.length());
+        fbl::StringPiece finish(filename.end() - exclusion.suffix.length(), exclusion.suffix.length());
+        if (start == exclusion.prefix && finish == exclusion.suffix) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 int DiscoverTestsInDirGlobs(const fbl::Vector<fbl::String>& dir_globs,
                             const char* ignore_dir_name,
                             const fbl::Vector<fbl::String>& basename_whitelist,
@@ -242,9 +273,13 @@ int DiscoverTestsInDirGlobs(const fbl::Vector<fbl::String>& dir_globs,
 
         struct dirent* de;
         while ((de = readdir(dir)) != nullptr) {
-            const char* test_name = de->d_name;
+            fbl::StringPiece test_name = de->d_name;
             if (!basename_whitelist.is_empty() &&
                 !runtests::IsInWhitelist(test_name, basename_whitelist)) {
+                continue;
+            }
+
+            if (IsSharedLibraryName(test_name)) {
                 continue;
             }
 
@@ -290,7 +325,7 @@ bool RunTests(const RunTestFn& RunTest, const fbl::Vector<fbl::String>& test_pat
               const fbl::Vector<fbl::String>& test_args,
               const char* output_dir,
               const fbl::StringPiece output_file_basename, signed char verbosity, int* failed_count,
-              fbl::Vector<fbl::unique_ptr<Result>>* results) {
+              fbl::Vector<std::unique_ptr<Result>>* results) {
     for (const fbl::String& test_path : test_paths) {
         fbl::String output_dir_for_test_str;
         fbl::String output_filename_str;
@@ -333,12 +368,12 @@ bool RunTests(const RunTestFn& RunTest, const fbl::Vector<fbl::String>& test_pat
         printf("\n------------------------------------------------\n"
                "RUNNING TEST: %s\n\n",
                test_path.c_str());
-        fbl::unique_ptr<Result> result = RunTest(argv.get(), output_dir_for_test,
+        std::unique_ptr<Result> result = RunTest(argv.get(), output_dir_for_test,
                                                  output_filename);
         if (result->launch_status != SUCCESS) {
             *failed_count += 1;
         }
-        results->push_back(fbl::move(result));
+        results->push_back(std::move(result));
     }
     return true;
 }

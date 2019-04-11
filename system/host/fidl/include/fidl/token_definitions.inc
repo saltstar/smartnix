@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // No header inclusion guards _sic_ as this may be re-included with
 // different X macro arguments.
@@ -58,18 +61,9 @@ KEYWORD(Interface, "interface")
 KEYWORD(Struct, "struct")
 KEYWORD(Table, "table")
 KEYWORD(Union, "union")
+KEYWORD(XUnion, "xunion")
 
-KEYWORD(Bool, "bool")
-KEYWORD(Int8, "int8")
-KEYWORD(Int16, "int16")
-KEYWORD(Int32, "int32")
-KEYWORD(Int64, "int64")
-KEYWORD(Uint8, "uint8")
-KEYWORD(Uint16, "uint16")
-KEYWORD(Uint32, "uint32")
-KEYWORD(Uint64, "uint64")
-KEYWORD(Float32, "float32")
-KEYWORD(Float64, "float64")
+KEYWORD(Error, "error")
 
 KEYWORD(True, "true")
 KEYWORD(False, "false")

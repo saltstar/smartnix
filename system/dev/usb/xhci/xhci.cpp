@@ -8,6 +8,7 @@
 #include <zircon/types.h>
 #include <zircon/syscalls.h>
 #include <zircon/process.h>
+#include <usb/usb-request.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,7 +154,8 @@ zx_status_t xhci_init(xhci_t* xhci, xhci_mode_t mode, uint32_t num_interrupts) {
     mtx_init(&xhci->input_context_lock, mtx_plain);
     sync_completion_reset(&xhci->command_queue_completion);
 
-    usb_request_pool_init(&xhci->free_reqs);
+    usb_request_pool_init(&xhci->free_reqs, sizeof(usb_request_t) +
+                          offsetof(xhci_usb_request_internal_t, node));
 
     xhci->cap_regs = (xhci_cap_regs_t*)xhci->mmio.vaddr;
     xhci->op_regs = (xhci_op_regs_t*)((uint8_t*)xhci->cap_regs + xhci->cap_regs->length);
@@ -268,7 +270,7 @@ zx_status_t xhci_init(xhci_t* xhci, xhci_mode_t mode, uint32_t num_interrupts) {
 
     size_t array_bytes;
     array_bytes = ERST_ARRAY_SIZE * sizeof(erst_entry_t);
-    // MSI only supports up to 32 interupts, so the required ERST arrays will fit
+    // MSI only supports up to 32 interrupts, so the required ERST arrays will fit
     // within the page. Potentially more pages will need to be allocated for MSI-X.
     for (uint32_t i = 0; i < xhci->num_interrupts; i++) {
         // Ran out of space in page.
@@ -469,21 +471,27 @@ zx_status_t xhci_start(xhci_t* xhci) {
     return ZX_OK;
 }
 
-static void xhci_slot_stop(xhci_slot_t* slot) {
+static void xhci_slot_stop(xhci_slot_t* slot, xhci_t* xhci) {
     for (int i = 0; i < XHCI_NUM_EPS; i++) {
         xhci_endpoint_t* ep = &slot->eps[i];
 
         mtx_lock(&ep->lock);
         if (ep->state != EP_STATE_DEAD) {
-            usb_request_t* req;
-            while ((req = list_remove_tail_type(&ep->pending_reqs, usb_request_t, node))
-                    != nullptr) {
-                usb_request_complete(req, ZX_ERR_IO_NOT_PRESENT, 0);
+            usb_request_t* req = nullptr;
+            xhci_usb_request_internal_t* req_int = nullptr;
+            while ((req_int = list_remove_head_type(&ep->pending_reqs,
+                                                    xhci_usb_request_internal_t,
+                                                    node)) != nullptr) {
+                req = XHCI_INTERNAL_TO_USB_REQ(req_int);
+                usb_request_complete(req, ZX_ERR_IO_NOT_PRESENT, 0, &req_int->complete_cb);
             }
-            while ((req = list_remove_tail_type(&ep->queued_reqs, usb_request_t, node))
-                    != nullptr) {
-                usb_request_complete(req, ZX_ERR_IO_NOT_PRESENT, 0);
+            while ((req_int = list_remove_head_type(&ep->queued_reqs,
+                                                    xhci_usb_request_internal_t,
+                                                    node)) != nullptr) {
+                req = XHCI_INTERNAL_TO_USB_REQ(req_int);
+                usb_request_complete(req, ZX_ERR_IO_NOT_PRESENT, 0, &req_int->complete_cb);
             }
+
             ep->state = EP_STATE_DEAD;
         }
         mtx_unlock(&ep->lock);
@@ -504,7 +512,7 @@ void xhci_stop(xhci_t* xhci) {
     xhci_wait_bits(usbsts, USBSTS_HCH, USBSTS_HCH);
 
     for (uint32_t i = 1; i <= xhci->max_slots; i++) {
-        xhci_slot_stop(&xhci->slots[i]);
+        xhci_slot_stop(&xhci->slots[i], xhci);
     }
 }
 
@@ -655,4 +663,44 @@ void xhci_handle_interrupt(xhci_t* xhci, uint32_t interrupter) {
     XHCI_WRITE32(&intr_regs->iman, IMAN_IE | IMAN_IP);
 
     xhci_handle_events(xhci, interrupter);
+}
+
+bool xhci_add_to_list_tail(xhci_t* xhci, list_node_t* list, usb_request_t* req) {
+    uint64_t node_offset = sizeof(usb_request_t) + offsetof(xhci_usb_request_internal_t, node);
+    list_add_tail(list, (list_node_t*)((uintptr_t)req + node_offset));
+    return true;
+}
+
+bool xhci_add_to_list_head(xhci_t* xhci, list_node_t* list, usb_request_t* req) {
+    uint64_t node_offset = sizeof(usb_request_t) + offsetof(xhci_usb_request_internal_t, node);
+    list_add_head(list, (list_node_t*)((uintptr_t)req + node_offset));
+    return true;
+}
+
+bool xhci_remove_from_list_head(xhci_t* xhci, list_node_t* list, usb_request_t** req) {
+    uint64_t node_offset = sizeof(usb_request_t) + offsetof(xhci_usb_request_internal_t, node);
+    list_node_t* node = list_remove_head(list);
+    if (!node) {
+      *req = NULL;
+      return false;
+    }
+    *req = (usb_request_t*)((uintptr_t)node - node_offset);
+    return true;
+}
+
+bool xhci_remove_from_list_tail(xhci_t* xhci, list_node_t* list, usb_request_t** req) {
+    uint64_t node_offset = sizeof(usb_request_t) + offsetof(xhci_usb_request_internal_t, node);
+    list_node_t* node = list_remove_tail(list);
+    if (!node) {
+      *req = NULL;
+      return false;
+    }
+    *req = (usb_request_t*)((uintptr_t)node - node_offset);
+    return true;
+}
+
+void xhci_delete_req_node(xhci_t* xhci, usb_request_t* req) {
+    uint64_t node_offset = sizeof(usb_request_t) + offsetof(xhci_usb_request_internal_t, node);
+    list_node_t* node = (list_node_t*)((uintptr_t)req + node_offset);
+    list_delete(node);
 }

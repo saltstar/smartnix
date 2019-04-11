@@ -1,11 +1,15 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <stdint.h>
-#include <zircon/compiler.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_ptr.h>
 #include <fbl/type_support.h>
+#include <memory>
+#include <stdint.h>
+#include <zircon/compiler.h>
 
 namespace fbl {
 namespace internal {
@@ -48,6 +52,31 @@ struct ContainerPtrTraits<::fbl::unique_ptr<T>> {
     using ConstRefType    = const T&;
     using PtrType         = ::fbl::unique_ptr<T>;
     using ConstPtrType    = ::fbl::unique_ptr<const T>;
+    using RawPtrType      = T*;
+    using ConstRawPtrType = const T*;
+
+    static constexpr bool IsManaged = true;
+    static constexpr bool CanCopy = false;
+
+    static inline T* GetRaw(const PtrType& ptr) { return ptr.get(); }
+
+    static inline RawPtrType Leak(PtrType& ptr) __WARN_UNUSED_RESULT {
+        return ptr.release();
+    }
+
+    static inline PtrType Reclaim(RawPtrType ptr) {
+        return PtrType(ptr);
+    }
+};
+
+// Traits for managing std::unique_ptrs to objects (arrays of objects are not supported)
+template <typename T, typename Deleter>
+struct ContainerPtrTraits<::std::unique_ptr<T, Deleter>> {
+    using ValueType       = T;
+    using RefType         = T&;
+    using ConstRefType    = const T&;
+    using PtrType         = ::std::unique_ptr<T, Deleter>;
+    using ConstPtrType    = ::std::unique_ptr<const T, Deleter>;
     using RawPtrType      = T*;
     using ConstRawPtrType = const T*;
 

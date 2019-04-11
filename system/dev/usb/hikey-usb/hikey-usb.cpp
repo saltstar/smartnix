@@ -16,7 +16,7 @@
 #include <ddk/driver.h>
 #include <ddk/platform-defs.h>
 #include <ddk/protocol/gpio.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/device.h>
 #include <fbl/algorithm.h>
 #include <fbl/unique_ptr.h>
 
@@ -75,7 +75,7 @@ zx_status_t HikeyUsb::Init() {
     return pdev_device_add(&pdev, 0, &args, &zxdev_);
 }
 
-zx_status_t HikeyUsb::UmsSetMode(usb_mode_t mode) {
+zx_status_t HikeyUsb::UsbModeSwitchSetMode(usb_mode_t mode) {
     if (mode == usb_mode_) {
         return ZX_OK;
     }
@@ -98,8 +98,24 @@ void HikeyUsb::DdkRelease() {
     delete this;
 }
 
-} // namespace hikey_usb
-
-zx_status_t hikey_usb_bind(void* ctx, zx_device_t* parent) {
+__BEGIN_CDECLS
+static zx_status_t hikey_usb_bind(void* ctx, zx_device_t* parent) {
     return hikey_usb::HikeyUsb::Create(parent);
 }
+__END_CDECLS
+
+static zx_driver_ops_t driver_ops = [](){
+    zx_driver_ops_t ops;
+    ops.version = DRIVER_OPS_VERSION;
+    ops.bind = hikey_usb_bind;
+    return ops;
+}();
+
+} // namespace hikey_usb
+
+ZIRCON_DRIVER_BEGIN(hikey_usb, hikey_usb::driver_ops, "zircon", "0.1", 4)
+    BI_ABORT_IF(NE, BIND_PROTOCOL, ZX_PROTOCOL_PDEV),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_VID, PDEV_VID_96BOARDS),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_PID, PDEV_PID_HIKEY960),
+    BI_MATCH_IF(EQ, BIND_PLATFORM_DEV_DID, PDEV_DID_HIKEY960_USB),
+ZIRCON_DRIVER_END(hikey_usb)

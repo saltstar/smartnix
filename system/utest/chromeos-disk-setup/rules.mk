@@ -13,11 +13,16 @@ MODULE_NAME := chromeos-disk-setup-test
 MODULE_SRCS := \
     $(LOCAL_DIR)/chromeos-disk-setup.cpp
 
+MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-io \
+    system/fidl/fuchsia-mem \
+
 MODULE_STATIC_LIBS := \
     system/ulib/chromeos-disk-setup \
     system/ulib/fbl \
     system/ulib/gpt \
     system/ulib/zx \
+    system/ulib/zxio \
     system/ulib/zxcpp \
     third_party/ulib/cksum
 

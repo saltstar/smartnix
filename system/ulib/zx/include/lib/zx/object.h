@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#pragma once
+#ifndef LIB_ZX_OBJECT_H_
+#define LIB_ZX_OBJECT_H_
 
 #include <zircon/syscalls.h>
 #include <zircon/types.h>
@@ -12,6 +13,7 @@
 namespace zx {
 
 class port;
+class profile;
 
 // Wraps and takes ownership of a handle to an object.
 //
@@ -177,6 +179,10 @@ public:
         return zx_object_set_cookie(get(), scope.get(), cookie);
     }
 
+    zx_status_t set_profile(const object<profile>& profile, uint32_t options) const {
+        return zx_object_set_profile(get(), profile.get(), options);
+    }
+
 private:
     template <typename A, typename B> struct is_same {
         static const bool value = false;
@@ -309,3 +315,5 @@ private:
 };
 
 } // namespace zx
+
+#endif  // LIB_ZX_OBJECT_H_

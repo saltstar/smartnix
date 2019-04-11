@@ -15,7 +15,7 @@ zx_status_t InterruptDispatcher::WaitForInterrupt(zx_time_t* out_timestamp) {
     while (true) {
         {
             Guard<SpinLock, IrqSave> guard{&spinlock_};
-            if (port_dispatcher_) {
+            if (port_dispatcher_ || HasVcpu()) {
                 return ZX_ERR_BAD_STATE;
             }
             switch (state_) {
@@ -151,20 +151,17 @@ zx_status_t InterruptDispatcher::Destroy() {
     return ZX_OK;
 }
 
-zx_status_t InterruptDispatcher::Bind(fbl::RefPtr<PortDispatcher> port_dispatcher,
-                                      fbl::RefPtr<InterruptDispatcher> interrupt, uint64_t key) {
+zx_status_t InterruptDispatcher::Bind(fbl::RefPtr<PortDispatcher> port_dispatcher, uint64_t key) {
     Guard<SpinLock, IrqSave> guard{&spinlock_};
     if (state_ == InterruptState::DESTROYED) {
         return ZX_ERR_CANCELED;
-    }
-    if (port_dispatcher_) {
+    } else if (state_ == InterruptState::WAITING) {
+        return ZX_ERR_BAD_STATE;
+    } else if (port_dispatcher_ || HasVcpu()) {
         return ZX_ERR_ALREADY_BOUND;
     }
-    if (state_ == InterruptState::WAITING) {
-        return ZX_ERR_BAD_STATE;
-    }
 
-    port_dispatcher_ = fbl::move(port_dispatcher);
+    port_dispatcher_ = ktl::move(port_dispatcher);
     port_packet_.key = key;
     return ZX_OK;
 }

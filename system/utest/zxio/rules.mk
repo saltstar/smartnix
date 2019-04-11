@@ -13,13 +13,17 @@ MODULE_NAME := zxio-test
 MODULE_SRCS := \
     $(LOCAL_DIR)/main.c \
     $(LOCAL_DIR)/null-test.cpp \
+    $(LOCAL_DIR)/vmofile-test.cpp \
     $(LOCAL_DIR)/zxio-test.cpp \
 
 MODULE_FIDL_LIBS := \
     system/fidl/fuchsia-io \
+    system/fidl/fuchsia-mem \
+    system/fidl/fuchsia-net \
 
 MODULE_STATIC_LIBS := \
     system/ulib/zxio \
+    system/ulib/zxs \
     system/ulib/zx \
 
 MODULE_LIBS := \

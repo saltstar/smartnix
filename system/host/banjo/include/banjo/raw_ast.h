@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_BANJO_INCLUDE_BANJO_RAW_AST_H_
 #define ZIRCON_SYSTEM_HOST_BANJO_INCLUDE_BANJO_RAW_AST_H_
@@ -123,14 +126,6 @@ class NumericLiteral : public Literal {
 public:
     NumericLiteral(SourceElement const& element)
         : Literal(element, Kind::kNumeric) {}
-
-    void Accept(TreeVisitor& visitor);
-};
-
-class Ordinal : public SourceElement {
-public:
-    explicit Ordinal(SourceElement const& element)
-        : SourceElement(element) {}
 
     void Accept(TreeVisitor& visitor);
 };
@@ -419,18 +414,16 @@ public:
 class InterfaceMethod : public SourceElement {
 public:
     InterfaceMethod(SourceElement const& element, std::unique_ptr<AttributeList> attributes,
-                    std::unique_ptr<Ordinal> ordinal,
                     std::unique_ptr<Identifier> identifier,
                     std::unique_ptr<ParameterList> maybe_request,
                     std::unique_ptr<ParameterList> maybe_response)
         : SourceElement(element), attributes(std::move(attributes)),
-          ordinal(std::move(ordinal)), identifier(std::move(identifier)),
-          maybe_request(std::move(maybe_request)), maybe_response(std::move(maybe_response)) {}
+          identifier(std::move(identifier)), maybe_request(std::move(maybe_request)),
+          maybe_response(std::move(maybe_response)) {}
 
     void Accept(TreeVisitor& visitor);
 
     std::unique_ptr<AttributeList> attributes;
-    std::unique_ptr<Ordinal> ordinal;
     std::unique_ptr<Identifier> identifier;
     std::unique_ptr<ParameterList> maybe_request;
     std::unique_ptr<ParameterList> maybe_response;

@@ -1,10 +1,17 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fs/service.h>
+
+#include <utility>
+
+#include <zircon/device/vfs.h>
 
 namespace fs {
 
 Service::Service(Connector connector)
-    : connector_(fbl::move(connector)) {}
+    : connector_(std::move(connector)) {}
 
 Service::~Service() = default;
 
@@ -29,7 +36,7 @@ zx_status_t Service::Serve(Vfs* vfs, zx::channel channel, uint32_t flags) {
     if (!connector_) {
         return ZX_ERR_NOT_SUPPORTED;
     }
-    return connector_(fbl::move(channel));
+    return connector_(std::move(channel));
 }
 
 } // namespace fs

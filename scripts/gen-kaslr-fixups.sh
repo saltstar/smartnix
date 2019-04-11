@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2018 The Fuchsia Authors
+#
+# Use of this source code is governed by a MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT
+
 #
 # This script examines the relocations left in the kernel ELF image
 # by the linker's --emit-relocs feature to find the boot-time data

@@ -1,12 +1,16 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <libzbi/zbi-zx.h>
 
-#include <fbl/type_support.h>
 #include <lib/zx/vmar.h>
 #include <lib/zx/vmo.h>
 #include <limits.h>
 #include <string.h>
 #include <zircon/assert.h>
+
+#include <utility>
 
 namespace zbi {
 
@@ -19,7 +23,7 @@ size_t PageRound(size_t size) {
 }
 
 zx_status_t ZbiVMO::Init(zx::vmo vmo) {
-    vmo_ = fbl::move(vmo);
+    vmo_ = std::move(vmo);
     auto status = vmo_.get_size(&capacity_);
     if (status == ZX_OK && capacity_ > 0) {
         status = Map();
@@ -30,7 +34,7 @@ zx_status_t ZbiVMO::Init(zx::vmo vmo) {
 zx::vmo ZbiVMO::Release() {
     Unmap();
     capacity_= 0;
-    return fbl::move(vmo_);
+    return std::move(vmo_);
 }
 
 ZbiVMO::~ZbiVMO() {

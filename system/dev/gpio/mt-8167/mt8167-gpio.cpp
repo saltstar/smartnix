@@ -8,20 +8,13 @@
 #include <ddk/binding.h>
 #include <ddk/debug.h>
 #include <ddk/device.h>
-#include <ddk/protocol/gpio-impl.h>
-
 #include <fbl/alloc_checker.h>
-#include <fbl/auto_call.h>
 #include <fbl/unique_ptr.h>
-
 #include <hw/reg.h>
-
 #include <soc/mt8167/mt8167-hw.h>
-
 #include <zircon/syscalls/port.h>
 #include <zircon/types.h>
 
-#include "mt8167-gpio-regs.h"
 #include "mt8167-gpio.h"
 
 namespace gpio {
@@ -80,6 +73,13 @@ zx_status_t Mt8167GpioDevice::GpioImplConfigIn(uint32_t index, uint32_t flags) {
     }
 
     // If not supported above, try IO Config.
+    // TODO(andresoportus): We only support enable/disable pull through the GPIO protocol, so
+    // until we allow passing particular pull amounts we can specify here different pull amounts
+    // for particular GPIOs.
+    PullAmount pull_amount = kPull10K;
+    if (index >= 40 && index <= 43) {
+        pull_amount = kPull75K;
+    }
     switch (pull_mode) {
     case GPIO_NO_PULL:
         if (iocfg_.PullDisable(index)) {
@@ -87,12 +87,12 @@ zx_status_t Mt8167GpioDevice::GpioImplConfigIn(uint32_t index, uint32_t flags) {
         }
         break;
     case GPIO_PULL_UP:
-        if (iocfg_.PullEnable(index) && iocfg_.SetPullUp(index)) {
+        if (iocfg_.PullEnable(index, pull_amount) && iocfg_.SetPullUp(index)) {
             return ZX_OK;
         }
         break;
     case GPIO_PULL_DOWN:
-        if (iocfg_.PullEnable(index) && iocfg_.SetPullDown(index)) {
+        if (iocfg_.PullEnable(index, pull_amount) && iocfg_.SetPullDown(index)) {
             return ZX_OK;
         }
         break;
@@ -138,7 +138,7 @@ zx_status_t Mt8167GpioDevice::GpioImplWrite(uint32_t index, uint8_t value) {
 }
 
 zx_status_t Mt8167GpioDevice::GpioImplGetInterrupt(uint32_t index, uint32_t flags,
-                                                   zx_handle_t* out_handle) {
+                                                   zx::interrupt* out_irq) {
     zx_status_t status;
     if (index >= interrupts_.size()) {
         return ZX_ERR_INVALID_ARGS;
@@ -149,15 +149,15 @@ zx_status_t Mt8167GpioDevice::GpioImplGetInterrupt(uint32_t index, uint32_t flag
         return ZX_ERR_ALREADY_EXISTS;
     }
 
-    zx_handle_t handle;
-    status = zx_interrupt_create(0, index, ZX_INTERRUPT_VIRTUAL, &handle);
+    zx::interrupt irq;
+    status = zx::interrupt::create(zx::resource(), index, ZX_INTERRUPT_VIRTUAL, &irq);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s zx_interrupt_create failed %d \n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s zx::interrupt::create failed %d \n", __FUNCTION__, status);
         return status;
     }
-    status = zx_handle_duplicate(handle, ZX_RIGHT_SAME_RIGHTS, out_handle);
+    status = irq.duplicate(ZX_RIGHT_SAME_RIGHTS, out_irq);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s zx_handle_duplicate failed %d \n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s interrupt.duplicate failed %d \n", __FUNCTION__, status);
         return status;
     }
 
@@ -183,7 +183,7 @@ zx_status_t Mt8167GpioDevice::GpioImplGetInterrupt(uint32_t index, uint32_t flag
     default:
         return ZX_ERR_INVALID_ARGS;
     }
-    interrupts_[index] = zx::interrupt(handle);
+    interrupts_[index] = std::move(irq);
     eint_.Enable(index);
     zxlogf(TRACE, "%s EINT %u enabled\n", __FUNCTION__, index);
     return ZX_OK;
@@ -247,7 +247,7 @@ zx_status_t Mt8167GpioDevice::Bind() {
         return status;
     }
 
-    status = int_.bind(port_.get(), 0, 0 /*options*/);
+    status = int_.bind(port_, 0, 0 /*options*/);
     if (status != ZX_OK) {
         zxlogf(ERROR, "%s zx_interrupt_bind failed %d\n", __FUNCTION__, status);
         return status;
@@ -287,7 +287,7 @@ zx_status_t Mt8167GpioDevice::Init() {
         return status;
     }
     gpio_impl_protocol_t gpio_proto = {
-        .ops = &ops_,
+        .ops = &gpio_impl_protocol_ops_,
         .ctx = this,
     };
     const platform_proxy_cb_t kCallback = {nullptr, nullptr};
@@ -310,30 +310,23 @@ zx_status_t Mt8167GpioDevice::Create(zx_device_t* parent) {
     }
 
     mmio_buffer_t gpio_mmio;
-    status = pdev_map_mmio_buffer2(&pdev, 0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &gpio_mmio);
+    status = pdev_map_mmio_buffer(&pdev, 0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &gpio_mmio);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s gpio pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s gpio pdev_map_mmio_buffer failed %d\n", __FUNCTION__, status);
         return status;
     }
 
     mmio_buffer_t iocfg_mmio;
-    status = pdev_map_mmio_buffer2(&pdev, 1, ZX_CACHE_POLICY_UNCACHED_DEVICE, &iocfg_mmio);
+    status = pdev_map_mmio_buffer(&pdev, 1, ZX_CACHE_POLICY_UNCACHED_DEVICE, &iocfg_mmio);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s iocfg pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s iocfg pdev_map_mmio_buffer failed %d\n", __FUNCTION__, status);
         return status;
     }
 
     mmio_buffer_t eint_mmio;
-    status = pdev_map_mmio_buffer2(&pdev, 2, ZX_CACHE_POLICY_UNCACHED_DEVICE, &eint_mmio);
+    status = pdev_map_mmio_buffer(&pdev, 2, ZX_CACHE_POLICY_UNCACHED_DEVICE, &eint_mmio);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s eint pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
-        return status;
-    }
-
-    pdev_device_info_t info;
-    status = pdev_get_device_info(&pdev, &info);
-    if (status != ZX_OK) {
-        zxlogf(ERROR, "%s pdev_get_device_info failed %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: pdev_map_mmio_buffer gpio failed %d\n", __FUNCTION__, status);
         return status;
     }
 
@@ -354,8 +347,8 @@ zx_status_t Mt8167GpioDevice::Create(zx_device_t* parent) {
     return ptr->Init();
 }
 
-} // namespace gpio
-
-extern "C" zx_status_t mt8167_gpio_bind(void* ctx, zx_device_t* parent) {
+zx_status_t mt8167_gpio_bind(void* ctx, zx_device_t* parent) {
     return gpio::Mt8167GpioDevice::Create(parent);
 }
+
+} // namespace gpio

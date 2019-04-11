@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "banjo/parser.h"
 
@@ -74,6 +77,7 @@ Parser::Parser(Lexer* lexer, ErrorReporter* error_reporter)
         {"guest", types::HandleSubtype::kGuest},
         {"timer", types::HandleSubtype::kTimer},
         {"bti", types::HandleSubtype::kBti},
+        {"profile", types::HandleSubtype::kProfile},
     };
 
     last_token_ = Lex();
@@ -156,18 +160,6 @@ std::unique_ptr<raw::NumericLiteral> Parser::ParseNumericLiteral() {
         return Fail();
 
     return std::make_unique<raw::NumericLiteral>(scope.GetSourceElement());
-}
-
-std::unique_ptr<raw::Ordinal> Parser::ParseOrdinal() {
-    ASTScope scope(this);
-    ConsumeToken(OfKind(Token::Kind::kNumericLiteral));
-    if (!Ok())
-        return Fail();
-    ConsumeToken(OfKind(Token::Kind::kColon));
-    if (!Ok())
-        return Fail();
-
-    return std::make_unique<raw::Ordinal>(scope.GetSourceElement());
 }
 
 std::unique_ptr<raw::TrueLiteral> Parser::ParseTrueLiteral() {
@@ -739,10 +731,6 @@ std::unique_ptr<raw::ParameterList> Parser::ParseParameterList() {
 }
 
 std::unique_ptr<raw::InterfaceMethod> Parser::ParseInterfaceMethod(std::unique_ptr<raw::AttributeList> attributes, ASTScope& scope) {
-    auto ordinal = ParseOrdinal();
-    if (!Ok())
-        return Fail();
-
     std::unique_ptr<raw::Identifier> method_name;
     std::unique_ptr<raw::ParameterList> maybe_request;
     std::unique_ptr<raw::ParameterList> maybe_response;
@@ -786,7 +774,6 @@ std::unique_ptr<raw::InterfaceMethod> Parser::ParseInterfaceMethod(std::unique_p
 
     return std::make_unique<raw::InterfaceMethod>(scope.GetSourceElement(),
                                                   std::move(attributes),
-                                                  std::move(ordinal),
                                                   std::move(method_name),
                                                   std::move(maybe_request),
                                                   std::move(maybe_response));
@@ -831,7 +818,8 @@ Parser::ParseInterfaceDeclaration(std::unique_ptr<raw::AttributeList> attributes
             ConsumeToken(OfKind(Token::Kind::kRightCurly));
             return Done;
 
-        case Token::Kind::kNumericLiteral:
+        case Token::Kind::kArrow:
+        case Token::Kind::kIdentifier:
             methods.emplace_back(ParseInterfaceMethod(std::move(attributes), scope));
             return More;
         }

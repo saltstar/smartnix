@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,6 +9,8 @@
 
 namespace fbl {
 
+// |Array| is lightweight movable container that takes ownership of an array.
+// At destruction or when reset() is invoked, it uses delete[] to release the owned array.
 template <typename T>
 class Array {
 public:

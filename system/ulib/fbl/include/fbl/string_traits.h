@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // This header provides functions which make it easier to work generically
 // with string-like objects such as fbl::StringPiece, fbl::String, std::string,
@@ -6,8 +9,9 @@
 #pragma once
 
 #include <stddef.h>
+#include <type_traits>
 
-#include <fbl/type_support.h>
+#include <fbl/macros.h>
 
 namespace fbl {
 namespace internal {
@@ -32,8 +36,8 @@ constexpr size_t GetStringLength(const T& value) {
 // Evaluates to true_type if GetStringData() and GetStringLength() are supported
 // instances of type T.
 template <typename T>
-using is_string_like = integral_constant<bool,
-                                         internal::has_data<T>::value &&
-                                             internal::has_length<T>::value>;
+using is_string_like = std::integral_constant<bool,
+                                              internal::has_data<T>::value &&
+                                              internal::has_length<T>::value>;
 
 } // namespace fbl

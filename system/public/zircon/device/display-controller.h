@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -12,5 +15,5 @@
 IOCTL_WRAPPER_OUT(ioctl_display_controller_get_handle,
                   IOCTL_DISPLAY_CONTROLLER_GET_HANDLE, zx_handle_t);
 
-#define IMAGE_TYPE_SIMPLE 0
+#define IMAGE_TYPE_SIMPLE UINT32_C(0)
 #define INVALID_ID 0

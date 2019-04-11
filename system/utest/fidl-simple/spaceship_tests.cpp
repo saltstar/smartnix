@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <fbl/type_support.h>
 #include <fidl/test/spaceship/c/fidl.h>
 #include <lib/async-loop/loop.h>
 #include <lib/fidl-utils/bind.h>
@@ -12,6 +11,8 @@
 #include <zircon/syscalls.h>
 
 #include <unittest/unittest.h>
+
+#include <utility>
 
 namespace {
 
@@ -73,6 +74,16 @@ public:
         return fidl_test_spaceship_SpaceShipAddFuelTank_reply(txn, level->reaction_mass / 2);
     }
 
+    virtual zx_status_t ReportAstrologicalData(const fidl_test_spaceship_AstrologicalData* data,
+                                               fidl_txn_t* txn) {
+        EXPECT_EQ(data->tag, fidl_test_spaceship_AstrologicalDataTag_star, "");
+        for (size_t idx = 0; idx < sizeof(data->star.data); ++idx) {
+            EXPECT_EQ(42, data->star.data[idx], "");
+        }
+
+        const zx_status_t status = ZX_OK;
+        return fidl_test_spaceship_SpaceShipReportAstrologicalData_reply(txn, status);
+    }
 
     virtual zx_status_t Bind(async_dispatcher_t* dispatcher, zx::channel channel) {
         static constexpr fidl_test_spaceship_SpaceShip_ops_t kOps = {
@@ -85,14 +96,16 @@ public:
             .AddFuelTank = SpaceShipBinder::BindMember<&SpaceShip::AddFuelTank>,
             .ScanForTensorLifeforms =
                     SpaceShipBinder::BindMember<&SpaceShip::ScanForTensorLifeforms>,
+            .ReportAstrologicalData =
+                SpaceShipBinder::BindMember<&SpaceShip::ReportAstrologicalData>,
         };
 
         return SpaceShipBinder::BindOps<fidl_test_spaceship_SpaceShip_dispatch>(
-            dispatcher, fbl::move(channel), this, &kOps);
+            dispatcher, std::move(channel), this, &kOps);
     }
 };
 
-static bool spaceship_test(void) {
+bool spaceship_test(void) {
     BEGIN_TEST;
 
     zx::channel client, server;
@@ -105,7 +118,7 @@ static bool spaceship_test(void) {
 
     async_dispatcher_t* dispatcher = async_loop_get_dispatcher(loop);
     SpaceShip ship;
-    ASSERT_EQ(ZX_OK, ship.Bind(dispatcher, fbl::move(server)));
+    ASSERT_EQ(ZX_OK, ship.Bind(dispatcher, std::move(server)));
 
     {
         const uint32_t stars[3] = {11u, 0u, UINT32_MAX};
@@ -113,6 +126,24 @@ static bool spaceship_test(void) {
         ASSERT_EQ(ZX_OK,
                   fidl_test_spaceship_SpaceShipAdjustHeading(client.get(), stars, 3, &result));
         ASSERT_EQ(-12, result, "");
+    }
+
+    {
+        constexpr uint32_t kNumStarsOverflow = fidl_test_spaceship_MaxStarsAdjustHeading * 2;
+        const uint32_t stars[kNumStarsOverflow] = {};
+        int8_t result = 0;
+        ASSERT_EQ(ZX_ERR_INVALID_ARGS,
+                  fidl_test_spaceship_SpaceShipAdjustHeading(client.get(),
+                                                             stars,
+                                                             kNumStarsOverflow,
+                                                             &result));
+    }
+
+    {
+        int8_t result = 0;
+        ASSERT_EQ(
+            ZX_ERR_INVALID_ARGS,
+            fidl_test_spaceship_SpaceShipAdjustHeading(client.get(), nullptr, 1 << 31, &result));
     }
 
     {
@@ -177,6 +208,14 @@ static bool spaceship_test(void) {
         ASSERT_EQ(ZX_OK, fidl_test_spaceship_SpaceShipAddFuelTank(client.get(), &level,
                                                                   &out_consumed));
         ASSERT_EQ(4741u, out_consumed, "");
+    }
+
+    {
+        fidl_test_spaceship_AstrologicalData data = {};
+        data.tag = fidl_test_spaceship_AstrologicalDataTag_star;
+        memset(&data.star, 42, sizeof(data.star));
+        ASSERT_EQ(ZX_OK, fidl_test_spaceship_SpaceShipReportAstrologicalData(client.get(), &data, &status));
+        ASSERT_EQ(ZX_OK, status);
     }
 
     ASSERT_EQ(ZX_OK, zx_handle_close(client.release()));
@@ -257,10 +296,12 @@ public:
             .AddFuelTank = SpaceShipBinder::BindMember<&SpaceShip::AddFuelTank>,
             .ScanForTensorLifeforms =
                     SpaceShipBinder::BindMember<&SpaceShip::ScanForTensorLifeforms>,
+            .ReportAstrologicalData =
+                    SpaceShipBinder::BindMember<&SpaceShip::ReportAstrologicalData>,
         };
 
         return SpaceShipBinder::BindOps<fidl_test_spaceship_SpaceShip_dispatch>(
-            dispatcher, fbl::move(channel), this, &kOps);
+            dispatcher, std::move(channel), this, &kOps);
     }
 
 private:
@@ -268,7 +309,7 @@ private:
     fidl::AsyncTransaction async_txn_;
 };
 
-static bool spaceship_async_test(void) {
+bool spaceship_async_test(void) {
     BEGIN_TEST;
 
     zx::channel client, server;
@@ -281,7 +322,7 @@ static bool spaceship_async_test(void) {
 
     async_dispatcher_t* dispatcher = async_loop_get_dispatcher(loop);
     AsyncSpaceShip ship;
-    ASSERT_EQ(ZX_OK, ship.Bind(dispatcher, fbl::move(server)));
+    ASSERT_EQ(ZX_OK, ship.Bind(dispatcher, std::move(server)));
 
     // Try invoking a member function which responds asynchronously and rebinds the connection.
     {
@@ -365,10 +406,11 @@ public:
             .GetFuelRemaining = DerivedBinder::BindMember<&SpaceShip::GetFuelRemaining>,
             .AddFuelTank = DerivedBinder::BindMember<&SpaceShip::AddFuelTank>,
             .ScanForTensorLifeforms = DerivedBinder::BindMember<&Derived::ScanForTensorLifeforms>,
+            .ReportAstrologicalData = DerivedBinder::BindMember<&Derived::ReportAstrologicalData>,
         };
 
         return SpaceShipBinder::BindOps<fidl_test_spaceship_SpaceShip_dispatch>(
-            dispatcher, fbl::move(channel), this, &kOps);
+            dispatcher, std::move(channel), this, &kOps);
     }
 };
 

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <dirent.h>
 #include <errno.h>
@@ -11,7 +14,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <fbl/unique_free_ptr.h>
 #include <fbl/unique_ptr.h>
 #include <fs/trace.h>
 #include <lib/async-loop/cpp/loop.h>
@@ -22,10 +24,12 @@
 #include <zircon/process.h>
 #include <zircon/processargs.h>
 
+#include <utility>
+
 namespace {
 
 int Fsck(fbl::unique_ptr<minfs::Bcache> bc, const minfs::MountOptions& options) {
-    return Fsck(fbl::move(bc));
+    return Fsck(std::move(bc));
 }
 
 int Mount(fbl::unique_ptr<minfs::Bcache> bc, const minfs::MountOptions& options) {
@@ -40,8 +44,8 @@ int Mount(fbl::unique_ptr<minfs::Bcache> bc, const minfs::MountOptions& options)
 
     auto loop_quit = [&loop]() { loop.Quit(); };
     zx_status_t status;
-    if ((status = MountAndServe(&options, loop.dispatcher(), fbl::move(bc), zx::channel(h),
-                                fbl::move(loop_quit)) != ZX_OK)) {
+    if ((status = MountAndServe(&options, loop.dispatcher(), std::move(bc), zx::channel(h),
+                                std::move(loop_quit)) != ZX_OK)) {
         if (options.verbose) {
             fprintf(stderr, "minfs: Failed to mount: %d\n", status);
         }
@@ -57,7 +61,7 @@ int Mount(fbl::unique_ptr<minfs::Bcache> bc, const minfs::MountOptions& options)
 }
 
 int Mkfs(fbl::unique_ptr<minfs::Bcache> bc, const minfs::MountOptions& options) {
-    return Mkfs(options, fbl::move(bc));
+    return Mkfs(options, std::move(bc));
 }
 
 struct {
@@ -180,18 +184,18 @@ int main(int argc, char** argv) {
     size /= minfs::kMinfsBlockSize;
 
     fbl::unique_ptr<minfs::Bcache> bc;
-    if (minfs::Bcache::Create(&bc, fbl::move(fd), (uint32_t)size) < 0) {
+    if (minfs::Bcache::Create(&bc, std::move(fd), (uint32_t)size) < 0) {
         fprintf(stderr, "minfs: error: cannot create block cache\n");
         return -1;
     }
 
     if (!strcmp(cmd, "mount")) {
-        return Mount(fbl::move(bc), options);
+        return Mount(std::move(bc), options);
     }
 
     for (unsigned i = 0; i < fbl::count_of(CMDS); i++) {
         if (!strcmp(cmd, CMDS[i].name)) {
-            int r = CMDS[i].func(fbl::move(bc), options);
+            int r = CMDS[i].func(std::move(bc), options);
             if (options.verbose) {
                 fprintf(stderr, "minfs: %s completed with result: %d\n", cmd, r);
             }

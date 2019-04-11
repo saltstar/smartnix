@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // clang-format off
 
@@ -10,12 +13,14 @@
 #endif
 DDK_PROTOCOL_DEF(BLOCK,          'pBLK', "block", 0)
 DDK_PROTOCOL_DEF(BLOCK_IMPL,     'pBKC', "block-impl", 0)
+DDK_PROTOCOL_DEF(BLOCK_PARTITION, 'pBKP', "block-partition", 0)
+DDK_PROTOCOL_DEF(BLOCK_VOLUME,   'pBKV', "block-volume", 0)
 DDK_PROTOCOL_DEF(CONSOLE,        'pCON', "console", 0)
 DDK_PROTOCOL_DEF(DEVICE,         'pDEV', "device", 0)
 DDK_PROTOCOL_DEF(DISPLAY_CONTROLLER, 'pDSC', "display-controller", 0)
 DDK_PROTOCOL_DEF(DISPLAY_CONTROLLER_IMPL, 'pDCI', "display-controller-impl", PF_NOPUB)
 DDK_PROTOCOL_DEF(ETHERNET,       'pETH', "ethernet", 0)
-DDK_PROTOCOL_DEF(ETHERNET_IMPL,  'pEMA', "ethernet-impl", 0)
+DDK_PROTOCOL_DEF(ETHMAC,         'pEMA', "ethmac", 0)
 DDK_PROTOCOL_DEF(FRAMEBUFFER,    'pFRB', "framebuffer", 0)
 DDK_PROTOCOL_DEF(GPIO,           'pGPO', "gpio", PF_NOPUB)
 DDK_PROTOCOL_DEF(GPIO_IMPL,      'pGPI', "gpio-impl", PF_NOPUB)
@@ -92,9 +97,16 @@ DDK_PROTOCOL_DEF(ETH_BOARD,      'pETB', "ethernet-board", PF_NOPUB)
 DDK_PROTOCOL_DEF(ETH_MAC,        'pETM', "ethernet-mac", PF_NOPUB)
 DDK_PROTOCOL_DEF(QMI_TRANSPORT,  'pQMI', "qmi-transport", 0)
 DDK_PROTOCOL_DEF(MIPI_CSI,       'pMIP', "mipi-csi", PF_NOPUB)
+DDK_PROTOCOL_DEF(LIGHT,          'pLIG', "light", 0)
+DDK_PROTOCOL_DEF(ISP_IMPL,       'pIPL', "isp-impl", PF_NOPUB)
+DDK_PROTOCOL_DEF(ISP,            'pISP', "isp", 0)
 // Protocol definition at garnet/magma/src/magma_util/platform/zircon/zircon_platform_ioctl.h
 DDK_PROTOCOL_DEF(GPU,            'pGPU', "gpu", 0)
 DDK_PROTOCOL_DEF(RTC,            'pRTC', "rtc", 0)
 DDK_PROTOCOL_DEF(TEE,            'pTEE', "tee", 0)
+DDK_PROTOCOL_DEF(VSOCK,          'pVSK', "vsock", 0)
+DDK_PROTOCOL_DEF(SYSMEM,         'pSyM', "sysmem", 0)
+DDK_PROTOCOL_DEF(MLG,            'pMLG', "mlg", 0)
+
 #undef DDK_PROTOCOL_DEF
 #endif

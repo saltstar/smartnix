@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 #include <ddk/debug.h>
-#include <fbl/limits.h>
+#include <limits>
 #include <soc/aml-common/aml-tdm-audio.h>
+#include <utility>
 
 //static
 fbl::unique_ptr<AmlTdmDevice> AmlTdmDevice::Create(ddk::MmioBuffer mmio,
@@ -13,15 +14,15 @@ fbl::unique_ptr<AmlTdmDevice> AmlTdmDevice::Create(ddk::MmioBuffer mmio,
                                                    aml_frddr_t frddr_dev,
                                                    aml_tdm_mclk_t mclk) {
 
-    //A and B FRDDR have 128 lines in fifo, C has 256
-    uint32_t fifo_depth = 128;
-    if (frddr_dev == FRDDR_C) {
-        fifo_depth = 256;
+    // FRDDR A has 256 64-bit lines in the FIFO, B and C have 128.
+    uint32_t fifo_depth = 128 * 8; // in bytes.
+    if (frddr_dev == FRDDR_A) {
+        fifo_depth = 256 * 8;
     }
 
     fbl::AllocChecker ac;
-    auto tdm = fbl::unique_ptr<AmlTdmDevice>(new (&ac)
-        AmlTdmDevice(fbl::move(mmio), src, tdm_dev, frddr_dev, mclk, fifo_depth));
+    auto tdm = fbl::unique_ptr<AmlTdmDevice>(
+        new (&ac) AmlTdmDevice(std::move(mmio), src, tdm_dev, frddr_dev, mclk, fifo_depth));
     if (!ac.check()) {
         return nullptr;
     }
@@ -60,13 +61,36 @@ void AmlTdmDevice::InitRegs() {
     //use entire fifo, start transfer request when fifo is at 1/2 full
     //set the magic force end bit(12) to cause fetch from start
     //    -this only happens when the bit is set from 0->1 (edge)
-    mmio_.Write32((1 << 12) | ((fifo_depth_ -1) << 24) | (((fifo_depth_ / 2) - 1) << 16),
-        GetFrddrOffset(FRDDR_CTRL1_OFFS));
+    // fifo depth needs to be configured in terms of 64-bit lines.
+    mmio_.Write32((1 << 12) | (((fifo_depth_ / 8) - 1) << 24) |
+                  ((((fifo_depth_ / 8) / 2) - 1) << 16),
+                  GetFrddrOffset(FRDDR_CTRL1_OFFS));
 
     //Value to be inserted in a slot if it is muted
     mmio_.Write32(0x00000000, GetTdmOffset(TDMOUT_MUTE_VAL_OFFS));
     //Value to be inserted in a slot if it is masked
     mmio_.Write32(0x00000000, GetTdmOffset(TDMOUT_MASK_VAL_OFFS));
+
+    mmio_.Write32(0x00000000, GetTdmOffset(TDMOUT_MUTE0_OFFS)); // Disable lane 0 muting.
+    mmio_.Write32(0x00000000, GetTdmOffset(TDMOUT_MUTE1_OFFS)); // Disable lane 1 muting.
+    mmio_.Write32(0x00000000, GetTdmOffset(TDMOUT_MUTE2_OFFS)); // Disable lane 2 muting.
+    mmio_.Write32(0x00000000, GetTdmOffset(TDMOUT_MUTE3_OFFS)); // Disable lane 3 muting.
+
+    // Datasheets state that PAD_CTRL1 controls sclk and lrclk source selection (which mclk),
+    // it does this per pad (0, 1, 2).  These pads are tied to the TDM channel in use
+    // (this is not specified in the datasheets but confirmed empirically) such that TDM_OUT_A
+    // corresponds to pad 0, TDM_OUT_B to pad 1, and TDM_OUT_C to pad 2.
+    switch (tdm_ch_) {
+    case TDM_OUT_A:
+        mmio_.Write32((mclk_ch_ << 16) | (mclk_ch_ << 0), EE_AUDIO_MST_PAD_CTRL1);
+        break;
+    case TDM_OUT_B:
+        mmio_.Write32((mclk_ch_ << 20) | (mclk_ch_ << 4), EE_AUDIO_MST_PAD_CTRL1);
+        break;
+    case TDM_OUT_C:
+        mmio_.Write32((mclk_ch_ << 24) | (mclk_ch_ << 8), EE_AUDIO_MST_PAD_CTRL1);
+        break;
+    }
 }
 
 /* Notes
@@ -80,7 +104,7 @@ zx_status_t AmlTdmDevice::SetMclkDiv(uint32_t div) {
     //disable and clear out old divider value
     mmio_.ClearBits32((1 << 31) | ((1 << kMclkDivBits) - 1), ptr);
 
-    mmio_.SetBits32((1 << 31) | (div & ((1 << kMclkDivBits) - 1)), ptr);
+    mmio_.SetBits32((1 << 31) | (clk_src_ << 24) | (div & ((1 << kMclkDivBits) - 1)), ptr);
     return ZX_OK;
 }
 
@@ -104,12 +128,26 @@ zx_status_t AmlTdmDevice::SetSclkDiv(uint32_t sdiv,
     ZX_DEBUG_ASSERT(lrduty < lrdiv);
 
     zx_off_t ptr = EE_AUDIO_MST_A_SCLK_CTRL0 + (2 * mclk_ch_ * sizeof(uint32_t));
-    mmio_.Write32((0x3 << 30) |    //Enable the channel
-                  (sdiv << 20) |   //sclk divider sclk=mclk/sdiv
-                  (lrduty << 10) | //lrclk duty cycle in sclk cycles
-                  (lrdiv << 0),    //lrclk = sclk/lrdiv
+    mmio_.Write32((0x3 << 30) |        //Enable the channel
+                  (sdiv << 20) |       //sclk divider sclk=mclk/sdiv
+                  (lrduty << 10) |     //lrclk duty cycle in sclk cycles
+                  (lrdiv << 0),        //lrclk = sclk/lrdiv
                   ptr);
     mmio_.Write32(0, ptr + sizeof(uint32_t)); //Clear delay lines for phases
+    return ZX_OK;
+}
+
+zx_status_t AmlTdmDevice::SetMClkPad(aml_tdm_mclk_pad_t mclk_pad) {
+    switch (mclk_pad) {
+    case MCLK_PAD_0:
+        mmio_.Write32(mclk_ch_, EE_AUDIO_MST_PAD_CTRL0);
+        break;
+    case MCLK_PAD_1:
+        mmio_.Write32(mclk_ch_, EE_AUDIO_MST_PAD_CTRL1);
+        break;
+    default:
+        return ZX_ERR_INVALID_ARGS;
+    }
     return ZX_OK;
 }
 
@@ -124,15 +162,15 @@ void AmlTdmDevice::AudioClkDis(uint32_t audio_blk_mask) {
 zx_status_t AmlTdmDevice::SetBuffer(zx_paddr_t buf, size_t len) {
     //Ensure ring buffer resides in lower memory (dma pointers are 32-bit)
     //    and len is at least 8 (size of each dma operation)
-    if (((buf + len - 1) > fbl::numeric_limits<uint32_t>::max()) || (len < 8)) {
+    if (((buf + len - 1) > std::numeric_limits<uint32_t>::max()) || (len < 8)) {
         return ZX_ERR_INVALID_ARGS;
     }
 
-    //Write32 the start and end pointers.  Each fetch is 64-bits, so end poitner
+    //Write32 the start and end pointers.  Each fetch is 64-bits, so end pointer
     //    is pointer to the last 64-bit fetch (inclusive)
     mmio_.Write32(static_cast<uint32_t>(buf), GetFrddrOffset(FRDDR_START_ADDR_OFFS));
     mmio_.Write32(static_cast<uint32_t>(buf + len - 8),
-                GetFrddrOffset(FRDDR_FINISH_ADDR_OFFS));
+                  GetFrddrOffset(FRDDR_FINISH_ADDR_OFFS));
     return ZX_OK;
 }
 
@@ -142,11 +180,13 @@ zx_status_t AmlTdmDevice::SetBuffer(zx_paddr_t buf, size_t len) {
     num_slots - number of slots per frame minus one
     bits_per_slot - width of each slot minus one
     bits_per_sample - number of bits in sample minus one
+    mix_mask - lanes to mix L+R.
 */
 void AmlTdmDevice::ConfigTdmOutSlot(uint8_t bit_offset, uint8_t num_slots,
-                                    uint8_t bits_per_slot, uint8_t bits_per_sample) {
+                                    uint8_t bits_per_slot, uint8_t bits_per_sample,
+                                    uint8_t mix_mask) {
 
-    uint32_t reg = bits_per_slot | (num_slots << 5) | (bit_offset << 15);
+    uint32_t reg = bits_per_slot | (num_slots << 5) | (bit_offset << 15) | (mix_mask << 20);
     mmio_.Write32(reg, GetTdmOffset(TDMOUT_CTRL0_OFFS));
 
     reg = (bits_per_sample << 8) | (frddr_ch_ << 24);
@@ -154,18 +194,37 @@ void AmlTdmDevice::ConfigTdmOutSlot(uint8_t bit_offset, uint8_t num_slots,
         // 8 bit sample, left justify in frame, split 64-bit dma fetch into 8 samples
         reg |= (0 << 4);
     } else if (bits_per_sample <= 16) {
-        // 16 bit sample, left justify in frame, split 64-bit dma fetch into 2 samples
+        // 16 bit sample, left justify in frame, split 64-bit dma fetch into 4 samples
         reg |= (2 << 4);
     } else {
         // 32/24 bit sample, left justify in slot, split 64-bit dma fetch into 2 samples
         reg |= (4 << 4);
     }
     mmio_.Write32(reg, GetTdmOffset(TDMOUT_CTRL1_OFFS));
+}
 
-    // assign left ch to slot 1, right to slot 1
-    mmio_.Write32(0x00000010, GetTdmOffset(TDMOUT_SWAP_OFFS));
-    // unmask first two slots
-    mmio_.Write32(0x00000003, GetTdmOffset(TDMOUT_MASK0_OFFS));
+zx_status_t AmlTdmDevice::ConfigTdmOutLane(size_t lane, uint32_t mask) {
+    switch (lane) {
+    case 0:
+        mmio_.Write32(mask, GetTdmOffset(TDMOUT_MASK0_OFFS));
+        break;
+    case 1:
+        mmio_.Write32(mask, GetTdmOffset(TDMOUT_MASK1_OFFS));
+        break;
+    case 2:
+        mmio_.Write32(mask, GetTdmOffset(TDMOUT_MASK2_OFFS));
+        break;
+    case 3:
+        mmio_.Write32(mask, GetTdmOffset(TDMOUT_MASK3_OFFS));
+        break;
+    default:
+        return ZX_ERR_INVALID_ARGS;
+    }
+    return ZX_OK;
+}
+
+void AmlTdmDevice::ConfigTdmOutSwaps(uint32_t swaps) {
+    mmio_.Write32(swaps, GetTdmOffset(TDMOUT_SWAP_OFFS));
 }
 
 // Stops the tdm from clocking data out of fifo onto bus

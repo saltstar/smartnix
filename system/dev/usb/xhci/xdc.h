@@ -4,12 +4,12 @@
 
 #pragma once
 
+#include <atomic>
 #include <ddk/device.h>
-#include <ddk/protocol/usb.h>
-#include <usb/usb-request.h>
-#include <fbl/atomic.h>
 #include <lib/sync/completion.h>
+#include <usb/usb-request.h>
 #include <xdc-server-utils/packet.h>
+#include <threads.h>
 
 #include "xdc-hw.h"
 #include "xhci-transfer-common.h"
@@ -108,7 +108,7 @@ typedef struct {
     thrd_t start_thread;
 
     // Whether to suspend all activity.
-    fbl::atomic<bool> suspended;
+    std::atomic<bool> suspended;
 
     xdc_endpoint_t eps[NUM_EPS];
     // Whether the Debug Device is in the Configured state.
@@ -132,11 +132,28 @@ typedef struct {
 
     // At least one xdc instance has been opened.
     sync_completion_t has_instance_completion;
-    fbl::atomic<int> num_instances;
+    std::atomic<int> num_instances;
 } xdc_t;
+
+typedef struct {
+    list_node_t node;
+    usb_request_complete_t complete_cb;
+    void* context;
+} xdc_req_internal_t;
+
+#define USB_REQ_TO_XDC_INTERNAL(req, size) \
+    ((xdc_req_internal_t *)((uintptr_t)(req) + (size)))
+#define XDC_INTERNAL_TO_USB_REQ(ctx, size) ((usb_request_t *)((uintptr_t)(ctx) - (size)))
+
+zx_status_t xdc_req_list_add_head(list_node_t* list, usb_request_t* req, size_t parent_req_size);
+zx_status_t xdc_req_list_add_tail(list_node_t* list, usb_request_t* req, size_t parent_req_size);
+usb_request_t* xdc_req_list_remove_head(list_node_t* list, size_t parent_req_size);
+usb_request_t* xdc_req_list_remove_tail(list_node_t* list, size_t parent_req_size);
 
 // TODO(jocelyndang): we should get our own handles rather than borrowing them from XHCI.
 zx_status_t xdc_bind(zx_device_t* parent, zx_handle_t bti_handle, void* mmio);
 
 void xdc_endpoint_set_halt_locked(xdc_t* xdc, xdc_poll_state_t* poll_state, xdc_endpoint_t* ep)
                                   __TA_REQUIRES(xdc->lock);
+void xdc_write_complete(void* ctx, usb_request_t* req);
+void xdc_read_complete(void* ctx, usb_request_t* req);

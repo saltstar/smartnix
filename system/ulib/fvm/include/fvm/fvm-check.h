@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -7,6 +10,8 @@
 #include <fvm/fvm.h>
 #include <stdarg.h>
 #include <stdlib.h>
+
+#include <utility>
 
 namespace fvm {
 
@@ -20,7 +25,7 @@ public:
 
     // Sets the path of the block device / image to read the FVM from.
     void SetDevice(fbl::unique_fd fd) {
-        fd_ = fbl::move(fd);
+        fd_ = std::move(fd);
     }
 
     // Sets the block size of the provided device. Not automatically queried from the underlying

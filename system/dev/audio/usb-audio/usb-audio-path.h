@@ -1,9 +1,14 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <fbl/macros.h>
 #include <fbl/intrusive_double_list.h>
 #include <fbl/unique_ptr.h>
+
+#include <utility>
 
 #include "usb-audio.h"
 #include "usb-audio-units.h"
@@ -69,7 +74,7 @@ class AudioPath : public fbl::DoublyLinkedListable<fbl::unique_ptr<AudioPath>> {
     zx_status_t Setup(const usb_protocol_t& proto);
 
      AudioPath(fbl::unique_ptr<fbl::RefPtr<AudioUnit>[]> units, uint32_t unit_count)
-         : units_(fbl::move(units)), unit_count_(unit_count) {}
+         : units_(std::move(units)), unit_count_(unit_count) {}
     ~AudioPath() {}
 
     DISALLOW_COPY_ASSIGN_AND_MOVE(AudioPath);

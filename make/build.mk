@@ -63,7 +63,7 @@ $(KERNEL_IMAGE_OBJ): $(KERNEL_IMAGE_ASM) $(KERNEL_FIXUPS) $(KERNEL_RAW)
 	$(NOECHO)$(CC) $(GLOBAL_OPTFLAGS)  \
 	    $(GLOBAL_COMPILEFLAGS) $(KERNEL_COMPILEFLAGS) $(ARCH_COMPILEFLAGS) \
 	    $(GLOBAL_ASMFLAGS) $(KERNEL_ASMFLAGS) $(ARCH_ASMFLAGS) \
-	    $(GLOBAL_INCLUDES) $(KERNEL_INCLUDES) -I$(BUILDDIR) \
+	    $(KERNEL_INCLUDES) $(GLOBAL_INCLUDES) -I$(BUILDDIR) \
 	    -c $< -MD -MP -MT $@ -MF $(@:.o=.d) -o $@
 
 # Now link the final load image, using --just-symbols to let image.S refer
@@ -117,9 +117,28 @@ $(BUILDDIR)/%.debug.lst: $(BUILDDIR)/%
 	$(call BUILDECHO,generating debug listing $@)
 	$(NOECHO)$(OBJDUMP) $(OBJDUMP_LIST_FLAGS) -S $< | $(CPPFILT) > $@
 
+BUILD_ID_DIR = $(BUILDDIR)/.build-id
+ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+define strip-command
+$(STRIP) --build-id-link-dir=$(BUILD_ID_DIR) \
+	 --build-id-link-input=.debug --build-id-link-output= \
+	 $< $@
+endef
+else
+define strip-command
+$(STRIP) $< $@ && \
+eval $$("$(READELF)" -n $< | \
+        sed -n 's/.*Build ID: \(..\)\(.*\)$$/id0=\1 id1=\2/p') && \
+{ test -z "$$id0" || \
+  { mkdir -p "$(BUILD_ID_DIR)/$$id0" && \
+    ln -f $< "$(BUILD_ID_DIR)/$$id0/$$id1.debug" && \
+    ln -f $@ "$(BUILD_ID_DIR)/$$id0/$$id1" ; } ; }
+endef
+endif
+
 $(BUILDDIR)/%.strip: $(BUILDDIR)/%
 	$(call BUILDECHO,generating $@)
-	$(NOECHO)$(STRIP) $< $@
+	$(NOECHO)$(strip-command)
 
 $(BUILDDIR)/%.sym: $(BUILDDIR)/%
 	$(call BUILDECHO,generating symbols $@)
@@ -185,16 +204,3 @@ GENERATED += $(ZIRCON_BOOTIMAGE)
 .PHONY: image
 image: $(ZIRCON_BOOTIMAGE)
 kernel: image
-
-# TODO(mcgrathr): Remove these when all consumers of the build
-# only expect the new kernel.zbi and/or zircon.zbi names.
-.PHONY: legacy
-kernel: legacy
-legacy: $(BUILDDIR)/zircon.bin $(BUILDDIR)/bootdata.bin
-$(BUILDDIR)/zircon.bin: $(KERNEL_ZBI)
-	$(call BUILDECHO,compat kernel name $@)
-	$(NOECHO)ln -f $< $@
-# This has an extra copy of the kernel that won't be used at runtime.
-$(BUILDDIR)/bootdata.bin: $(ZIRCON_BOOTIMAGE)
-	$(call BUILDECHO,compat initrd name $@)
-	$(NOECHO)ln -f $< $@

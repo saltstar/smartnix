@@ -9,7 +9,6 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := driver
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/bind.c \
     $(LOCAL_DIR)/usb-tester.cpp \
 
 MODULE_STATIC_LIBS := \
@@ -21,8 +20,13 @@ MODULE_STATIC_LIBS := \
     system/dev/lib/usb \
     system/ulib/zxcpp \
 
-MODULE_FIDL_LIBS := system/fidl/zircon-usb-tester
+MODULE_FIDL_LIBS := system/fidl/fuchsia-hardware-usb-tester
 
 MODULE_LIBS := system/ulib/driver system/ulib/c system/ulib/zircon
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-composite \
+    system/banjo/ddk-protocol-usb-request \
 
 include make/module.mk

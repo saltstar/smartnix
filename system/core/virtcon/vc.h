@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -84,7 +87,7 @@ typedef struct vc {
 
     textcon_t textcon;
 
-    keychar_t* keymap;
+    const keychar_t* keymap;
 
     struct list_node node;
     // for virtual console list
@@ -128,7 +131,7 @@ void vc_scroll_viewport_bottom(vc_t* vc);
 void vc_set_fullscreen(vc_t* vc, bool fullscreen);
 
 ssize_t vc_write(vc_t* vc, const void* buf, size_t count,
-                        zx_off_t off);
+                 zx_off_t off);
 
 static inline int vc_rows(vc_t* vc) {
     return vc->flags & VC_FLAG_FULLSCREEN ? vc->rows : vc->rows - 1;
@@ -149,7 +152,6 @@ static inline uint32_t palette_to_color(vc_t* vc, uint8_t color) {
     assert(color <= MAX_COLOR);
     return vc->palette[color];
 }
-
 
 extern port_t port;
 extern bool g_vc_owns_display;

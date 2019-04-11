@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -9,7 +12,7 @@
 // Notes about class Mutex
 //
 // Mutex is a C++ helper class intended to wrap a mutex-style synchronization
-// primative and provide a common interface for library code which is intended
+// primitive and provide a common interface for library code which is intended
 // to be shared between user-mode and kernel code.  It is also responsible for
 // automatically initializing and destroying the internal mutex object.
 #if _KERNEL
@@ -20,8 +23,8 @@ namespace fbl {
 
 class __TA_CAPABILITY("mutex") Mutex {
 public:
-    constexpr Mutex() : mutex_(MUTEX_INITIAL_VALUE(mutex_)) { }
-    ~Mutex() { mutex_destroy(&mutex_); }
+    constexpr Mutex() = default;
+    ~Mutex() = default;
     void Acquire() __TA_ACQUIRE() { mutex_acquire(&mutex_); }
     void Release() __TA_RELEASE() { mutex_release(&mutex_); }
 

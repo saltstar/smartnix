@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -9,6 +12,8 @@
 
 #include <lockdep/common.h>
 #include <lockdep/lock_class_state.h>
+
+#include <utility>
 
 namespace lockdep {
 
@@ -31,7 +36,7 @@ public:
     AcquiredLockEntry(const AcquiredLockEntry&) = delete;
     AcquiredLockEntry& operator=(const AcquiredLockEntry&) = delete;
 
-    AcquiredLockEntry(AcquiredLockEntry&& other) { *this = move(other); }
+    AcquiredLockEntry(AcquiredLockEntry&& other) { *this = std::move(other); }
     AcquiredLockEntry& operator=(AcquiredLockEntry&& other) {
         if (this != &other) {
             ZX_ASSERT(!InContainer());

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -35,7 +38,7 @@ public:
     // Called once to start the test. Must return immediately.
     virtual zx_status_t Start() = 0;
 
-    // Called to stop the inividual test. Must wait until test has
+    // Called to stop the individual test. Must wait until test has
     // been shut down.
     virtual zx_status_t Stop() = 0;
 

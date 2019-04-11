@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fcntl.h>
 #include <hid/usages.h>
@@ -110,11 +113,6 @@ static bool vc_handle_device_control_keys(uint8_t keycode, int modifiers) {
             vc_toggle_framebuffer();
             return true;
         }
-        break;
-
-    case HID_USAGE_KEY_LEFT_GUI:
-        // Also known as the "windows key".
-        vc_toggle_framebuffer();
         break;
     }
 

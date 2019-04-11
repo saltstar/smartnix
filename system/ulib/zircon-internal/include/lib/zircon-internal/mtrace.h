@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Note on naming: The "m" in "mtrace" means "miscellaneous". "trace" is being
 // used very generically, e.g., all the different kinds of h/w based trace

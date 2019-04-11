@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #define _POSIX_C_SOURCE 200809L  // for strnlen
 #include <arpa/inet.h>
@@ -717,6 +720,7 @@ tftp_status tftp_handle_data(tftp_session* session,
             session->file_size - session->block_number * session->block_size);
     if (block_delta == 1) {
         xprintf("Advancing normally + 1\n");
+        session->metrics.inorder_blocks++;
         void* buf = data->data;
         size_t len = msg_len - sizeof(tftp_data_msg);
         size_t off = session->block_number * session->block_size;
@@ -729,6 +733,7 @@ tftp_status tftp_handle_data(tftp_session* session,
                 xprintf("Error writing: %d\n", ret);
                 return ret;
             }
+            session->metrics.inorder_bytes += wr;
             buf += wr;
             off += wr;
             len -= wr;
@@ -736,6 +741,7 @@ tftp_status tftp_handle_data(tftp_session* session,
         session->block_number++;
         session->window_index++;
     } else if (block_delta > 1) {
+        session->metrics.outoforder_blocks++;
         // Force sending a ACK with the last block_number we received
         xprintf("Skipped: got %" PRIu64 ", expected %" PRIu64 "\n",
                 session->block_number + block_delta, session->block_number + 1);
@@ -749,6 +755,11 @@ tftp_status tftp_handle_data(tftp_session* session,
     if (session->window_index == session->window_size ||
             session->block_number * session->block_size > session->file_size) {
         tftp_prepare_ack(session, resp, resp_len);
+        if (block_delta > 1) {
+            session->metrics.nacks_sent++;
+        } else {
+            session->metrics.acks_sent++;
+        }
         if (session->block_number * session->block_size > session->file_size) {
             return TFTP_TRANSFER_COMPLETED;
         }
@@ -785,6 +796,7 @@ tftp_status tftp_handle_ack(tftp_session* session,
     int16_t block_offset = ack_block - (uint16_t)session->block_number;
 
     if (session->state != FIRST_DATA && session->state != REQ_RECEIVED && block_offset == 0) {
+        session->metrics.sas_events++;
         // Don't acknowledge duplicate ACKs, avoiding the "Sorcerer's Apprentice Syndrome"
         *resp_len = 0;
         return TFTP_NO_ERROR;
@@ -947,6 +959,7 @@ tftp_status tftp_handle_oack(tftp_session* session,
             return TFTP_ERR_BAD_STATE;
         }
         tftp_prepare_ack(session, resp, resp_len);
+        session->metrics.acks_sent++;
         return TFTP_NO_ERROR;
     }
 }
@@ -1031,6 +1044,7 @@ tftp_status tftp_timeout(tftp_session* session,
                          uint32_t* timeout_ms,
                          void* file_cookie) {
     xprintf("Timeout\n");
+    session->metrics.timeouts++;
     if (++session->consecutive_timeouts > session->max_timeouts) {
         return TFTP_ERR_TIMED_OUT;
     }
@@ -1312,4 +1326,33 @@ tftp_status tftp_handle_msg(tftp_session* session,
         }
     }
     return ret;
+}
+
+tftp_status tftp_get_metrics(tftp_session* session,
+                             char* buf,
+                             size_t buf_sz) {
+    snprintf(buf, buf_sz, "{"
+                              "\"inorderblks\": %u,"
+                              "\"oooblks\": %u,"
+                              "\"ack\": %u,"
+                              "\"nack\": %u,"
+                              "\"timeouts\": %u,"
+                              "\"sas\": %u,"
+                              "\"inorderbytes\": %" PRIu64
+                          "}",
+             session->metrics.inorder_blocks,
+             session->metrics.outoforder_blocks,
+             session->metrics.acks_sent,
+             session->metrics.nacks_sent,
+             session->metrics.timeouts,
+             session->metrics.sas_events,
+             session->metrics.inorder_bytes);
+    if (strlen(buf) == buf_sz - 1) {
+        return TFTP_ERR_BUFFER_TOO_SMALL;
+    }
+    return TFTP_NO_ERROR;
+}
+
+void tftp_clear_metrics(tftp_session* session) {
+    memset(&session->metrics, 0, sizeof(session->metrics));
 }

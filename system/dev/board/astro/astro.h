@@ -5,9 +5,9 @@
 #pragma once
 
 #include <ddk/device.h>
-#include <ddk/protocol/gpio-impl.h>
+#include <ddk/protocol/gpioimpl.h>
 #include <ddk/protocol/iommu.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 #include <soc/aml-s905d2/s905d2-gpio.h>
 
 // BTI IDs for our devices
@@ -24,6 +24,7 @@ enum {
     BTI_AUDIO_IN,
     BTI_AUDIO_OUT,
     BTI_TEE,
+    BTI_SYSMEM,
 };
 
 // MAC address metadata indices
@@ -39,6 +40,9 @@ typedef struct {
     iommu_protocol_t iommu;
 } aml_bus_t;
 
+// astro-sysmem.c
+zx_status_t astro_sysmem_init(aml_bus_t* bus);
+
 // astro-gpio.c
 zx_status_t aml_gpio_init(aml_bus_t* bus);
 
@@ -53,6 +57,9 @@ zx_status_t aml_usb_init(aml_bus_t* bus);
 
 // astro-display.c
 zx_status_t aml_display_init(aml_bus_t* bus);
+
+// astro-backlight.c
+zx_status_t astro_backlight_init(aml_bus_t* bus);
 
 // These should match the mmio table defined in astro-i2c.c
 enum {

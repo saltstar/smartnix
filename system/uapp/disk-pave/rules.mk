@@ -1,3 +1,6 @@
+# Copyright 2017 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -44,8 +47,10 @@ MODULE_PACKAGE := src
 
 MODULE_FIDL_LIBS := \
     system/fidl/fuchsia-io \
-    system/fidl/zircon-block \
-    system/fidl/zircon-nand.skipblock \
+    system/fidl/fuchsia-mem \
+    system/fidl/fuchsia-hardware-block \
+    system/fidl/fuchsia-hardware-ramdisk \
+    system/fidl/fuchsia-hardware-skipblock \
 
 include make/module.mk
 
@@ -73,6 +78,8 @@ MODULE_STATIC_LIBS := \
     system/ulib/block-client \
     system/ulib/chromeos-disk-setup \
     system/ulib/ddk \
+    system/ulib/devmgr-integration-test \
+    system/ulib/devmgr-launcher \
     system/ulib/fbl \
     system/ulib/fs-management \
     system/ulib/fzl \
@@ -91,8 +98,9 @@ MODULE_LIBS := \
     system/ulib/zxcrypt \
 
 MODULE_FIDL_LIBS := \
-    system/fidl/zircon-nand \
-    system/fidl/zircon-block \
-    system/fidl/zircon-nand.skipblock \
+    system/fidl/fuchsia-hardware-nand \
+    system/fidl/fuchsia-hardware-block \
+    system/fidl/fuchsia-hardware-ramdisk \
+    system/fidl/fuchsia-hardware-skipblock \
 
 include make/module.mk

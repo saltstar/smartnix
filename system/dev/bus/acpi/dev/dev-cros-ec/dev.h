@@ -48,7 +48,8 @@ using DeviceType = ddk::Device<AcpiCrOsEcMotionDevice>;
 
 // CrOS EC protocol to HID protocol translator for device motion sensors
 class AcpiCrOsEcMotionDevice : public DeviceType,
-                               public ddk::HidbusProtocol<AcpiCrOsEcMotionDevice> {
+                               public ddk::HidbusProtocol<AcpiCrOsEcMotionDevice,
+                                                          ddk::base_protocol> {
 public:
     static zx_status_t Create(fbl::RefPtr<AcpiCrOsEc> ec,
                               zx_device_t* parent, ACPI_HANDLE acpi_handle,
@@ -120,7 +121,7 @@ private:
     const ACPI_HANDLE acpi_handle_;
 
     // Interface the driver is currently bound to
-    ddk::HidbusIfcProxy proxy_;
+    ddk::HidbusIfcClient client_;
 
     fbl::Vector<SensorInfo> sensors_;
 

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fs/connection.h>
 
@@ -8,15 +11,17 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include <fs/handler.h>
 #include <fs/trace.h>
 #include <fs/vnode.h>
 #include <fuchsia/io/c/fidl.h>
 #include <lib/fdio/debug.h>
 #include <lib/fdio/io.h>
-#include <lib/fdio/remoteio.h>
 #include <lib/fdio/vfs.h>
 #include <lib/zx/handle.h>
 #include <zircon/assert.h>
+
+#include <utility>
 
 #define ZXDEBUG 0
 
@@ -24,41 +29,65 @@ namespace fs {
 namespace {
 
 void WriteDescribeError(zx::channel channel, zx_status_t status) {
-    zxrio_describe_t msg;
+    fuchsia_io_NodeOnOpenEvent msg;
     memset(&msg, 0, sizeof(msg));
     msg.hdr.ordinal = fuchsia_io_NodeOnOpenOrdinal;
-    msg.status = status;
-    channel.write(0, &msg, sizeof(zxrio_describe_t), nullptr, 0);
+    msg.s = status;
+    channel.write(0, &msg, sizeof(msg), nullptr, 0);
 }
 
 zx_status_t GetNodeInfo(const fbl::RefPtr<Vnode>& vn, uint32_t flags,
-                        zxrio_node_info_t* info) {
+                        fuchsia_io_NodeInfo* info) {
     if (IsPathOnly(flags)) {
-        return vn->Vnode::GetHandles(flags, &info->handle, &info->tag, info);
+        return vn->Vnode::GetNodeInfo(flags, info);
     } else {
-        return vn->GetHandles(flags, &info->handle, &info->tag, info);
+        return vn->GetNodeInfo(flags, info);
     }
 }
 
 void Describe(const fbl::RefPtr<Vnode>& vn, uint32_t flags,
-              zxrio_describe_t* response, zx_handle_t* handle) {
-    response->hdr.ordinal = fuchsia_io_NodeOnOpenOrdinal;
-    response->extra.handle = ZX_HANDLE_INVALID;
+              OnOpenMsg* response, zx_handle_t* handle) {
+    response->primary.hdr.ordinal = fuchsia_io_NodeOnOpenOrdinal;
+    response->extra.file.event = ZX_HANDLE_INVALID;
     zx_status_t r = GetNodeInfo(vn, flags, &response->extra);
-    *handle = response->extra.handle;
 
-    // If a handle was returned, encode it.
-    if (*handle != ZX_HANDLE_INVALID) {
-        response->extra.handle = FIDL_HANDLE_PRESENT;
-    } else {
-        response->extra.handle = FIDL_HANDLE_ABSENT;
+    // We unfortunately encode this message by hand because FIDL events
+    // are not yet supported by the C bindings.
+    auto encode_handle = [](zx_handle_t* encode_location, zx_handle_t* out) {
+        // If a handle was returned, transfer it to the output location, and
+        // encode it in-place.
+        *out = *encode_location;
+        if (*encode_location != ZX_HANDLE_INVALID) {
+            *encode_location = FIDL_HANDLE_PRESENT;
+        } else {
+            *encode_location = FIDL_HANDLE_ABSENT;
+        }
+    };
+    switch (response->extra.tag) {
+    case fuchsia_io_NodeInfoTag_service:
+    case fuchsia_io_NodeInfoTag_directory:
+        break;
+    case fuchsia_io_NodeInfoTag_file:
+        encode_handle(&response->extra.file.event, handle);
+        break;
+    case fuchsia_io_NodeInfoTag_pipe:
+        encode_handle(&response->extra.pipe.socket, handle);
+        break;
+    case fuchsia_io_NodeInfoTag_vmofile:
+        encode_handle(&response->extra.vmofile.vmo, handle);
+        break;
+    case fuchsia_io_NodeInfoTag_device:
+        encode_handle(&response->extra.device.event, handle);
+        break;
+    default:
+        ZX_DEBUG_ASSERT_MSG(false, "Unsupported NodeInfoTag: %d\n", response->extra.tag);
     }
 
     // If a valid response was returned, encode it.
-    response->status = r;
-    response->extra_ptr = reinterpret_cast<zxrio_node_info_t*>(r == ZX_OK ?
-                                                                 FIDL_ALLOC_PRESENT :
-                                                                 FIDL_ALLOC_ABSENT);
+    response->primary.s = r;
+    response->primary.info = reinterpret_cast<fuchsia_io_NodeInfo*>(r == ZX_OK ?
+                                                                    FIDL_ALLOC_PRESENT :
+                                                                    FIDL_ALLOC_ABSENT);
 }
 
 void FilterFlags(uint32_t flags, uint32_t* out_flags, bool* out_describe) {
@@ -73,9 +102,9 @@ void FilterFlags(uint32_t flags, uint32_t* out_flags, bool* out_describe) {
 
 void VnodeServe(Vfs* vfs, fbl::RefPtr<Vnode> vnode, zx::channel channel, uint32_t open_flags) {
     if (IsPathOnly(open_flags)) {
-        vnode->Vnode::Serve(vfs, fbl::move(channel), open_flags);
+        vnode->Vnode::Serve(vfs, std::move(channel), open_flags);
     } else {
-        vnode->Serve(vfs, fbl::move(channel), open_flags);
+        vnode->Serve(vfs, std::move(channel), open_flags);
     }
 }
 
@@ -87,13 +116,13 @@ void OpenAt(Vfs* vfs, fbl::RefPtr<Vnode> parent, zx::channel channel,
     FilterFlags(flags, &open_flags, &describe);
 
     fbl::RefPtr<Vnode> vnode;
-    zx_status_t r = vfs->Open(fbl::move(parent), &vnode, path, &path, open_flags, mode);
+    zx_status_t r = vfs->Open(std::move(parent), &vnode, path, &path, open_flags, mode);
 
     if (r != ZX_OK) {
-        xprintf("vfs: open: r=%d\n", r);
+        FS_TRACE_DEBUG("vfs: open failure: %d\n", r);
     } else if (!(open_flags & ZX_FS_FLAG_NOREMOTE) && vnode->IsRemote()) {
         // Remote handoff to a remote filesystem node.
-        vfs->ForwardOpenRemote(fbl::move(vnode), fbl::move(channel), fbl::move(path),
+        vfs->ForwardOpenRemote(std::move(vnode), std::move(channel), std::move(path),
                                flags, mode);
         return;
     }
@@ -102,21 +131,21 @@ void OpenAt(Vfs* vfs, fbl::RefPtr<Vnode> parent, zx::channel channel,
         // Regardless of the error code, in the 'describe' case, we
         // should respond to the client.
         if (r != ZX_OK) {
-            WriteDescribeError(fbl::move(channel), r);
+            WriteDescribeError(std::move(channel), r);
             return;
         }
 
-        zxrio_describe_t response;
+        OnOpenMsg response;
         memset(&response, 0, sizeof(response));
         zx_handle_t extra = ZX_HANDLE_INVALID;
         Describe(vnode, flags, &response, &extra);
         uint32_t hcount = (extra != ZX_HANDLE_INVALID) ? 1 : 0;
-        channel.write(0, &response, sizeof(zxrio_describe_t), &extra, hcount);
+        channel.write(0, &response, sizeof(OnOpenMsg), &extra, hcount);
     } else if (r != ZX_OK) {
         return;
     }
 
-    VnodeServe(vfs, fbl::move(vnode), fbl::move(channel), open_flags);
+    VnodeServe(vfs, std::move(vnode), std::move(channel), open_flags);
 }
 
 // This template defines a mechanism to transform a member of Connection
@@ -141,7 +170,7 @@ template <typename... Args>                                               \
 zx_status_t Method ## Op(void* ctx, Args... args) {                       \
     TRACE_DURATION("vfs", #Method);                                       \
     auto connection = reinterpret_cast<Connection*>(ctx);                 \
-    return (connection->Connection::Method)(fbl::forward<Args>(args)...); \
+    return (connection->Connection::Method)(std::forward<Args>(args)...); \
 }
 
 ZXFIDL_OPERATION(NodeClone)
@@ -170,7 +199,7 @@ ZXFIDL_OPERATION(FileSeek)
 ZXFIDL_OPERATION(FileTruncate)
 ZXFIDL_OPERATION(FileGetFlags)
 ZXFIDL_OPERATION(FileSetFlags)
-ZXFIDL_OPERATION(FileGetVmo)
+ZXFIDL_OPERATION(FileGetBuffer)
 
 const fuchsia_io_File_ops kFileOps = {
     .Clone = NodeCloneOp,
@@ -188,7 +217,7 @@ const fuchsia_io_File_ops kFileOps = {
     .Truncate = FileTruncateOp,
     .GetFlags = FileGetFlagsOp,
     .SetFlags = FileSetFlagsOp,
-    .GetVmo = FileGetVmoOp,
+    .GetBuffer = FileGetBufferOp,
 };
 
 ZXFIDL_OPERATION(DirectoryOpen)
@@ -256,7 +285,7 @@ constexpr zx_signals_t kWakeSignals = ZX_CHANNEL_READABLE |
 
 Connection::Connection(Vfs* vfs, fbl::RefPtr<Vnode> vnode,
                        zx::channel channel, uint32_t flags)
-    : vfs_(vfs), vnode_(fbl::move(vnode)), channel_(fbl::move(channel)),
+    : vfs_(vfs), vnode_(std::move(vnode)), channel_(std::move(channel)),
       wait_(this, ZX_HANDLE_INVALID, kWakeSignals), flags_(flags) {
     ZX_DEBUG_ASSERT(vfs);
     ZX_DEBUG_ASSERT(vnode_);
@@ -278,7 +307,7 @@ Connection::~Connection() {
     // Release the token associated with this connection's vnode since the connection
     // will be releasing the vnode's reference once this function returns.
     if (token_) {
-        vfs_->TokenDiscard(fbl::move(token_));
+        vfs_->TokenDiscard(std::move(token_));
     }
 }
 
@@ -345,18 +374,16 @@ void Connection::Terminate(bool call_close) {
 }
 
 zx_status_t Connection::CallHandler() {
-    return zxfidl_handler(channel_.get(), &Connection::HandleMessageThunk, this);
+    return ReadMessage(channel_.get(), [this] (fidl_msg_t* msg, FidlConnection* txn) {
+        return HandleMessage(msg, txn->Txn());
+    });
 }
 
 void Connection::CallClose() {
-    channel_.reset();
-    CallHandler();
+    CloseMessage([this] (fidl_msg_t* msg, FidlConnection* txn) {
+        return HandleMessage(msg, txn->Txn());
+    });
     set_closed();
-}
-
-zx_status_t Connection::HandleMessageThunk(fidl_msg_t* msg, fidl_txn_t* txn, void* cookie) {
-    Connection* connection = static_cast<Connection*>(cookie);
-    return connection->HandleMessage(msg, txn);
 }
 
 // Flags which can be modified by SetFlags.
@@ -384,19 +411,19 @@ zx_status_t Connection::NodeClone(uint32_t flags, zx_handle_t object) {
         status = OpenVnode(open_flags, &vn);
     }
     if (describe) {
-        zxrio_describe_t response;
+        OnOpenMsg response;
         memset(&response, 0, sizeof(response));
-        response.status = status;
+        response.primary.s = status;
         zx_handle_t extra = ZX_HANDLE_INVALID;
         if (status == ZX_OK) {
             Describe(vnode_, open_flags, &response, &extra);
         }
         uint32_t hcount = (extra != ZX_HANDLE_INVALID) ? 1 : 0;
-        channel.write(0, &response, sizeof(zxrio_describe_t), &extra, hcount);
+        channel.write(0, &response, sizeof(OnOpenMsg), &extra, hcount);
     }
 
     if (status == ZX_OK) {
-        VnodeServe(vfs_, fbl::move(vn), fbl::move(channel), open_flags);
+        VnodeServe(vfs_, std::move(vn), std::move(channel), open_flags);
     }
     return ZX_OK;
 }
@@ -414,32 +441,29 @@ zx_status_t Connection::NodeClose(fidl_txn_t* txn) {
 }
 
 zx_status_t Connection::NodeDescribe(fidl_txn_t* txn) {
-    zxrio_node_info_t info;
+    fuchsia_io_NodeInfo info;
     memset(&info, 0, sizeof(info));
     zx_status_t status = GetNodeInfo(vnode_, flags_, &info);
     if (status != ZX_OK) {
         return status;
     }
-    // See static_asserts in zxrio_process_open_response which ensure that this
-    // cast makes sense.
-    auto fidl_info = reinterpret_cast<fuchsia_io_NodeInfo*>(&info);
-    return fuchsia_io_NodeDescribe_reply(txn, fidl_info);
+    return fuchsia_io_NodeDescribe_reply(txn, &info);
 }
 
 zx_status_t Connection::NodeSync(fidl_txn_t* txn) {
     if (IsPathOnly(flags_)) {
         return fuchsia_io_NodeSync_reply(txn, ZX_ERR_BAD_HANDLE);
     }
-    Vnode::SyncCallback closure([this, ctxn = zxfidl_txn_copy(txn)]
+    Vnode::SyncCallback closure([this, ctxn = FidlConnection::CopyTxn(txn)]
                                 (zx_status_t status) mutable {
-        fuchsia_io_NodeSync_reply(&ctxn.txn, status);
+        fuchsia_io_NodeSync_reply(ctxn.Txn(), status);
 
         // Try to reset the wait object
         ZX_ASSERT_MSG(wait_.Begin(vfs_->dispatcher()) == ZX_OK,
                       "Dispatch loop unexpectedly ended");
     });
 
-    vnode_->Sync(fbl::move(closure));
+    vnode_->Sync(std::move(closure));
     return ERR_DISPATCHER_ASYNC;
 }
 
@@ -636,24 +660,25 @@ zx_status_t Connection::FileSetFlags(uint32_t flags, fidl_txn_t* txn) {
     return fuchsia_io_FileSetFlags_reply(txn, ZX_OK);
 }
 
-zx_status_t Connection::FileGetVmo(uint32_t flags, fidl_txn_t* txn) {
+zx_status_t Connection::FileGetBuffer(uint32_t flags, fidl_txn_t* txn) {
     if (IsPathOnly(flags_)) {
-        return fuchsia_io_FileGetVmo_reply(txn, ZX_ERR_BAD_HANDLE, ZX_HANDLE_INVALID);
+        return fuchsia_io_FileGetBuffer_reply(txn, ZX_ERR_BAD_HANDLE, nullptr);
     }
 
-    if ((flags & FDIO_MMAP_FLAG_PRIVATE) && (flags & FDIO_MMAP_FLAG_EXACT)) {
-        return fuchsia_io_FileGetVmo_reply(txn, ZX_ERR_INVALID_ARGS, ZX_HANDLE_INVALID);
-    } else if ((flags_ & ZX_FS_FLAG_APPEND) && flags & FDIO_MMAP_FLAG_WRITE) {
-        return fuchsia_io_FileGetVmo_reply(txn, ZX_ERR_ACCESS_DENIED, ZX_HANDLE_INVALID);
-    } else if (!IsWritable(flags_) && (flags & FDIO_MMAP_FLAG_WRITE)) {
-        return fuchsia_io_FileGetVmo_reply(txn, ZX_ERR_ACCESS_DENIED, ZX_HANDLE_INVALID);
+    if ((flags & fuchsia_io_VMO_FLAG_PRIVATE) && (flags & fuchsia_io_VMO_FLAG_EXACT)) {
+        return fuchsia_io_FileGetBuffer_reply(txn, ZX_ERR_INVALID_ARGS, nullptr);
+    } else if ((flags_ & ZX_FS_FLAG_APPEND) && (flags & fuchsia_io_VMO_FLAG_WRITE)) {
+        return fuchsia_io_FileGetBuffer_reply(txn, ZX_ERR_ACCESS_DENIED, nullptr);
+    } else if (!IsWritable(flags_) && (flags & fuchsia_io_VMO_FLAG_WRITE)) {
+        return fuchsia_io_FileGetBuffer_reply(txn, ZX_ERR_ACCESS_DENIED, nullptr);
     } else if (!IsReadable(flags_)) {
-        return fuchsia_io_FileGetVmo_reply(txn, ZX_ERR_ACCESS_DENIED, ZX_HANDLE_INVALID);
+        return fuchsia_io_FileGetBuffer_reply(txn, ZX_ERR_ACCESS_DENIED, nullptr);
     }
 
-    zx_handle_t handle = ZX_HANDLE_INVALID;
-    zx_status_t status = vnode_->GetVmo(flags, &handle);
-    return fuchsia_io_FileGetVmo_reply(txn, status, handle);
+    fuchsia_mem_Buffer buffer;
+    memset(&buffer, 0, sizeof(buffer));
+    zx_status_t status = vnode_->GetVmo(flags, &buffer.vmo, &buffer.size);
+    return fuchsia_io_FileGetBuffer_reply(txn, status, status == ZX_OK ? &buffer : nullptr);
 }
 
 zx_status_t Connection::DirectoryOpen(uint32_t flags, uint32_t mode, const char* path_data,
@@ -662,14 +687,14 @@ zx_status_t Connection::DirectoryOpen(uint32_t flags, uint32_t mode, const char*
     bool describe = flags & ZX_FS_FLAG_DESCRIBE;
     if ((path_size < 1) || (path_size > PATH_MAX)) {
         if (describe) {
-            WriteDescribeError(fbl::move(channel), ZX_ERR_INVALID_ARGS);
+            WriteDescribeError(std::move(channel), ZX_ERR_INVALID_ARGS);
         }
     } else if ((flags & ZX_FS_RIGHT_ADMIN) && !(flags_ & ZX_FS_RIGHT_ADMIN)) {
         if (describe) {
-            WriteDescribeError(fbl::move(channel), ZX_ERR_ACCESS_DENIED);
+            WriteDescribeError(std::move(channel), ZX_ERR_ACCESS_DENIED);
         }
     } else {
-        OpenAt(vfs_, vnode_, fbl::move(channel),
+        OpenAt(vfs_, vnode_, std::move(channel),
                fbl::StringPiece(path_data, path_size), flags, mode);
     }
     return ZX_OK;
@@ -717,8 +742,8 @@ zx_status_t Connection::DirectoryRename(const char* src_data, size_t src_size,
     if (src_size < 1 || dst_size < 1) {
         return fuchsia_io_DirectoryRename_reply(txn, ZX_ERR_INVALID_ARGS);
     }
-    zx_status_t status = vfs_->Rename(fbl::move(token), vnode_,
-                                      fbl::move(oldStr), fbl::move(newStr));
+    zx_status_t status = vfs_->Rename(std::move(token), vnode_,
+                                      std::move(oldStr), std::move(newStr));
     return fuchsia_io_DirectoryRename_reply(txn, status);
 }
 
@@ -732,15 +757,15 @@ zx_status_t Connection::DirectoryLink(const char* src_data, size_t src_size,
     if (src_size < 1 || dst_size < 1) {
         return fuchsia_io_DirectoryLink_reply(txn, ZX_ERR_INVALID_ARGS);
     }
-    zx_status_t status = vfs_->Link(fbl::move(token), vnode_, fbl::move(oldStr),
-                                    fbl::move(newStr));
+    zx_status_t status = vfs_->Link(std::move(token), vnode_, std::move(oldStr),
+                                    std::move(newStr));
     return fuchsia_io_DirectoryLink_reply(txn, status);
 }
 
 zx_status_t Connection::DirectoryWatch(uint32_t mask, uint32_t options, zx_handle_t handle,
                                        fidl_txn_t* txn) {
     zx::channel watcher(handle);
-    zx_status_t status = vnode_->WatchDir(vfs_, mask, options, fbl::move(watcher));
+    zx_status_t status = vnode_->WatchDir(vfs_, mask, options, std::move(watcher));
     return fuchsia_io_DirectoryWatch_reply(txn, status);
 }
 
@@ -750,7 +775,7 @@ zx_status_t Connection::DirectoryAdminMount(zx_handle_t remote, fidl_txn_t* txn)
         return fuchsia_io_DirectoryAdminMount_reply(txn, ZX_ERR_ACCESS_DENIED);
     }
     MountChannel c = MountChannel(remote);
-    zx_status_t status = vfs_->InstallRemote(vnode_, fbl::move(c));
+    zx_status_t status = vfs_->InstallRemote(vnode_, std::move(c));
     return fuchsia_io_DirectoryAdminMount_reply(txn, status);;
 }
 
@@ -762,7 +787,7 @@ zx_status_t Connection::DirectoryAdminMountAndCreate(zx_handle_t remote, const c
         return fuchsia_io_DirectoryAdminMount_reply(txn, ZX_ERR_ACCESS_DENIED);
     }
     fbl::StringPiece str(name, name_size);
-    zx_status_t status = vfs_->MountMkdir(vnode_, fbl::move(str), MountChannel(remote), flags);
+    zx_status_t status = vfs_->MountMkdir(vnode_, std::move(str), MountChannel(remote), flags);
     return fuchsia_io_DirectoryAdminMount_reply(txn, status);
 }
 
@@ -773,14 +798,14 @@ zx_status_t Connection::DirectoryAdminUnmount(fidl_txn_t* txn) {
     vfs_->UninstallAll(ZX_TIME_INFINITE);
 
     // Unmount is fatal to the requesting connections.
-    Vfs::ShutdownCallback closure([ch = fbl::move(channel_),
-                                   ctxn = zxfidl_txn_copy(txn)]
+    Vfs::ShutdownCallback closure([ch = std::move(channel_),
+                                   ctxn = FidlConnection::CopyTxn(txn)]
                                   (zx_status_t status) mutable {
-        fuchsia_io_DirectoryAdminUnmount_reply(&ctxn.txn, status);
+        fuchsia_io_DirectoryAdminUnmount_reply(ctxn.Txn(), status);
     });
     Vfs* vfs = vfs_;
     Terminate(/* call_close= */ true);
-    vfs->Shutdown(fbl::move(closure));
+    vfs->Shutdown(std::move(closure));
     return ERR_DISPATCHER_ASYNC;
 }
 
@@ -817,22 +842,23 @@ zx_status_t Connection::HandleFsSpecificMessage(fidl_msg_t* msg, fidl_txn_t* txn
 }
 
 zx_status_t Connection::HandleMessage(fidl_msg_t* msg, fidl_txn_t* txn) {
-    fidl_message_header_t* hdr = reinterpret_cast<fidl_message_header_t*>(msg->bytes);
-    if (hdr->ordinal >= fuchsia_io_NodeCloneOrdinal &&
-        hdr->ordinal <= fuchsia_io_NodeIoctlOrdinal) {
-        return fuchsia_io_Node_dispatch(this, txn, msg, &kNodeOps);
-    } else if (hdr->ordinal >= fuchsia_io_FileReadOrdinal &&
-               hdr->ordinal <= fuchsia_io_FileGetVmoOrdinal) {
-        return fuchsia_io_File_dispatch(this, txn, msg, &kFileOps);
-    } else if (hdr->ordinal >= fuchsia_io_DirectoryOpenOrdinal &&
-               hdr->ordinal <= fuchsia_io_DirectoryWatchOrdinal) {
-        return fuchsia_io_Directory_dispatch(this, txn, msg, &kDirectoryOps);
-    } else if (hdr->ordinal >= fuchsia_io_DirectoryAdminMountOrdinal &&
-               hdr->ordinal <= fuchsia_io_DirectoryAdminGetDevicePathOrdinal) {
-        return fuchsia_io_DirectoryAdmin_dispatch(this, txn, msg, &kDirectoryAdminOps);
-    } else {
-        return HandleFsSpecificMessage(msg, txn);
+    zx_status_t status = fuchsia_io_Node_try_dispatch(this, txn, msg, &kNodeOps);
+    if (status != ZX_ERR_NOT_SUPPORTED) {
+        return status;
     }
+    status = fuchsia_io_File_try_dispatch(this, txn, msg, &kFileOps);
+    if (status != ZX_ERR_NOT_SUPPORTED) {
+        return status;
+    }
+    status = fuchsia_io_Directory_try_dispatch(this, txn, msg, &kDirectoryOps);
+    if (status != ZX_ERR_NOT_SUPPORTED) {
+        return status;
+    }
+    status = fuchsia_io_DirectoryAdmin_try_dispatch(this, txn, msg, &kDirectoryAdminOps);
+    if (status != ZX_ERR_NOT_SUPPORTED) {
+        return status;
+    }
+    return HandleFsSpecificMessage(msg, txn);
 }
 
 } // namespace fs

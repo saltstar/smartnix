@@ -124,17 +124,15 @@ static void x86_debug_handler(x86_iframe_t* frame) {
     // We now need to keep track of the debug registers.
     thread_t* thread = get_current_thread();
 
-    // Not all debug exceptions are due to debug registers, as single-step also gets routed to
-    // this exception. In that case, we only need to track the status register so that we don't
-    // leak debug registers from another thread.
-    if (likely(!thread->arch.track_debug_state)) {
-        // Only track the status section of the debug state.
-        x86_read_debug_status(&thread->arch.debug_state);
-    } else {
-        // We are tracking the debug state, we copy all the debug state.
-        x86_read_hw_debug_regs(&thread->arch.debug_state);
-    }
+    // DR6 is the status register that explains what exception happened (single step, hardware
+    // breakpoint, etc.).
+    // We only need to keep track of DR6 because the other state doesn't change and the only way
+    // to actually change the debug registers for a thread is through the thread_write_state
+    // syscall.
+    x86_read_debug_status(&thread->arch.debug_state);
 
+    // NOTE: a HW breakpoint exception can also represent a single step.
+    // TODO(ZX-3037): Is it worth separating this into two separate exceptions?
     if (try_dispatch_user_exception(frame, ZX_EXCP_HW_BREAKPOINT))
         return;
 
@@ -182,6 +180,7 @@ static void x86_df_handler(x86_iframe_t* frame) {
     // Do not give the user exception handler the opportunity to handle double
     // faults, since they indicate an unexpected system state and cannot be
     // recovered from.
+    kcounter_add(exceptions_dfault, 1);
     exception_die(frame, "double fault, halting\n");
 }
 
@@ -224,7 +223,7 @@ __NO_RETURN static void x86_fatal_pfe_handler(x86_iframe_t* frame, ulong cr2) {
 
     uint64_t error_code = frame->err_code;
 
-    dump_thread(get_current_thread(), true);
+    dump_thread_during_panic(get_current_thread(), true);
 
     if (error_code & PFEX_U) {
         // User mode page fault

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -11,7 +14,10 @@
 #include <gpt/gpt.h>
 #include <zircon/types.h>
 
+#include <utility>
+
 namespace paver {
+using gpt::GptDevice;
 
 enum class Partition {
     kUnknown,
@@ -21,6 +27,8 @@ enum class Partition {
     kZirconA,
     kZirconB,
     kZirconR,
+    kVbMetaA,
+    kVbMetaB,
     kFuchsiaVolumeManager,
     // The following are only valid for WipePartition.
     kInstallType,
@@ -32,7 +40,6 @@ enum class Partition {
 // A special filter for test injection.
 // API should return true if device passed in should be filtered out.
 extern bool (*TestBlockFilter)(const fbl::unique_fd&);
-extern bool (*TestSkipBlockFilter)(const fbl::unique_fd&);
 
 // Abstract device partitioner definition.
 // This class defines common APIs for interacting with a device partitioner.
@@ -76,13 +83,8 @@ public:
     using FilterCallback = fbl::Function<bool(const gpt_partition_t&)>;
 
     // Find and initialize a GPT based device.
-    static zx_status_t InitializeGpt(fbl::unique_ptr<GptDevicePartitioner>* gpt_out);
-
-    virtual ~GptDevicePartitioner() {
-        if (gpt_) {
-            gpt_device_release(gpt_);
-        }
-    }
+    static zx_status_t InitializeGpt(fbl::unique_fd devfs_root,
+                                     fbl::unique_ptr<GptDevicePartitioner>* gpt_out);
 
     // Returns block info for a specified block device.
     zx_status_t GetBlockInfo(block_info_t* block_info) const {
@@ -90,7 +92,7 @@ public:
         return ZX_OK;
     }
 
-    gpt_device_t* GetGpt() const { return gpt_; }
+    GptDevice* GetGpt() const { return gpt_.get(); }
     int GetFd() const { return fd_.get(); }
 
     // Find the first spot that has at least |bytes_requested| of space.
@@ -117,23 +119,27 @@ public:
 
 private:
     // Find and return the topological path of the GPT which we will pave.
-    static bool FindTargetGptPath(fbl::String* out);
+    static bool FindTargetGptPath(const fbl::unique_fd& devfs_root, fbl::String* out);
 
-    GptDevicePartitioner(fbl::unique_fd fd, gpt_device_t* gpt, block_info_t block_info)
-        : fd_(fbl::move(fd)), gpt_(gpt), block_info_(block_info) {}
+    GptDevicePartitioner(fbl::unique_fd devfs_root, fbl::unique_fd fd,
+                         fbl::unique_ptr<GptDevice> gpt, block_info_t block_info)
+        : devfs_root_(std::move(devfs_root)), fd_(std::move(fd)), gpt_(std::move(gpt)),
+          block_info_(block_info) {}
 
     zx_status_t CreateGptPartition(const char* name, uint8_t* type, uint64_t offset,
                                    uint64_t blocks, uint8_t* out_guid);
 
+    fbl::unique_fd devfs_root_;
     fbl::unique_fd fd_;
-    gpt_device_t* gpt_;
+    fbl::unique_ptr<GptDevice> gpt_;
     block_info_t block_info_;
 };
 
 // DevicePartitioner implementation for EFI based devices.
 class EfiDevicePartitioner : public DevicePartitioner {
 public:
-    static zx_status_t Initialize(fbl::unique_ptr<DevicePartitioner>* partitioner);
+    static zx_status_t Initialize(fbl::unique_fd devfs_root,
+                                  fbl::unique_ptr<DevicePartitioner>* partitioner);
 
     bool IsCros() const override { return false; }
 
@@ -151,7 +157,7 @@ public:
 
 private:
     EfiDevicePartitioner(fbl::unique_ptr<GptDevicePartitioner> gpt)
-        : gpt_(fbl::move(gpt)) {}
+        : gpt_(std::move(gpt)) {}
 
     fbl::unique_ptr<GptDevicePartitioner> gpt_;
 };
@@ -159,7 +165,8 @@ private:
 // DevicePartitioner implementation for ChromeOS devices.
 class CrosDevicePartitioner : public DevicePartitioner {
 public:
-    static zx_status_t Initialize(fbl::unique_ptr<DevicePartitioner>* partitioner);
+    static zx_status_t Initialize(fbl::unique_fd devfs_root,
+                                  fbl::unique_ptr<DevicePartitioner>* partitioner);
 
     bool IsCros() const override { return true; }
 
@@ -177,7 +184,7 @@ public:
 
 private:
     CrosDevicePartitioner(fbl::unique_ptr<GptDevicePartitioner> gpt)
-        : gpt_(fbl::move(gpt)) {}
+        : gpt_(std::move(gpt)) {}
 
     fbl::unique_ptr<GptDevicePartitioner> gpt_;
 };
@@ -188,7 +195,8 @@ private:
 // ZIRCON-R).
 class FixedDevicePartitioner : public DevicePartitioner {
 public:
-    static zx_status_t Initialize(fbl::unique_ptr<DevicePartitioner>* partitioner);
+    static zx_status_t Initialize(fbl::unique_fd devfs_root,
+                                  fbl::unique_ptr<DevicePartitioner>* partitioner);
 
     bool IsCros() const override { return false; }
 
@@ -207,7 +215,10 @@ public:
     zx_status_t GetBlockSize(const fbl::unique_fd& device_fd, uint32_t* block_size) const override;
 
 private:
-    FixedDevicePartitioner() {}
+    FixedDevicePartitioner(fbl::unique_fd devfs_root)
+        : devfs_root_(std::move(devfs_root)) {}
+
+    fbl::unique_fd devfs_root_;
 };
 
 // DevicePartitioner implementation for devices which have fixed partition maps, but do not expose a
@@ -217,7 +228,8 @@ private:
 // ZIRCON-R).
 class SkipBlockDevicePartitioner : public DevicePartitioner {
 public:
-    static zx_status_t Initialize(fbl::unique_ptr<DevicePartitioner>* partitioner);
+    static zx_status_t Initialize(fbl::unique_fd devfs_root,
+                                  fbl::unique_ptr<DevicePartitioner>* partitioner);
 
     bool IsCros() const override { return false; }
 
@@ -236,6 +248,10 @@ public:
     zx_status_t GetBlockSize(const fbl::unique_fd& device_fd, uint32_t* block_size) const override;
 
 private:
-    SkipBlockDevicePartitioner() {}
+    SkipBlockDevicePartitioner(fbl::unique_fd devfs_root, fbl::unique_fd block_devfs_root)
+        : devfs_root_(std::move(devfs_root)), block_devfs_root_(std::move(block_devfs_root)) {}
+
+    fbl::unique_fd devfs_root_;
+    fbl::unique_fd block_devfs_root_;
 };
 } // namespace paver

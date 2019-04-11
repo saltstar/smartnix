@@ -1,3 +1,4 @@
+// found in the LICENSE file.
 
 #include "intel-audio-dsp.h"
 

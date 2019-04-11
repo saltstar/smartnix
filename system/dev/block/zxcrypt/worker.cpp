@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -13,6 +16,8 @@
 #include <zircon/syscalls/port.h>
 #include <zircon/types.h>
 #include <zxcrypt/volume.h>
+
+#include <utility>
 
 #include "debug.h"
 #include "device.h"
@@ -55,7 +60,7 @@ zx_status_t Worker::Start(Device* device, const Volume& volume, zx::port&& port)
         return rc;
     }
 
-    port_ = fbl::move(port);
+    port_ = std::move(port);
 
     if (thrd_create(&thrd_, WorkerRun, this) != thrd_success) {
         zxlogf(ERROR, "failed to start thread\n");

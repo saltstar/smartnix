@@ -1,18 +1,21 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <ddk/io-buffer.h>
 #include <ddk/protocol/i2c.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/device.h>
+#include <ddktl/device-internal.h>
 #include <ddktl/device.h>
 #include <ddktl/mmio.h>
-#include <ddktl/device-internal.h>
-#include <zircon/listnode.h>
+#include <ddktl/protocol/empty-protocol.h>
+#include <fbl/mutex.h>
+#include <fbl/vector.h>
 #include <lib/zx/bti.h>
 #include <lib/zx/vmo.h>
-#include <fbl/mutex.h>
-#include <fbl/optional.h>
-#include <fbl/vector.h>
+#include <zircon/listnode.h>
 
 #include <audio-proto/audio-proto.h>
 #include <dispatcher-pool/dispatcher-channel.h>
@@ -20,14 +23,11 @@
 #include <dispatcher-pool/dispatcher-timer.h>
 #include <soc/aml-a113/aml-tdm.h>
 
+#include <optional>
+#include <utility>
+
 namespace audio {
 namespace gauss {
-
-struct TdmOutputStreamProtocol : public ddk::internal::base_protocol {
-    explicit TdmOutputStreamProtocol() {
-        ddk_proto_id_ = ZX_PROTOCOL_AUDIO_OUTPUT;
-    }
-};
 
 class TdmOutputStream;
 using TdmAudioStreamBase = ddk::Device<TdmOutputStream,
@@ -35,8 +35,8 @@ using TdmAudioStreamBase = ddk::Device<TdmOutputStream,
                                        ddk::Unbindable>;
 
 class TdmOutputStream : public TdmAudioStreamBase,
-                       public TdmOutputStreamProtocol,
-                       public fbl::RefCounted<TdmOutputStream> {
+                        public ddk::EmptyProtocol<ZX_PROTOCOL_AUDIO_OUTPUT>,
+                        public fbl::RefCounted<TdmOutputStream> {
 public:
     static zx_status_t Create(zx_device_t* parent);
 
@@ -64,8 +64,7 @@ private:
     TdmOutputStream(zx_device_t* parent,
                    fbl::RefPtr<dispatcher::ExecutionDomain>&& default_domain)
         : TdmAudioStreamBase(parent),
-          TdmOutputStreamProtocol(),
-          default_domain_(fbl::move(default_domain)),
+          default_domain_(std::move(default_domain)),
           create_time_(zx_clock_get_monotonic()) { }
 
     virtual ~TdmOutputStream();
@@ -132,7 +131,7 @@ private:
 
 
     // control registers for the tdm block
-    fbl::optional<ddk::MmioBuffer> mmio_;
+    std::optional<ddk::MmioBuffer> mmio_;
 
     fbl::RefPtr<dispatcher::Timer> notify_timer_;
 

@@ -15,10 +15,19 @@ MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/fidl system/dev/lib/usb
 
 MODULE_LIBS := system/ulib/driver system/ulib/c system/ulib/zircon
 
-MODULE_FIDL_LIBS := system/fidl/zircon-usb-test-fwloader
+MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-mem \
+    system/fidl/fuchsia-hardware-usb-fwloader \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-composite \
+    system/banjo/ddk-protocol-usb-request \
 
 ifeq ($(call TOBOOL,$(INTERNAL_ACCESS)),true)
-MODULE_FIRMWARE := usb-testing/fx3/fx3.img
+MODULE_FIRMWARE := \
+    fx3-flash/cyfxflashprog.img \
+    usb-testing/fx3/fx3.img
 endif
 
 include make/module.mk

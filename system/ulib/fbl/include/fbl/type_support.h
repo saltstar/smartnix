@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -13,38 +16,6 @@ struct integral_constant {
 
 using true_type = integral_constant<bool, true>;
 using false_type = integral_constant<bool, false>;
-
-// is_void:
-template <typename T>
-struct is_void : false_type {};
-
-template <>
-struct is_void<void> : true_type {};
-
-template <>
-struct is_void<const void> : true_type {};
-
-template <>
-struct is_void<volatile void> : true_type {};
-
-template <>
-struct is_void<const volatile void> : true_type {};
-
-// is_null_pointer:
-template <typename T>
-struct is_null_pointer : false_type {};
-
-template <>
-struct is_null_pointer<decltype(nullptr)> : true_type {};
-
-template <>
-struct is_null_pointer<const decltype(nullptr)> : true_type {};
-
-template <>
-struct is_null_pointer<volatile decltype(nullptr)> : true_type {};
-
-template <>
-struct is_null_pointer<const volatile decltype(nullptr)> : true_type {};
 
 // is_const:
 
@@ -159,13 +130,6 @@ struct remove_extent<T[N]> {
     using type = T;
 };
 
-// move
-
-template <typename T>
-constexpr typename remove_reference<T>::type&& move(T&& t) {
-    return static_cast<typename remove_reference<T>::type&&>(t);
-}
-
 // forward:
 
 template <typename T>
@@ -183,13 +147,6 @@ constexpr T&& forward(typename remove_reference<T>::type&& t) {
 
 template<class T, class U> struct is_same : false_type {};
 template<class T> struct is_same<T, T> : true_type {};
-
-// enable_if:
-
-template<bool B, class T = void> struct enable_if { };
-template<class T> struct enable_if<true, T> {
-    typedef T type;
-};
 
 // conditional:
 
@@ -365,56 +322,6 @@ public:
         decltype(test(make_from_type()))::value;
 };
 
-// Macro for defining a trait that checks if a type T has a method with the
-// given name. This is not as strong as using is_same to check function
-// signatures, but checking this trait first gives a better static_assert
-// message than the compiler warnings from is_same if the function doesn't
-// exist.
-// Note that the resulting trait_name will be in the namespace where the macro
-// is used.
-//
-// Example:
-//
-// DECLARE_HAS_MEMBER_FN(has_bar, Bar);
-// template <typname T>
-// class Foo {
-//   static_assert(has_bar<T>::value, "Foo classes must implement Bar()!");
-//   // TODO: use 'if constexpr' to avoid this next static_assert once c++17
-//   lands.
-//   static_assert(is_same<decltype(&T::Bar), void (T::*)(int)>::value,
-//                 "Bar must be a non-static member function with signature "
-//                 "'void Bar(int)', and must be visible to Foo (either "
-//                 "because it is public, or due to friendship).");
-//  };
-#define DECLARE_HAS_MEMBER_FN(trait_name, fn_name)                                \
-template <typename T>                                                             \
-struct trait_name {                                                               \
-private:                                                                          \
-    template <typename C> static ::fbl::true_type test( decltype(&C::fn_name) ); \
-    template <typename C> static ::fbl::false_type test(...);                    \
-                                                                                  \
-public:                                                                           \
-    static constexpr bool value = decltype(test<T>(nullptr))::value;              \
-}
-
-// Similar to DECLARE_HAS_MEMBER_FN but also checks the function signature.
-// This is especially useful when the desired function may be overloaded.
-// The signature must take the form "ResultType (C::*)(ArgType1, ArgType2)".
-//
-// Example:
-//
-// DECLARE_HAS_MEMBER_FN_WITH_SIGNATURE(has_c_str, c_str, const char* (C::*)() const);
-#define DECLARE_HAS_MEMBER_FN_WITH_SIGNATURE(trait_name, fn_name, sig)            \
-template <typename T>                                                             \
-struct trait_name {                                                               \
-private:                                                                          \
-    template <typename C> static ::fbl::true_type test( decltype(static_cast<sig>(&C::fn_name)) ); \
-    template <typename C> static ::fbl::false_type test(...);                     \
-                                                                                  \
-public:                                                                           \
-    static constexpr bool value = decltype(test<T>(nullptr))::value;              \
-}
-
 namespace internal {
 
 template <typename...>
@@ -427,72 +334,5 @@ struct make_void {
 // Utility type for SFINAE expression evaluation, equivalent to C++17 std::void_t.
 template <typename... Ts>
 using void_t = typename internal::make_void<Ts...>::type;
-
-// is_function:
-
-// Morally, is_function could be implemented in the same style as
-// e.g. is_reference: a base case of false, and specializations of
-// true for every kind of function. However, listing all of those
-// cases is brittle and language version dependent. For instance,
-// C++17 makes noexcept specifiers as part of the type.
-
-// Instead, this implementation uses a pair of tricky overloaded
-// functions to detect every type that _isn't_ a function. This
-// includes:
-// - objects (classes, unions, and primitives) (including incomplete types)
-// - references (including references to functions)
-// - nullptr_t
-// - void
-// - pointers (including pointers to functions)
-// - pointers to members
-// - arrays of both complete and incomplete type
-
-namespace internal {
-
-// This leaves pointers, pointer-to-members, arrays, and functions.
-template <typename T>
-struct is_object_void_reference_or_null_pointer {
-    static constexpr bool value =
-        is_class<T>::value ||
-        is_union<T>::value ||
-        is_void<T>::value ||
-        is_reference<T>::value ||
-        is_null_pointer<T>::value;
-};
-
-struct dummy {};
-
-struct func_tag {};
-
-struct nonfunc_tag {};
-
-template <typename T>
-func_tag choose(T*);
-
-template <typename T>
-func_tag choose(dummy);
-
-template <typename T>
-nonfunc_tag choose(...);
-
-template <typename T>
-T& make(int);
-
-template <typename T>
-dummy make(...);
-
-} // namespace internal
-
-template <typename T,
-          bool = internal::is_object_void_reference_or_null_pointer<T>::value>
-struct is_function : public integral_constant<bool,
-                                              is_same<internal::func_tag,
-                                                      decltype(internal::choose<T>(internal::make<T>(0)))
-                                                      >::value> {
-};
-
-template <typename T>
-struct is_function<T, true> : public false_type {
-};
 
 }  // namespace fbl

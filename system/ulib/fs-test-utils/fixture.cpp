@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file
 
 #include <errno.h>
 #include <fcntl.h>
@@ -64,31 +67,28 @@ zx_status_t MountMemFs(async::Loop* loop) {
     return result;
 }
 
-zx_status_t MakeRamdisk(const FixtureOptions& options, fbl::String* block_device_path) {
+zx_status_t MakeRamdisk(const FixtureOptions& options, ramdisk_client_t** out_ramdisk) {
     ZX_DEBUG_ASSERT(options.use_ramdisk);
     if (options.use_ramdisk) {
-        char buffer[kPathSize];
         zx_status_t result = create_ramdisk(options.ramdisk_block_size,
-                                            options.ramdisk_block_count, buffer);
+                                            options.ramdisk_block_count, out_ramdisk);
         if (result != ZX_OK) {
             LOG_ERROR(result,
                       "Failed to create ramdisk(block_size=%lu, ramdisk_block_count=%lu)\n",
                       options.ramdisk_block_size, options.ramdisk_block_count);
             return result;
         }
-        *block_device_path = buffer;
     }
 
     return ZX_OK;
 }
 
-zx_status_t RemoveRamdisk(const FixtureOptions& options, const fbl::String& block_device_path) {
+zx_status_t RemoveRamdisk(const FixtureOptions& options, ramdisk_client_t* ramdisk) {
     ZX_DEBUG_ASSERT(options.use_ramdisk);
-    if (options.use_ramdisk && !block_device_path.empty()) {
-        zx_status_t result = destroy_ramdisk(block_device_path.c_str());
+    if (options.use_ramdisk && ramdisk != nullptr) {
+        zx_status_t result = ramdisk_destroy(ramdisk);
         if (result != ZX_OK) {
-            LOG_ERROR(result, "Failed to destroy ramdisk.\nblock_device_path:%s\n",
-                      block_device_path.c_str());
+            LOG_ERROR(result, "Failed to destroy ramdisk.\n");
         }
     }
     return ZX_OK;
@@ -257,6 +257,33 @@ zx_status_t Fixture::Mount() {
     return ZX_OK;
 }
 
+zx_status_t Fixture::Fsck() const {
+    const fbl::String& block_dev = GetFsBlockDevice().c_str();
+    if (block_dev.empty()) {
+        // the block device doesn't exist, in which case there's nothing to
+        // check. since this is a test fixture, that's probably not what wanted,
+        // so surface the error.
+        LOG_ERROR(ZX_ERR_BAD_STATE, "Fsck called on an empty fixture\n");
+        return ZX_ERR_BAD_STATE;
+    }
+
+    // set up the fsck options
+    fsck_options_t fsck_options = default_fsck_options;
+    fsck_options.never_modify = true;
+    fsck_options.force = true;
+
+    // run fsck
+    zx_status_t result = fsck(block_dev.c_str(), options_.fs_type,
+                              &fsck_options, launch_stdio_sync);
+    if (result != ZX_OK) {
+        LOG_ERROR(result, "Fsck failed on device at block_device_path:%s\n",
+                  block_dev.c_str());
+        return result;
+    }
+
+    return ZX_OK;
+}
+
 zx_status_t Fixture::Umount() {
     if (fs_state_ != ResourceState::kAllocated) {
         return ZX_OK;
@@ -278,10 +305,11 @@ zx_status_t Fixture::SetUpTestCase() {
     LOG_INFO("Using random seed: %u\n", options_.seed);
     seed_ = options_.seed;
     if (options_.use_ramdisk) {
-        zx_status_t result = MakeRamdisk(options_, &block_device_path_);
+        zx_status_t result = MakeRamdisk(options_, &ramdisk_);
         if (result != ZX_OK) {
             return result;
         }
+        block_device_path_ = ramdisk_get_path(ramdisk_);
         ramdisk_state_ = ResourceState::kAllocated;
     }
 
@@ -365,7 +393,8 @@ zx_status_t Fixture::TearDown() {
 
 zx_status_t Fixture::TearDownTestCase() {
     if (ramdisk_state_ == ResourceState::kAllocated) {
-        zx_status_t ramdisk_result = RemoveRamdisk(options_, block_device_path_);
+        zx_status_t ramdisk_result = RemoveRamdisk(options_, ramdisk_);
+        ramdisk_ = nullptr;
         if (ramdisk_result != ZX_OK) {
             return ramdisk_result;
         }

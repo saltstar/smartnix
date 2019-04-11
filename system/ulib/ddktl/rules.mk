@@ -1,3 +1,6 @@
+# Copyright 2017 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -18,6 +21,12 @@ MODULE_STATIC_LIBS := \
     system/ulib/zx \
     system/ulib/zxcpp \
     system/ulib/fbl \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-clk \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-platform-device \
 
 include make/module.mk
 
@@ -52,5 +61,9 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/zircon \
     system/ulib/c \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-ethernet \
+    system/banjo/ddk-protocol-test \
 
 include make/module.mk

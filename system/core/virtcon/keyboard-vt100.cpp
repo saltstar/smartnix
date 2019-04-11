@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <hid/usages.h>
 
@@ -5,7 +8,7 @@
 #include "keyboard.h"
 
 uint32_t hid_key_to_vt100_code(uint8_t keycode, int modifiers,
-                               keychar_t* keymap, char* buf, size_t buf_size) {
+                               const keychar_t* keymap, char* buf, size_t buf_size) {
     // Consistency check: Max size of byte sequences we produce below.
     if (buf_size != 4)
         return 0;
@@ -24,9 +27,9 @@ uint32_t hid_key_to_vt100_code(uint8_t keycode, int modifiers,
         }
         if (modifiers & MOD_CAPSLOCK) {
             if ('a' <= ch && ch <= 'z') {
-                ch = static_cast<char>(ch  - 'a' + 'A');
+                ch = static_cast<char>(ch - 'a' + 'A');
             } else if ('A' <= ch && ch <= 'Z') {
-                ch = static_cast<char>(ch  - 'A' + 'a');
+                ch = static_cast<char>(ch - 'A' + 'a');
             }
         }
         buf[0] = ch;

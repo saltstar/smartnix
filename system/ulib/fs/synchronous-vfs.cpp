@@ -1,10 +1,14 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fs/synchronous-vfs.h>
 
-#include <lib/async/cpp/task.h>
-#include <fbl/atomic.h>
 #include <fbl/unique_ptr.h>
+#include <lib/async/cpp/task.h>
 #include <lib/sync/completion.h>
+
+#include <utility>
 
 namespace fs {
 
@@ -34,7 +38,7 @@ void SynchronousVfs::Shutdown(ShutdownCallback handler) {
 
 void SynchronousVfs::RegisterConnection(fbl::unique_ptr<Connection> connection) {
     ZX_DEBUG_ASSERT(!is_shutting_down_);
-    connections_.push_back(fbl::move(connection));
+    connections_.push_back(std::move(connection));
 }
 
 void SynchronousVfs::UnregisterConnection(Connection* connection) {

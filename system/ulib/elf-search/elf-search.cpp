@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <elf-search.h>
 
@@ -58,7 +61,7 @@ public:
     ProcessMemReader(const zx::process& proc)
         : process_(proc) {}
 
-    // TODO (jakehehrlich): Make this interface zero-copy (by returning a
+    // TODO (jakehehrlich): Make this interface zero-copy (by returning
     // a pointer rather than copying for instance). It's important that
     // the lifetime of the underlying storage is correctly managed.
     template <typename T>

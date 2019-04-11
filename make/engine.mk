@@ -23,15 +23,19 @@ ENABLE_LOCK_DEP ?= false
 ENABLE_LOCK_DEP_TESTS ?= $(ENABLE_LOCK_DEP)
 DISABLE_UTEST ?= false
 ENABLE_ULIB_ONLY ?= false
+ENABLE_DRIVER_TRACING ?= true
+ENABLE_DRIVER_TRACING := $(call TOBOOL,$(ENABLE_DRIVER_TRACING))
 USE_ASAN ?= false
 USE_SANCOV ?= false
 USE_PROFILE ?= false
 USE_LTO ?= false
 USE_THINLTO ?= $(USE_LTO)
+USE_XRAY ?= false
 USE_CLANG ?= $(firstword $(filter true,$(call TOBOOL,$(USE_ASAN)) \
 	     		 	       $(call TOBOOL,$(USE_SANCOV)) \
 	     		 	       $(call TOBOOL,$(USE_PROFILE)) \
 	     		 	       $(call TOBOOL,$(USE_LTO))) \
+	     		 	       $(call TOBOOL,$(USE_XRAY)) \
 			 false)
 USE_LLD ?= $(USE_CLANG)
 ifeq ($(call TOBOOL,$(USE_LLD)),true)
@@ -69,6 +73,8 @@ BUILDDIR_SUFFIX := $(BUILDDIR_SUFFIX)-thinlto
 else
 BUILDDIR_SUFFIX := $(BUILDDIR_SUFFIX)-lto
 endif
+else ifeq ($(call TOBOOL,$(USE_XRAY)),true)
+BUILDDIR_SUFFIX := $(BUILDDIR_SUFFIX)-xray
 else ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 BUILDDIR_SUFFIX := $(BUILDDIR_SUFFIX)-clang
 endif
@@ -150,7 +156,6 @@ GLOBAL_COMPILEFLAGS += -fno-common
 # kernel/include/lib/counters.h and kernel.ld depend on -fdata-sections.
 GLOBAL_COMPILEFLAGS += -ffunction-sections -fdata-sections
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
-GLOBAL_COMPILEFLAGS += -nostdlibinc
 GLOBAL_COMPILEFLAGS += -no-canonical-prefixes
 GLOBAL_COMPILEFLAGS += -Wno-address-of-packed-member
 GLOBAL_COMPILEFLAGS += -Wthread-safety
@@ -513,6 +518,26 @@ GLOBAL_COMPILEFLAGS += -flto -fwhole-program-vtables
 endif
 endif
 
+# This needs to find the standard C++ library headers for the header-only
+# facilities that can be used in Zircon C++ code.  The only implementation
+# that's been tested is libc++ (aka libcxx) from the LLVM project.  In the
+# prebuilt Fuchsia Clang/LLVM toolchain, the libc++ headers are provided
+# with the toolchain and the compiler puts them in the default include
+# path, so nothing is needed here.  Normally when using the prebuilt
+# Fuchsia GCC toolchain, we just use the headers directly from the prebuilt
+# Clang toolchain since they're on hand.  If using a different compiler,
+# set this to a directory where the include/ subdirectory from
+# https://git.llvm.org/git/libcxx is unpacked.
+LIBCXX_INCLUDES ?=
+ifeq ($(call TOBOOL,$(USE_CLANG))$(strip $(LIBC_INCLUDES)),false)
+LIBCXX_INCLUDES := \
+    $(shell $(CLANG_TOOLCHAIN_PREFIX)clang --target=$(CLANG_ARCH) \
+            -print-file-name=include/c++/v1)
+endif
+GLOBAL_INCLUDES += $(LIBCXX_INCLUDES)
+# Visibility annotations conflict with kernel/include/hidden.h.
+KERNEL_CPPFLAGS += -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS
+
 ifeq ($(call TOBOOL,$(USE_SANCOV)),true)
 ifeq ($(call TOBOOL,$(USE_ASAN)),false)
 $(error USE_SANCOV requires USE_ASAN)
@@ -598,6 +623,18 @@ NO_PROFILE :=
 PROFILE_LIB :=
 endif
 
+ifeq ($(call TOBOOL,$(USE_XRAY)),true)
+USER_COMPILEFLAGS += -fxray-instrument
+NO_XRAY := -fno-xray-instrument
+NO_SANITIZERS += $(NO_XRAY)
+# We need --whole-archive with XRay runtime libraries since symbols in these
+# libraries aren't referenced from the code. This matches the driver logic.
+XRAY_LDFLAGS := --whole-archive $(call clang-print-file-name,libclang_rt.xray.a) $(call clang-print-file-name,libclang_rt.xray-basic.a) --no-whole-archive
+else
+NO_XRAY :=
+XRAY_LDFLAGS :=
+endif
+
 # Save these for the first module.mk iteration to see.
 SAVED_EXTRA_BUILDDEPS := $(EXTRA_BUILDDEPS)
 SAVED_GENERATED := $(GENERATED)
@@ -618,6 +655,10 @@ $$(BUILDDIR)/$(notdir $(lib)): $(lib); $$(link-toolchain-file-cmd)
 )
 endef
 $(eval $(toolchain-id-files))
+
+ifeq ($(call TOBOOL,$(ENABLE_ULIB_ONLY)),false)
+EXTRA_IDFILES += $(KERNEL_ELF).id
+endif
 
 ifneq ($(EXTRA_IDFILES),)
 $(BUILDDIR)/ids.txt: $(EXTRA_IDFILES)
@@ -827,6 +868,9 @@ endif
 HOST_LDFLAGS += -static-libstdc++
 # For host tools without C++, ignore the unused arguments.
 HOST_LDFLAGS += -Wno-unused-command-line-argument
+# macOS needs this to not complain about C++17isms that older macOS system
+# libc++ doesn't support.  But we use our own toolchain's static libc++ anyway.
+HOST_CPPFLAGS += -faligned-allocation
 endif
 HOST_ASMFLAGS :=
 
@@ -909,6 +953,10 @@ HOST_DEFINES += \
     ZX_DEBUGLEVEL=$(DEBUG)
 endif
 
+ifeq ($(DEBUG),0)
+GLOBAL_DEFINES += NDEBUG
+endif
+
 #$(info LIBGCC = $(LIBGCC))
 #$(info GLOBAL_COMPILEFLAGS = $(GLOBAL_COMPILEFLAGS))
 #$(info GLOBAL_OPTFLAGS = $(GLOBAL_OPTFLAGS))
@@ -922,10 +970,15 @@ $(ALL_TARGET_OBJS): $(TARGET_MODDEPS)
 # any extra top level build dependencies that someone may have declared
 all:: $(EXTRA_BUILDDEPS)
 
+define RM_ONE
+@rm -f $(1)
+
+endef
+
 clean: $(EXTRA_CLEANDEPS)
-	rm -f $(ALLOBJS)
-	rm -f $(DEPS)
-	rm -f $(GENERATED)
+	$(foreach o,$(ALLOBJS), $(call RM_ONE,$o))
+	$(foreach o,$(DEPS), $(call RM_ONE,$o))
+	$(foreach o,$(GENERATED), $(call RM_ONE,$o))
 	rm -f $(KERNEL_ZBI) $(KERNEL_IMAGE) $(KERNEL_ELF) $(KERNEL_ELF).lst $(KERNEL_ELF).debug.lst $(KERNEL_ELF).sym $(KERNEL_ELF).sym.sorted $(KERNEL_ELF).size $(KERNEL_ELF).hex $(KERNEL_ELF).dump $(KERNEL_ELF)-gdb.py
 	rm -f $(foreach app,$(ALLUSER_APPS),$(app) $(app).lst $(app).dump $(app).strip)
 

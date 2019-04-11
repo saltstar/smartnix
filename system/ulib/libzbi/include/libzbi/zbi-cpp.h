@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // This Header is a thin C++ wrapper around the C ZBI processing API provided in
 // ulib/zbi/*
@@ -15,14 +18,18 @@ namespace zbi {
 
 class Zbi {
 public:
-    explicit Zbi(uint8_t* base) : base_(base) {
+    explicit Zbi(uint8_t* base)
+        : base_(base) {
         zbi_header_t* hdr = reinterpret_cast<zbi_header_t*>(base_);
         capacity_ = hdr->length + sizeof(*hdr);
     }
 
     Zbi(uint8_t* base, size_t capacity)
-        : base_(base)
-        , capacity_(capacity) {}
+        : base_(base), capacity_(capacity) {}
+
+    zbi_result_t Reset() {
+        return zbi_init(base_, capacity_);
+    }
 
     zbi_result_t Check(zbi_header_t** err) const {
         return zbi_check(base_, err);
@@ -46,6 +53,10 @@ public:
                                uint32_t flags, void** payload) {
         return zbi_create_section(base_, capacity_, length, type, extra, flags,
                                   payload);
+    }
+
+    zbi_result_t Extend(const Zbi& source) {
+        return zbi_extend(base_, capacity_, source.base_);
     }
 
     const uint8_t* Base() const { return base_; };

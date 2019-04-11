@@ -1,3 +1,6 @@
+# Copyright 2017 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -5,20 +8,15 @@ MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := hostapp
 
-MODULE_SRCS += \
+MODULE_SRCS := \
     $(LOCAL_DIR)/main.cpp \
-    $(LOCAL_DIR)/container/container.cpp \
-    $(LOCAL_DIR)/container/fvm.cpp \
-    $(LOCAL_DIR)/container/sparse.cpp \
-    $(LOCAL_DIR)/format/blobfs.cpp \
-    $(LOCAL_DIR)/format/format.cpp \
-    $(LOCAL_DIR)/format/minfs.cpp \
 
 MODULE_COMPILEFLAGS := \
     -Werror-implicit-function-declaration \
     -Wstrict-prototypes -Wwrite-strings \
     -Ithird_party/ulib/lz4/include \
-    -Isystem/uapp/fvm/include \
+    -Ithird_party/ulib/zstd/include \
+    -Isystem/ulib/fvm-host/include \
     -Isystem/ulib/bitmap/include \
     -Isystem/ulib/blobfs/include \
     -Isystem/ulib/digest/include \
@@ -33,14 +31,17 @@ MODULE_COMPILEFLAGS := \
     -Isystem/ulib/minfs/include \
 
 MODULE_HOST_LIBS := \
-    third_party/ulib/uboringssl.hostlib \
-    third_party/ulib/lz4.hostlib \
     system/uapp/blobfs.hostlib \
-    system/ulib/fvm.hostlib \
+    system/ulib/digest.hostlib \
     system/ulib/fbl.hostlib \
     system/ulib/fs.hostlib \
-    system/ulib/digest.hostlib \
+    system/ulib/fs-host.hostlib \
+    system/ulib/fvm-host.hostlib \
+    system/ulib/fvm.hostlib \
     system/ulib/minfs.hostlib \
+    third_party/ulib/lz4.hostlib \
+    third_party/ulib/uboringssl.hostlib \
+    third_party/ulib/zstd.hostlib \
 
 MODULE_PACKAGE := bin
 

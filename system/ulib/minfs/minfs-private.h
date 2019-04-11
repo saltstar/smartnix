@@ -39,9 +39,12 @@
 #include <minfs/format.h>
 #include <minfs/inode-manager.h>
 #include <minfs/superblock.h>
+#include <minfs/transaction-limits.h>
 #include <minfs/writeback.h>
 
-#define EXTENT_COUNT 5
+#include <utility>
+
+constexpr uint32_t kExtentCount = 6;
 
 // A compile-time debug check, which, if enabled, causes
 // inline functions to be expanded to error checking code.
@@ -53,6 +56,7 @@ namespace minfs {
 
 #ifdef __Fuchsia__
 using RawBitmap = bitmap::RawBitmapGeneric<bitmap::VmoStorage>;
+using BlockRegion = fuchsia_minfs_BlockRegion;
 #else
 using RawBitmap = bitmap::RawBitmapGeneric<bitmap::DefaultStorage>;
 #endif
@@ -100,6 +104,9 @@ public:
     blk_t InoStartBlock() const { return ino_start_block_; }
     blk_t InoBlockCount() const { return ino_block_count_; }
 
+    blk_t JournalStartBlock() const { return journal_start_block_; }
+    blk_t JournalBlockCount() const { return journal_block_count_; }
+
     blk_t DatStartBlock() const { return dat_start_block_; }
     blk_t DatBlockCount() const { return dat_block_count_; }
 
@@ -112,6 +119,9 @@ private:
 
     blk_t ino_start_block_;
     blk_t ino_block_count_;
+
+    blk_t journal_start_block_;
+    blk_t journal_block_count_;
 
     blk_t dat_start_block_;
     blk_t dat_block_count_;
@@ -185,17 +195,10 @@ public:
     zx_status_t BeginTransaction(size_t reserve_inodes, size_t reserve_blocks,
                                  fbl::unique_ptr<Transaction>* out);
 
-    void CommitTransaction(fbl::unique_ptr<Transaction> state) {
-        // On enqueue, unreserve any remaining reserved blocks/inodes tracked by work.
-#ifdef __Fuchsia__
-        writeback_->Enqueue(state->RemoveWork());
-#else
-        state->GetWork()->Complete();
-#endif
-    }
+    void CommitTransaction(fbl::unique_ptr<Transaction> state);
 
 #ifdef __Fuchsia__
-    void SetUnmountCallback(fbl::Closure closure) { on_unmount_ = fbl::move(closure); }
+    void SetUnmountCallback(fbl::Closure closure) { on_unmount_ = std::move(closure); }
     void Shutdown(fs::Vfs::ShutdownCallback cb) final;
 
     // Returns a unique identifier for this instance.
@@ -247,11 +250,18 @@ public:
         }
         return ZX_ERR_UNAVAILABLE;
     }
+
+    // Record the location, size, and number of all non-free block regions.
+    fbl::Vector<BlockRegion> GetAllocatedRegions() const;
 #endif
 
     // Return an immutable reference to a copy of the internal info.
     const Superblock& Info() const {
         return sb_->Info();
+    }
+
+    const TransactionLimits& Limits() const {
+        return limits_;
     }
 
     // TODO(rvargas): Make private.
@@ -314,6 +324,8 @@ private:
     // sparse files.
     BlockOffsets offsets_;
 #endif
+
+    TransactionLimits limits_;
 };
 
 struct DirectoryOffset {
@@ -375,6 +387,7 @@ public:
     // Minfs FIDL interface.
     zx_status_t GetMetrics(fidl_txn_t* txn);
     zx_status_t ToggleMetrics(bool enabled, fidl_txn_t* txn);
+    zx_status_t GetAllocatedRegions(fidl_txn_t* txn) const;
 #endif
 
     // TODO(rvargas): Make private.
@@ -627,8 +640,7 @@ private:
     void Purge(WritebackWork* wb);
 
 #ifdef __Fuchsia__
-    zx_status_t GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                           zxrio_node_info_t* extra) final;
+    zx_status_t GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info) final;
     void Sync(SyncCallback closure) final;
     zx_status_t AttachRemote(fs::MountChannel h) final;
     zx_status_t InitVmo();
@@ -721,10 +733,6 @@ constexpr uint32_t GetVmoOffsetForDoublyIndirect(uint32_t dibindex) {
 constexpr size_t GetVmoSizeForDoublyIndirect() {
     return (kMinfsIndirect + kMinfsDoublyIndirect) * kMinfsBlockSize;
 }
-
-// Tries to calculate the required number of blocks into |num_req_blocks|
-// for a write at the given |offset| and |length|.
-zx_status_t GetRequiredBlockCount(size_t offset, size_t length, uint32_t* num_req_blocks);
 
 // write the inode data of this vnode to disk (default does not update time values)
 void SyncVnode(fbl::RefPtr<VnodeMinfs> vn, uint32_t flags);

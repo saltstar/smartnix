@@ -2,9 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <climits>
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
+#include <limits>
+#include <new>
 #include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -16,6 +18,7 @@
 #include <threads.h>
 #include <time.h>
 #include <unistd.h>
+#include <utility>
 #include <utime.h>
 
 #include <blobfs/format.h>
@@ -23,8 +26,6 @@
 #include <fbl/algorithm.h>
 #include <fbl/auto_lock.h>
 #include <fbl/function.h>
-#include <fbl/limits.h>
-#include <fbl/new.h>
 #include <fbl/ref_counted.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_fd.h>
@@ -43,7 +44,6 @@
 #include <minfs/format.h>
 #include <zircon/device/block.h>
 #include <zircon/device/device.h>
-#include <zircon/device/ramdisk.h>
 #include <zircon/device/vfs.h>
 #include <zircon/syscalls.h>
 #include <zircon/thread_annotations.h>
@@ -61,22 +61,24 @@ const char kTmpfsPath[] = "/fvm-tmp";
 const char kMountPath[] = "/fvm-tmp/minfs_test_mountpath";
 
 static bool use_real_disk = false;
+static ramdisk_client_t* test_ramdisk = nullptr;
 static char test_disk_path[PATH_MAX];
 static uint64_t test_block_size;
 static uint64_t test_block_count;
 
 int StartFVMTest(uint64_t blk_size, uint64_t blk_count, uint64_t slice_size,
-                        char* disk_path_out, char* fvm_driver_out) {
+                 char* disk_path_out, char* fvm_driver_out) {
     int fd;
     ssize_t r;
     disk_path_out[0] = 0;
     if (!use_real_disk) {
-        if (create_ramdisk(blk_size, blk_count, disk_path_out)) {
+        if (create_ramdisk(blk_size, blk_count, &test_ramdisk)) {
             fprintf(stderr, "fvm: Could not create ramdisk\n");
             goto fail;
         }
+        strlcpy(disk_path_out, ramdisk_get_path(test_ramdisk), PATH_MAX);
     } else {
-        strcpy(disk_path_out, test_disk_path);
+        strlcpy(disk_path_out, test_disk_path, PATH_MAX);
     }
 
     fd = open(disk_path_out, O_RDWR);
@@ -112,7 +114,7 @@ int StartFVMTest(uint64_t blk_size, uint64_t blk_count, uint64_t slice_size,
 
 fail:
     if (!use_real_disk && disk_path_out[0]) {
-        destroy_ramdisk(disk_path_out);
+        ramdisk_destroy(test_ramdisk);
     }
     return -1;
 }
@@ -122,50 +124,62 @@ typedef struct {
     size_t number;
 } partition_entry_t;
 
-int FVMRebind(int fvm_fd, char* ramdisk_path, const partition_entry_t* entries,
-                     size_t entry_count) {
-    int ramdisk_fd = open(ramdisk_path, O_RDWR);
-    if (ramdisk_fd < 0) {
-        fprintf(stderr, "fvm rebind: Could not open ramdisk\n");
-        return -1;
-    }
+int FVMRebind(int fvm_fd, char* disk_path, const partition_entry_t* entries,
+              size_t entry_count) {
+    if (use_real_disk) {
+        fbl::unique_fd disk_fd(open(disk_path, O_RDWR));
+        if (!disk_fd) {
+            fprintf(stderr, "fvm rebind: Could not open disk\n");
+            return -1;
+        }
 
-    if (ioctl_block_rr_part(ramdisk_fd) != 0) {
-        fprintf(stderr, "fvm rebind: Rebind hack failed\n");
-        return -1;
-    }
+        if (ioctl_block_rr_part(disk_fd.get()) != 0) {
+            fprintf(stderr, "fvm rebind: Rebind hack failed\n");
+            return -1;
+        }
 
-    close(fvm_fd);
-    close(ramdisk_fd);
+        close(fvm_fd);
+        disk_fd.reset();
 
-    // Wait for the ramdisk to rebind to a block driver
-    if (wait_for_device(ramdisk_path, ZX_SEC(3)) != ZX_OK) {
-        fprintf(stderr, "fvm rebind: Block driver did not rebind to ramdisk\n");
-        return -1;
-    }
+        // Wait for the disk to rebind to a block driver
+        if (wait_for_device(disk_path, ZX_SEC(3)) != ZX_OK) {
+            fprintf(stderr, "fvm rebind: Block driver did not rebind to disk\n");
+            return -1;
+        }
 
-    ramdisk_fd = open(ramdisk_path, O_RDWR);
-    if (ramdisk_fd < 0) {
-        fprintf(stderr, "fvm rebind: Could not open ramdisk\n");
-        return -1;
-    }
+        disk_fd.reset(open(disk_path, O_RDWR));
+        if (!disk_fd) {
+            fprintf(stderr, "fvm rebind: Could not open disk\n");
+            return -1;
+        }
 
-    ssize_t r = ioctl_device_bind(ramdisk_fd, FVM_DRIVER_LIB, STRLEN(FVM_DRIVER_LIB));
-    close(ramdisk_fd);
-    if (r < 0) {
-        fprintf(stderr, "fvm rebind: Could not bind fvm driver\n");
-        return -1;
+        ssize_t r = ioctl_device_bind(disk_fd.get(), FVM_DRIVER_LIB, STRLEN(FVM_DRIVER_LIB));
+        if (r < 0) {
+            fprintf(stderr, "fvm rebind: Could not bind fvm driver\n");
+            return -1;
+        }
+    } else {
+        if (ramdisk_rebind(test_ramdisk) != ZX_OK) {
+            fprintf(stderr, "fvm rebind: Could not rebind ramdisk\n");
+            return -1;
+        }
+        ssize_t r = ioctl_device_bind(ramdisk_get_block_fd(test_ramdisk), FVM_DRIVER_LIB,
+                                      STRLEN(FVM_DRIVER_LIB));
+        if (r < 0) {
+            fprintf(stderr, "fvm rebind: Could not bind fvm driver\n");
+            return -1;
+        }
     }
 
     char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/fvm", ramdisk_path);
+    snprintf(path, sizeof(path), "%s/fvm", disk_path);
     if (wait_for_device(path, ZX_SEC(3)) != ZX_OK) {
         fprintf(stderr, "fvm rebind: Error waiting for fvm driver to bind\n");
         return -1;
     }
 
     for (size_t i = 0; i < entry_count; i++) {
-        snprintf(path, sizeof(path), "%s/fvm/%s-p-%zu/block", ramdisk_path, entries[i].name,
+        snprintf(path, sizeof(path), "%s/fvm/%s-p-%zu/block", disk_path, entries[i].name,
                  entries[i].number);
         if (wait_for_device(path, ZX_SEC(3)) != ZX_OK) {
             fprintf(stderr, "  Failed to wait for %s\n", path);
@@ -173,7 +187,7 @@ int FVMRebind(int fvm_fd, char* ramdisk_path, const partition_entry_t* entries,
         }
     }
 
-    snprintf(path, sizeof(path), "%s/fvm", ramdisk_path);
+    snprintf(path, sizeof(path), "%s/fvm", disk_path);
     fvm_fd = open(path, O_RDWR);
     if (fvm_fd < 0) {
         fprintf(stderr, "fvm rebind: Failed to open fvm\n");
@@ -212,7 +226,7 @@ bool ValidateFVM(const char* device_path, ValidationResult result = ValidationRe
     ASSERT_TRUE(fd);
     block_info_t info;
     ASSERT_GT(ioctl_block_get_info(fd.get(), &info), 0);
-    fvm::Checker checker(fbl::move(fd), info.block_size, true);
+    fvm::Checker checker(std::move(fd), info.block_size, true);
     switch (result) {
     case ValidationResult::Valid:
         ASSERT_TRUE(checker.Validate());
@@ -226,7 +240,7 @@ bool ValidateFVM(const char* device_path, ValidationResult result = ValidationRe
 // Unbind FVM driver and removes the backing ramdisk device, if one exists.
 int EndFVMTest(const char* device_path) {
     if (!use_real_disk) {
-        return destroy_ramdisk(device_path);
+        return ramdisk_destroy(test_ramdisk);
     } else {
         return fvm_destroy(device_path);
     }
@@ -315,12 +329,12 @@ public:
         vmoid_t vmoid;
         ASSERT_GT(ioctl_block_attach_vmo(client->fd(), &xfer_vmo, &vmoid), 0);
 
-        fbl::unique_ptr<VmoBuf> vb(new (&ac) VmoBuf(fbl::move(client),
-                                                     fbl::move(vmo),
-                                                     fbl::move(buf),
+        fbl::unique_ptr<VmoBuf> vb(new (&ac) VmoBuf(std::move(client),
+                                                     std::move(vmo),
+                                                     std::move(buf),
                                                      vmoid));
         ASSERT_TRUE(ac.check());
-        *out = fbl::move(vb);
+        *out = std::move(vb);
         END_HELPER;
     }
 
@@ -339,8 +353,8 @@ private:
 
     VmoBuf(fbl::RefPtr<VmoClient> client, zx::vmo vmo,
            fbl::unique_ptr<uint8_t[]> buf, vmoid_t vmoid) :
-        client_(fbl::move(client)), vmo_(fbl::move(vmo)),
-        buf_(fbl::move(buf)), vmoid_(vmoid) {}
+        client_(std::move(client)), vmo_(std::move(vmo)),
+        buf_(std::move(buf)), vmoid_(vmoid) {}
 
     fbl::RefPtr<VmoClient> client_;
     zx::vmo vmo_;
@@ -358,7 +372,7 @@ bool VmoClient::Create(int fd, fbl::RefPtr<VmoClient>* out) {
     ASSERT_GT(ioctl_block_get_info(fd, &vc->info_), 0, "Failed to get block info");
     ASSERT_EQ(block_fifo_create_client(fifo, &vc->client_), ZX_OK);
     vc->fd_ = fd;
-    *out = fbl::move(vc);
+    *out = std::move(vc);
     END_HELPER;
 }
 
@@ -495,8 +509,6 @@ bool CheckNoAccessBlock(int fd, size_t block, size_t count) {
 
 bool CheckDeadBlock(int fd) {
     BEGIN_HELPER;
-    block_info_t info;
-    ASSERT_LT(ioctl_block_get_info(fd, &info), 0);
     fbl::AllocChecker ac;
     constexpr size_t kBlksize = 8192;
     fbl::unique_ptr<uint8_t[]> buf(new (&ac) uint8_t[kBlksize]);
@@ -519,10 +531,10 @@ bool TestTooSmall() {
         return true;
     }
 
-    char ramdisk_path[PATH_MAX];
     uint64_t blk_size = 512;
     uint64_t blk_count = (1 << 15);
-    ASSERT_GE(create_ramdisk(blk_size, blk_count, ramdisk_path), 0);
+    ASSERT_GE(create_ramdisk(blk_size, blk_count, &test_ramdisk), 0);
+    const char* ramdisk_path = ramdisk_get_path(test_ramdisk);
     int fd = open(ramdisk_path, O_RDWR);
     ASSERT_GT(fd, 0);
     size_t slice_size = blk_size * blk_count;
@@ -541,11 +553,11 @@ bool TestLarge() {
         return true;
     }
 
-    char ramdisk_path[PATH_MAX];
     char fvm_path[PATH_MAX];
     uint64_t blk_size = 512;
     uint64_t blk_count = 8 * (1 << 20);
-    ASSERT_GE(create_ramdisk(blk_size, blk_count, ramdisk_path), 0);
+    ASSERT_GE(create_ramdisk(blk_size, blk_count, &test_ramdisk), 0);
+    const char* ramdisk_path = ramdisk_get_path(test_ramdisk);
 
     fbl::unique_fd fd(open(ramdisk_path, O_RDWR));
     ASSERT_GT(fd.get(), 0);
@@ -910,11 +922,11 @@ bool TestVPartitionExtend() {
 
     // Allocate OBSCENELY too many slices
     erequest.offset = slice_count;
-    erequest.length = fbl::numeric_limits<size_t>::max();
+    erequest.length = std::numeric_limits<size_t>::max();
     ASSERT_LT(ioctl_block_fvm_extend(vp_fd, &erequest), 0, "Expected request failure");
 
     // Allocate slices at a too-large offset
-    erequest.offset = fbl::numeric_limits<size_t>::max();
+    erequest.offset = std::numeric_limits<size_t>::max();
     erequest.length = 1;
     ASSERT_LT(ioctl_block_fvm_extend(vp_fd, &erequest), 0, "Expected request failure");
 
@@ -2268,7 +2280,7 @@ bool TestMounting() {
     ASSERT_TRUE(rootfd);
     zx_status_t status;
     fuchsia_io_FilesystemInfo info;
-    fzl::FdioCaller caller(fbl::move(rootfd));
+    fzl::FdioCaller caller(std::move(rootfd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminQueryFilesystem(caller.borrow_channel(), &status,
                                                        &info), ZX_OK);
     const char* kFsName = "minfs";
@@ -2352,7 +2364,7 @@ bool TestMkfs() {
     ASSERT_TRUE(rootfd);
     zx_status_t status;
     fuchsia_io_FilesystemInfo info;
-    fzl::FdioCaller caller(fbl::move(rootfd));
+    fzl::FdioCaller caller(std::move(rootfd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminQueryFilesystem(caller.borrow_channel(), &status,
                                                        &info), ZX_OK);
     const char* kFsName = "minfs";
@@ -2698,7 +2710,7 @@ int random_access_thread(void* arg) {
             ASSERT_TRUE(CheckWriteColor(self->vp_fd, off, len, color));
             ASSERT_TRUE(CheckReadColor(self->vp_fd, off, len, color));
             fbl::AllocChecker ac;
-            self->extents.push_back(fbl::move(extent), &ac);
+            self->extents.push_back(std::move(extent), &ac);
             ASSERT_TRUE(ac.check());
             break;
         }
@@ -2793,7 +2805,7 @@ int random_access_thread(void* arg) {
                 st->slices_left += self->extents[extent_index].len;
             }
             for (size_t i = extent_index; i < self->extents.size() - 1; i++) {
-                self->extents[i] = fbl::move(self->extents[i + 1]);
+                self->extents[i] = std::move(self->extents[i + 1]);
             }
             self->extents.pop_back();
             break;
@@ -2810,7 +2822,7 @@ bool TestRandomOpMultithreaded() {
     char fvm_driver[PATH_MAX];
     const size_t kBlockSize = use_real_disk ? test_block_size : 512;
     const size_t kBlockCount = use_real_disk ? test_block_count : 1 << 20;
-    const size_t kBlocksPerSlice = 256;
+    const size_t kBlocksPerSlice = 32;
     const size_t kSliceSize = kBlocksPerSlice * kBlockSize;
     ASSERT_EQ(StartFVMTest(kBlockSize, kBlockCount, kSliceSize, ramdisk_path,
                            fvm_driver),
@@ -2865,7 +2877,7 @@ bool TestRandomOpMultithreaded() {
         extent.start = 0;
         extent.len = 1;
         fbl::AllocChecker ac;
-        s.thread_states[i].extents.push_back(fbl::move(extent), &ac);
+        s.thread_states[i].extents.push_back(std::move(extent), &ac);
         EXPECT_TRUE(ac.check());
         EXPECT_TRUE(CheckWriteReadBlock(s.thread_states[i].vp_fd, 0, kBlocksPerSlice));
         EXPECT_EQ(thrd_create(&s.thread_states[i].thr,
@@ -2934,7 +2946,7 @@ bool TestCheckBadArguments() {
     ASSERT_EQ(StartFVMTest(512, 1 << 20, 64lu * (1 << 20), ramdisk_path, fvm_driver), 0);
     fbl::unique_fd fd(open(ramdisk_path, O_RDWR));
     ASSERT_TRUE(fd, 0);
-    checker.SetDevice(fbl::move(fd));
+    checker.SetDevice(std::move(fd));
     ASSERT_FALSE(checker.Validate(), "Checker should be missing block size");
 
     ASSERT_EQ(EndFVMTest(ramdisk_path), 0);
@@ -2951,7 +2963,7 @@ bool TestCheckNewFVM() {
     fbl::unique_fd fd(open(ramdisk_path, O_RDWR));
     ASSERT_TRUE(fd, 0);
 
-    fvm::Checker checker(fbl::move(fd), 512, true);
+    fvm::Checker checker(std::move(fd), 512, true);
     ASSERT_TRUE(checker.Validate());
     ASSERT_EQ(EndFVMTest(ramdisk_path), 0);
     END_TEST;

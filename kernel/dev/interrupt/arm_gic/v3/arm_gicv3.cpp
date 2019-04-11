@@ -6,6 +6,7 @@
 #include <bits.h>
 #include <dev/interrupt.h>
 #include <dev/interrupt/arm_gic_common.h>
+#include <dev/interrupt/arm_gic_hw_interface.h>
 #include <err.h>
 #include <inttypes.h>
 #include <kernel/stats.h>
@@ -26,10 +27,10 @@
 #define IFRAME_PC(frame) ((frame)->elr)
 
 // values read from zbi
-static vaddr_t arm_gicv3_gic_base = 0;
-static uint64_t arm_gicv3_gicd_offset = 0;
-static uint64_t arm_gicv3_gicr_offset = 0;
-static uint64_t arm_gicv3_gicr_stride = 0;
+vaddr_t arm_gicv3_gic_base = 0;
+uint64_t arm_gicv3_gicd_offset = 0;
+uint64_t arm_gicv3_gicr_offset = 0;
+uint64_t arm_gicv3_gicr_stride = 0;
 
 //
 // IMX8M Errata: e11171: CA53: Cannot support single-core runtime wakeup
@@ -127,8 +128,8 @@ static void gic_init_percpu_early() {
     // set priority threshold to max.
     gic_write_pmr(0xff);
 
-    // TODO EOI deactivates interrupt - revisit.
-    gic_write_ctlr(0);
+    // ICC_CTLR_EL1.EOImode.
+    gic_write_ctlr(1u << 1);
 
     // enable group 1 interrupts.
     gic_write_igrpen(1);
@@ -152,9 +153,9 @@ static zx_status_t gic_init() {
     // disable the distributor
     GICREG(0, GICD_CTLR) = 0;
     gic_wait_for_rwp(GICD_CTLR);
-    ISB;
+    __isb(ARM_MB_SY);
 
-    // diistributer config: mask and clear all spis, set group 1.
+    // distributor config: mask and clear all spis, set group 1.
     uint i;
     for (i = 32; i < gic_max_int; i += 32) {
         GICREG(0, GICD_ICENABLER(i / 32)) = ~0;
@@ -165,7 +166,7 @@ static zx_status_t gic_init() {
     gic_wait_for_rwp(GICD_CTLR);
 
     // enable distributor with ARE, group 1 enable
-    GICREG(0, GICD_CTLR) = CTLR_ENALBE_G0 | CTLR_ENABLE_G1NS | CTLR_ARE_S;
+    GICREG(0, GICD_CTLR) = CTLR_ENABLE_G0 | CTLR_ENABLE_G1NS | CTLR_ARE_S;
     gic_wait_for_rwp(GICD_CTLR);
 
     // ensure we're running on cpu 0 and that cpu 0 corresponds to affinity 0.0.0.0
@@ -186,7 +187,7 @@ static zx_status_t gic_init() {
     gic_init_percpu_early();
 
     mb();
-    ISB;
+    __isb(ARM_MB_SY);
 
     return ZX_OK;
 }
@@ -345,11 +346,14 @@ static void gic_handle_irq(iframe* frame) {
 
     // deliver the interrupt
     struct int_handler_struct* handler = pdev_get_int_handler(vector);
+    interrupt_eoi eoi = IRQ_EOI_DEACTIVATE;
     if (handler->handler) {
-        handler->handler(handler->arg);
+        eoi = handler->handler(handler->arg);
     }
-
     gic_write_eoir(vector);
+    if (eoi == IRQ_EOI_DEACTIVATE) {
+        gic_write_dir(vector);
+    }
 
     LTRACEF_LEVEL(2, "cpu %u exit\n", cpu);
 
@@ -373,12 +377,14 @@ static zx_status_t gic_send_ipi(cpu_mask_t target, mp_ipi_t ipi) {
     return ZX_OK;
 }
 
-static void arm_ipi_halt_handler(void*) {
+static interrupt_eoi arm_ipi_halt_handler(void*) {
     LTRACEF("cpu %u\n", arch_curr_cpu_num());
 
     arch_disable_ints();
-    for (;;) {
+    while (true) {
     }
+
+    return IRQ_EOI_DEACTIVATE;
 }
 
 static void gic_init_percpu() {
@@ -508,7 +514,7 @@ static void arm_gic_v3_init(const void* driver_data, uint32_t length) {
     // If a GIC driver is already registered to the GIC interface it's means we are running GICv2
     // and we do not need to initialize GICv3. Since we have added both GICv3 and GICv2 in board.mdi,
     // both drivers are initialized
-    if (gicv3_is_gic_registered()) {
+    if (arm_gic_is_registered()) {
         return;
     }
 

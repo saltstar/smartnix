@@ -2,8 +2,9 @@
 #include <dev/iommu/dummy.h>
 
 #include <err.h>
-#include <fbl/new.h>
 #include <fbl/ref_ptr.h>
+#include <ktl/move.h>
+#include <new>
 #include <vm/vm.h>
 
 #define INVALID_PADDR UINT64_MAX
@@ -11,7 +12,7 @@
 DummyIommu::DummyIommu() {
 }
 
-zx_status_t DummyIommu::Create(fbl::unique_ptr<const uint8_t[]> desc, size_t desc_len,
+zx_status_t DummyIommu::Create(ktl::unique_ptr<const uint8_t[]> desc, size_t desc_len,
                                fbl::RefPtr<Iommu>* out) {
     if (desc_len != sizeof(zx_iommu_desc_dummy_t)) {
         return ZX_ERR_INVALID_ARGS;
@@ -22,7 +23,7 @@ zx_status_t DummyIommu::Create(fbl::unique_ptr<const uint8_t[]> desc, size_t des
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
-    *out = fbl::move(instance);
+    *out = ktl::move(instance);
     return ZX_OK;
 }
 
@@ -59,8 +60,7 @@ zx_status_t DummyIommu::Map(uint64_t bus_txn_id, const fbl::RefPtr<VmObject>& vm
     };
 
     paddr_t paddr = INVALID_PADDR;
-    zx_status_t status = vmo->Lookup(offset, fbl::min<size_t>(PAGE_SIZE, size), 0, lookup_fn,
-                                     &paddr);
+    zx_status_t status = vmo->Lookup(offset, fbl::min<size_t>(PAGE_SIZE, size), lookup_fn, &paddr);
     if (status != ZX_OK) {
         return status;
     }
@@ -109,7 +109,7 @@ zx_status_t DummyIommu::MapContiguous(uint64_t bus_txn_id, const fbl::RefPtr<VmO
     };
 
     paddr_t paddr = INVALID_PADDR;
-    zx_status_t status = vmo->Lookup(offset, PAGE_SIZE, 0, lookup_fn, &paddr);
+    zx_status_t status = vmo->Lookup(offset, PAGE_SIZE, lookup_fn, &paddr);
     if (status != ZX_OK) {
         return status;
     }

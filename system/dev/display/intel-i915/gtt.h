@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <ddk/protocol/display-controller.h>
+#include <ddk/protocol/display/controller.h>
 #include <fbl/unique_ptr.h>
 #include <fbl/vector.h>
 #include <hwreg/mmio.h>
@@ -31,7 +31,7 @@ public:
     uint64_t base() const { return region_->base; }
     uint64_t size() const { return region_->size; }
 private:
-    fbl::unique_ptr<const RegionAllocator::Region> region_;
+    RegionAllocator::Region::UPtr region_;
     Gtt* gtt_;
 
     fbl::Vector<zx::pmt> pmts_;

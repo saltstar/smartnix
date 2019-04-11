@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <dirent.h>
 #include <errno.h>
@@ -14,6 +17,8 @@
 #include <lib/fdio/debug.h>
 #include <zircon/errors.h>
 #include <zircon/status.h>
+
+#include <utility>
 
 #define ZXDEBUG 0
 
@@ -56,7 +61,7 @@ fbl::String Path::Join(const char* relpath) const {
         abspath.Append(p);
     }
 
-    return fbl::move(abspath);
+    return std::move(abspath);
 }
 
 zx_status_t Path::GetSize(const char* relpath, size_t* out) const {
@@ -66,7 +71,13 @@ zx_status_t Path::GetSize(const char* relpath, size_t* out) const {
         xprintf("Failed to get status for '%s': %s\n", abspath.c_str(), strerror(errno));
         return ZX_ERR_IO;
     }
-    *out = buf.st_size;
+    if (!S_ISREG(buf.st_mode)) {
+        xprintf("Not a regular file (%08x): %s\n", buf.st_mode, abspath.c_str());
+        return ZX_ERR_NOT_FILE;
+    }
+    if (out) {
+        *out = buf.st_size;
+    }
     return ZX_OK;
 }
 
@@ -77,7 +88,7 @@ fbl::unique_ptr<StringList> Path::List() const {
 
     DIR* dir = opendir(c_str());
     if (!dir) {
-        return fbl::move(list);
+        return list;
     }
     auto close_dir = fbl::MakeAutoCall([&dir]() { closedir(dir); });
 
@@ -87,7 +98,7 @@ fbl::unique_ptr<StringList> Path::List() const {
             list->push_back(ent->d_name);
         }
     }
-    return fbl::move(list);
+    return list;
 }
 
 zx_status_t Path::Ensure(const char* relpath) {
@@ -95,7 +106,7 @@ zx_status_t Path::Ensure(const char* relpath) {
     zx_status_t rc;
 
     // First check if already exists
-    fbl::String abspath = fbl::move(Join(relpath));
+    fbl::String abspath = Join(relpath);
     struct stat buf;
     if (stat(abspath.c_str(), &buf) == 0 && S_ISDIR(buf.st_mode)) {
         return ZX_OK;
@@ -125,7 +136,7 @@ zx_status_t Path::Push(const char* relpath) {
         xprintf("Can't push empty path.\n");
         return ZX_ERR_INVALID_ARGS;
     }
-    fbl::String abspath = fbl::move(Join(relpath));
+    fbl::String abspath = Join(relpath);
     struct stat buf;
     if (stat(abspath.c_str(), &buf) != 0) {
         xprintf("Failed to get status for '%s': %s\n", abspath.c_str(), strerror(errno));
@@ -165,7 +176,7 @@ zx_status_t Path::Remove(const char* relpath) {
     ZX_DEBUG_ASSERT(relpath);
     zx_status_t rc;
 
-    fbl::String abspath = fbl::move(Join(relpath));
+    fbl::String abspath = Join(relpath);
     struct stat buf;
     if (stat(abspath.c_str(), &buf) != 0) {
         // Ignore missing files
@@ -207,8 +218,8 @@ zx_status_t Path::Remove(const char* relpath) {
 }
 
 zx_status_t Path::Rename(const char* old_relpath, const char* new_relpath) {
-    fbl::String old_abspath = fbl::move(Join(old_relpath));
-    fbl::String new_abspath = fbl::move(Join(new_relpath));
+    fbl::String old_abspath = Join(old_relpath);
+    fbl::String new_abspath = Join(new_relpath);
     if (rename(old_abspath.c_str(), new_abspath.c_str()) != 0) {
         xprintf("Failed to rename '%s' to '%s': %s.\n", old_abspath.c_str(), new_abspath.c_str(),
                 strerror(errno));

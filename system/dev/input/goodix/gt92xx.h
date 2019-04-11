@@ -4,17 +4,18 @@
 
 #pragma once
 
+#include <atomic>
 #include <ddk/device.h>
 #include <ddktl/device.h>
 #include <ddktl/i2c-channel.h>
 #include <ddktl/pdev.h>
 #include <ddktl/protocol/gpio.h>
 #include <ddktl/protocol/hidbus.h>
-#include <fbl/atomic.h>
 #include <fbl/mutex.h>
 #include <hid/gt92xx.h>
 #include <lib/zx/interrupt.h>
 #include <threads.h>
+#include <utility>
 #include <zircon/types.h>
 
 // clang-format off
@@ -39,18 +40,18 @@
 namespace goodix {
 
 class Gt92xxDevice : public ddk::Device<Gt92xxDevice, ddk::Unbindable>,
-                     public ddk::HidbusProtocol<Gt92xxDevice> {
+                     public ddk::HidbusProtocol<Gt92xxDevice, ddk::base_protocol> {
 public:
     Gt92xxDevice(zx_device_t* device, ddk::I2cChannel i2c,
-                 ddk::GpioProtocolProxy intr, ddk::GpioProtocolProxy reset)
+                 ddk::GpioProtocolClient intr, ddk::GpioProtocolClient reset)
         : ddk::Device<Gt92xxDevice, ddk::Unbindable>(device),
-          i2c_(fbl::move(i2c)), int_gpio_(fbl::move(intr)),
-          reset_gpio_(fbl::move(reset)){};
+          i2c_(std::move(i2c)), int_gpio_(std::move(intr)),
+          reset_gpio_(std::move(reset)){};
 
     static zx_status_t Create(zx_device_t* device);
 
     void DdkRelease();
-    void DdkUnbind() __TA_EXCLUDES(proxy_lock_);
+    void DdkUnbind() __TA_EXCLUDES(client_lock_);
 
     // Hidbus required methods
     void HidbusStop();
@@ -63,8 +64,8 @@ public:
     zx_status_t HidbusSetIdle(uint8_t rpt_id, uint8_t duration);
     zx_status_t HidbusGetProtocol(uint8_t* protocol);
     zx_status_t HidbusSetProtocol(uint8_t protocol);
-    zx_status_t HidbusStart(const hidbus_ifc_t* ifc) __TA_EXCLUDES(proxy_lock_);
-    zx_status_t HidbusQuery(uint32_t options, hid_info_t* info) __TA_EXCLUDES(proxy_lock_);
+    zx_status_t HidbusStart(const hidbus_ifc_t* ifc) __TA_EXCLUDES(client_lock_);
+    zx_status_t HidbusQuery(uint32_t options, hid_info_t* info) __TA_EXCLUDES(client_lock_);
 
 private:
     // Format of data as it is read from the device
@@ -78,7 +79,7 @@ private:
 
     static constexpr uint32_t kMaxPoints = 5;
 
-    zx_status_t ShutDown() __TA_EXCLUDES(proxy_lock_);
+    zx_status_t ShutDown() __TA_EXCLUDES(client_lock_);
     // performs hardware reset using gpio
     void HWReset();
     zx_status_t Init();
@@ -90,14 +91,14 @@ private:
     int Thread();
 
     ddk::I2cChannel i2c_;
-    ddk::GpioProtocolProxy int_gpio_;
-    ddk::GpioProtocolProxy reset_gpio_;
+    ddk::GpioProtocolClient int_gpio_;
+    ddk::GpioProtocolClient reset_gpio_;
 
-    gt92xx_touch_t gt_rpt_ __TA_GUARDED(proxy_lock_);
+    gt92xx_touch_t gt_rpt_ __TA_GUARDED(client_lock_);
     zx::interrupt irq_;
     thrd_t thread_;
-    fbl::atomic<bool> running_;
-    fbl::Mutex proxy_lock_;
-    ddk::HidbusIfcProxy proxy_ __TA_GUARDED(proxy_lock_);
+    std::atomic<bool> running_;
+    fbl::Mutex client_lock_;
+    ddk::HidbusIfcClient client_ __TA_GUARDED(client_lock_);
 };
 }

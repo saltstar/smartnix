@@ -3,6 +3,7 @@
 
 #include <fbl/alloc_checker.h>
 #include <kernel/range_check.h>
+#include <ktl/move.h>
 #include <vm/fault.h>
 #include <vm/vm_object_physical.h>
 
@@ -23,9 +24,9 @@ zx_status_t GuestPhysicalAddressSpace::Create(
 #if ARCH_ARM64
                                               uint8_t vmid,
 #endif
-                                              fbl::unique_ptr<GuestPhysicalAddressSpace>* _gpas) {
+                                              ktl::unique_ptr<GuestPhysicalAddressSpace>* _gpas) {
     fbl::AllocChecker ac;
-    auto gpas = fbl::make_unique_checked<GuestPhysicalAddressSpace>(&ac);
+    auto gpas = ktl::make_unique<GuestPhysicalAddressSpace>(&ac);
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
@@ -37,7 +38,7 @@ zx_status_t GuestPhysicalAddressSpace::Create(
 #if ARCH_ARM64
     gpas->arch_aspace()->arch_set_asid(vmid);
 #endif
-    *_gpas = fbl::move(gpas);
+    *_gpas = ktl::move(gpas);
     return ZX_OK;
 }
 
@@ -106,7 +107,7 @@ zx_status_t GuestPhysicalAddressSpace::GetPage(zx_gpaddr_t guest_paddr, zx_paddr
 
     // Lookup the physical address of this page in the VMO.
     zx_gpaddr_t offset = guest_paddr - mapping->base();
-    return mapping->vmo()->Lookup(offset, PAGE_SIZE, kPfFlags, guest_lookup_page, host_paddr);
+    return mapping->vmo()->GetPage(offset, kPfFlags, nullptr, nullptr, nullptr, host_paddr);
 }
 
 zx_status_t GuestPhysicalAddressSpace::PageFault(zx_gpaddr_t guest_paddr) {
@@ -127,7 +128,7 @@ zx_status_t GuestPhysicalAddressSpace::PageFault(zx_gpaddr_t guest_paddr) {
         pf_flags |= VMM_PF_FLAG_INSTRUCTION;
     }
     Guard<fbl::Mutex> guard{guest_aspace_->lock()};
-    return mapping->PageFault(guest_paddr, pf_flags);
+    return mapping->PageFault(guest_paddr, pf_flags, nullptr);
 }
 
 zx_status_t GuestPhysicalAddressSpace::CreateGuestPtr(zx_gpaddr_t guest_paddr, size_t len,
@@ -167,7 +168,7 @@ zx_status_t GuestPhysicalAddressSpace::CreateGuestPtr(zx_gpaddr_t guest_paddr, s
         return status;
     }
 
-    *guest_ptr = GuestPtr(fbl::move(host_mapping), guest_paddr - begin);
+    *guest_ptr = GuestPtr(ktl::move(host_mapping), guest_paddr - begin);
     return ZX_OK;
 }
 

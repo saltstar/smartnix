@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fs-management/mount.h>
 
@@ -9,7 +12,6 @@
 
 #include <fbl/alloc_checker.h>
 #include <fbl/auto_call.h>
-#include <fbl/type_support.h>
 #include <fbl/unique_fd.h>
 #include <fbl/unique_ptr.h>
 #include <fs-management/fvm.h>
@@ -24,6 +26,8 @@
 #include <zircon/device/vfs.h>
 #include <zircon/processargs.h>
 #include <zircon/syscalls.h>
+
+#include <utility>
 
 namespace {
 // Checks that |fd| is a partition which matches |uniqueGUID| and |typeGUID|.
@@ -243,7 +247,7 @@ int open_partition(const uint8_t* uniqueGUID, const uint8_t* typeGUID,
             return ZX_OK;
         }
         if (is_partition(devfd.get(), info->guid, info->type)) {
-            info->out_partition = fbl::move(devfd);
+            info->out_partition = std::move(devfd);
             if (info->out_path) {
                 strcpy(info->out_path, kBlockDevPath);
                 strcat(info->out_path, fn);

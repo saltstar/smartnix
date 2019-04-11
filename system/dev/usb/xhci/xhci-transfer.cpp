@@ -3,8 +3,8 @@
 // found in the LICENSE file.
 
 #include <ddk/debug.h>
-#include <ddk/protocol/usb.h>
-#include <ddk/protocol/usb-hci.h>
+#include <ddk/phys-iter.h>
+#include <ddk/protocol/usb/hci.h>
 #include <zircon/assert.h>
 #include <zircon/hw/usb.h>
 #include <stdio.h>
@@ -114,8 +114,8 @@ zx_status_t xhci_reset_endpoint(xhci_t* xhci, uint32_t slot_id, uint8_t ep_addre
     // so move them all to the queued list so they will be requeued
     // Completed these with ZX_ERR_CANCELED out of the lock.
     // Remove from tail and add to head to preserve the ordering
-    while ((req = list_remove_tail_type(&ep->pending_reqs, usb_request_t, node)) != nullptr) {
-        list_add_head(&ep->queued_reqs, &req->node);
+    while (xhci_remove_from_list_tail(xhci, &ep->pending_reqs, &req)) {
+        xhci_add_to_list_head(xhci, &ep->queued_reqs, req);
     }
 
     ep_ctx_state = xhci_get_ep_ctx_state(slot, ep);
@@ -152,9 +152,13 @@ zx_status_t xhci_reset_endpoint(xhci_t* xhci, uint32_t slot_id, uint8_t ep_addre
 
     mtx_unlock(&ep->lock);
 
+    xhci_usb_request_internal_t* req_int = nullptr;
     // call complete callbacks out of the lock
-    while ((req = list_remove_head_type(&completed_reqs, usb_request_t, node)) != nullptr) {
-        usb_request_complete(req, req->response.status, req->response.actual);
+    while ((req_int = list_remove_head_type(&completed_reqs,
+                                            xhci_usb_request_internal_t, node)) != nullptr) {
+        req = XHCI_INTERNAL_TO_USB_REQ(req_int);
+        usb_request_complete(req, req->response.status, req->response.actual,
+                             &req_int->complete_cb);
     }
 
     return status;
@@ -292,9 +296,10 @@ static zx_status_t xhci_continue_transfer_locked(xhci_t* xhci, xhci_slot_t* slot
         state->needs_status = false;
     }
 
+    xhci_usb_request_internal_t* req_int = USB_REQ_TO_XHCI_INTERNAL(req);
     // if we get here, then we are ready to ring the doorbell
     // update dequeue_ptr to TRB following this transaction
-    req->context = (void *)ring->current;
+    req_int->context = (void *)ring->current;
 
     XHCI_WRITE32(&xhci->doorbells[header->device_id], ep_index + 1);
     // it seems we need to ring the doorbell a second time when transitioning from STOPPED
@@ -319,7 +324,8 @@ static void xhci_process_transactions_locked(xhci_t* xhci, xhci_slot_t* slot, ui
 
         while (!ep->current_req) {
             // start the next transaction in the queue
-            usb_request_t* req = list_remove_head_type(&ep->queued_reqs, usb_request_t, node);
+            usb_request_t* req;
+            xhci_remove_from_list_head(xhci, &ep->queued_reqs, &req);
             if (!req) {
                 // nothing to do
                 return;
@@ -327,12 +333,12 @@ static void xhci_process_transactions_locked(xhci_t* xhci, xhci_slot_t* slot, ui
 
             zx_status_t status = xhci_start_transfer_locked(xhci, slot, ep_index, req);
             if (status == ZX_OK) {
-                list_add_tail(&ep->pending_reqs, &req->node);
+                xhci_add_to_list_tail(xhci, &ep->pending_reqs, req);
                 ep->current_req = req;
             } else {
                 req->response.status = status;
                 req->response.actual = 0;
-                list_add_tail(completed_reqs, &req->node);
+                xhci_add_to_list_tail(xhci, completed_reqs, req);
             }
         }
 
@@ -346,8 +352,8 @@ static void xhci_process_transactions_locked(xhci_t* xhci, xhci_slot_t* slot, ui
                 if (status != ZX_OK) {
                     req->response.status = status;
                     req->response.actual = 0;
-                    list_delete(&req->node);
-                    list_add_tail(completed_reqs, &req->node);
+                    xhci_delete_req_node(xhci, req);
+                    xhci_add_to_list_tail(xhci, completed_reqs, req);
                 }
                 ep->current_req = nullptr;
             }
@@ -414,16 +420,20 @@ zx_status_t xhci_queue_transfer(xhci_t* xhci, usb_request_t* req) {
         return status;
     }
 
-    list_add_tail(&ep->queued_reqs, &req->node);
+    xhci_add_to_list_tail(xhci, &ep->queued_reqs, req);
 
     list_node_t completed_reqs = LIST_INITIAL_VALUE(completed_reqs);
     xhci_process_transactions_locked(xhci, slot, ep_index, &completed_reqs);
 
     mtx_unlock(&ep->lock);
 
+    xhci_usb_request_internal_t* req_int = nullptr;
     // call complete callbacks out of the lock
-    while ((req = list_remove_head_type(&completed_reqs, usb_request_t, node)) != nullptr) {
-        usb_request_complete(req, req->response.status, req->response.actual);
+    while ((req_int = list_remove_head_type(&completed_reqs,
+                                            xhci_usb_request_internal_t, node)) != nullptr) {
+        req = XHCI_INTERNAL_TO_USB_REQ(req_int);
+        usb_request_complete(req, req->response.status, req->response.actual,
+                             &req_int->complete_cb);
     }
 
     return ZX_OK;
@@ -443,7 +453,6 @@ zx_status_t xhci_cancel_transfers(xhci_t* xhci, uint32_t slot_id, uint32_t ep_in
     xhci_endpoint_t* ep = &slot->eps[ep_index];
     list_node_t completed_reqs = LIST_INITIAL_VALUE(completed_reqs);
     usb_request_t* req;
-    usb_request_t* temp;
     zx_status_t status = ZX_OK;
 
     mtx_lock(&ep->lock);
@@ -483,11 +492,10 @@ zx_status_t xhci_cancel_transfers(xhci_t* xhci, uint32_t slot_id, uint32_t ep_in
         // TRB_CMD_STOP_ENDPOINT may have have completed a currently executing request
         // but we may still have other pending requests. xhci_reset_dequeue_ptr_locked()
         // will set the dequeue pointer after the last completed request.
-        list_for_every_entry_safe(&ep->pending_reqs, req, temp, usb_request_t, node) {
-            list_delete(&req->node);
+        while (xhci_remove_from_list_head(xhci, &ep->queued_reqs, &req)) {
             req->response.status = ZX_ERR_CANCELED;
             req->response.actual = 0;
-            list_add_head(&completed_reqs, &req->node);
+            xhci_add_to_list_head(xhci, &completed_reqs, req);
         }
 
         status = xhci_reset_dequeue_ptr_locked(xhci, slot_id, ep_index);
@@ -497,25 +505,28 @@ zx_status_t xhci_cancel_transfers(xhci_t* xhci, uint32_t slot_id, uint32_t ep_in
     }
 
     // elements of the queued_reqs list can simply be removed and completed.
-    list_for_every_entry_safe(&ep->queued_reqs, req, temp, usb_request_t, node) {
-        list_delete(&req->node);
+    while (xhci_remove_from_list_head(xhci, &ep->queued_reqs, &req)) {
         req->response.status = ZX_ERR_CANCELED;
         req->response.actual = 0;
-        list_add_head(&completed_reqs, &req->node);
+        xhci_add_to_list_head(xhci, &completed_reqs, req);
     }
 
     mtx_unlock(&ep->lock);
 
+    xhci_usb_request_internal_t* req_int;
     // call complete callbacks out of the lock
-    while ((req = list_remove_head_type(&completed_reqs, usb_request_t, node)) != nullptr) {
-        usb_request_complete(req, req->response.status, req->response.actual);
+    while ((req_int = list_remove_head_type(&completed_reqs,
+                                            xhci_usb_request_internal_t, node)) != NULL) {
+        req = XHCI_INTERNAL_TO_USB_REQ(req_int);
+        usb_request_complete(req, req->response.status, req->response.actual,
+                             &req_int->complete_cb);
     }
 
     return status;
 }
 
-static void xhci_control_complete(usb_request_t* req, void* cookie) {
-    sync_completion_signal((sync_completion_t*)cookie);
+static void xhci_control_complete(void* ctx, usb_request_t* req) {
+    sync_completion_signal((sync_completion_t*)ctx);
 }
 
 zx_status_t xhci_control_request(xhci_t* xhci, uint32_t slot_id, uint8_t request_type,
@@ -529,7 +540,8 @@ zx_status_t xhci_control_request(xhci_t* xhci, uint32_t slot_id, uint8_t request
     usb_request_t* req = usb_request_pool_get(&xhci->free_reqs, length);
 
     if (req == nullptr) {
-        auto status = usb_request_alloc(&req, length, 0, sizeof(usb_request_t));
+        uint64_t total_req_size = sizeof(usb_request_t) + sizeof(xhci_usb_request_internal_t);
+        auto status = usb_request_alloc(&req, length, 0, total_req_size);
         if (status != ZX_OK) {
             return status;
         }
@@ -551,9 +563,11 @@ zx_status_t xhci_control_request(xhci_t* xhci, uint32_t slot_id, uint8_t request
     sync_completion_t completion;
 
     req->header.length = length;
-    req->complete_cb = xhci_control_complete;
-    req->cookie = &completion;
-    xhci_request_queue(xhci, req);
+    usb_request_complete_t complete = {
+        .callback = xhci_control_complete,
+        .ctx = &completion,
+    };
+    xhci_request_queue(xhci, req, &complete);
     auto status = sync_completion_wait(&completion, ZX_SEC(1));
     if (status == ZX_OK) {
         status = req->response.status;
@@ -575,7 +589,10 @@ zx_status_t xhci_control_request(xhci_t* xhci, uint32_t slot_id, uint8_t request
         }
     }
 
-    usb_request_pool_add(&xhci->free_reqs, req);
+    if (usb_request_pool_add(&xhci->free_reqs, req) != ZX_OK) {
+        zxlogf(TRACE, "xhci_control_transfer: Unable to add back request to the free pool\n");
+        usb_request_release(req);
+    }
 
     zxlogf(TRACE, "xhci_control_request returning %d\n", status);
     return status;
@@ -757,7 +774,9 @@ void xhci_handle_transfer_event(xhci_t* xhci, xhci_trb_t* trb) {
     // been completed. In the typical case, the context will be found at the head of pending_reqs.
     bool found_req = false;
     usb_request_t* test;
-    list_for_every_entry(&ep->pending_reqs, test, usb_request_t, node) {
+    xhci_usb_request_internal_t* req_int = nullptr;
+    list_for_every_entry(&ep->pending_reqs, req_int, xhci_usb_request_internal_t, node) {
+        test = XHCI_INTERNAL_TO_USB_REQ(req_int);
         if (test == req) {
             found_req = true;
             break;
@@ -770,10 +789,10 @@ void xhci_handle_transfer_event(xhci_t* xhci, xhci_trb_t* trb) {
     }
 
     // update dequeue_ptr to TRB following this transaction
-    xhci_set_dequeue_ptr(ring, static_cast<xhci_trb_t*>(req->context));
+    xhci_set_dequeue_ptr(ring, static_cast<xhci_trb_t*>(req_int->context));
 
     // remove request from pending_reqs
-    list_delete(&req->node);
+    xhci_delete_req_node(xhci, req);
 
     if (!req_status_set) {
         if (result < 0) {
@@ -786,7 +805,7 @@ void xhci_handle_transfer_event(xhci_t* xhci, xhci_trb_t* trb) {
     }
 
     list_node_t completed_reqs = LIST_INITIAL_VALUE(completed_reqs);
-    list_add_head(&completed_reqs, &req->node);
+    xhci_add_to_list_head(xhci, &completed_reqs, req);
 
     if (result == ZX_ERR_IO_REFUSED && ep->state != EP_STATE_DEAD) {
         ep->state = EP_STATE_HALTED;
@@ -799,7 +818,10 @@ void xhci_handle_transfer_event(xhci_t* xhci, xhci_trb_t* trb) {
     mtx_unlock(&ep->lock);
 
     // call complete callbacks out of the lock
-    while ((req = list_remove_head_type(&completed_reqs, usb_request_t, node)) != nullptr) {
-        usb_request_complete(req, req->response.status, req->response.actual);
+    while ((req_int = list_remove_head_type(&completed_reqs,
+                                             xhci_usb_request_internal_t, node)) != NULL) {
+        req = XHCI_INTERNAL_TO_USB_REQ(req_int);
+        usb_request_complete(req, req->response.status, req->response.actual,
+                             &req_int->complete_cb);
     }
 }

@@ -4,22 +4,19 @@
 
 #pragma once
 
+#include <threads.h>
+
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/gpio-impl.h>
-#include <ddk/protocol/platform-bus.h>
 #include <ddk/protocol/platform-device-lib.h>
-#include <ddk/protocol/platform-device.h>
-
+#include <ddk/protocol/platform/bus.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddktl/device.h>
-#include <ddktl/protocol/gpio-impl.h>
-
+#include <ddktl/protocol/gpioimpl.h>
 #include <fbl/array.h>
-
-#include <hw/reg.h>
-#include <hwreg/mmio.h>
-
 #include <lib/zx/interrupt.h>
 #include <lib/zx/port.h>
+
+#include "mt8167-gpio-regs.h"
 
 namespace gpio {
 
@@ -27,7 +24,7 @@ class Mt8167GpioDevice;
 using DeviceType = ddk::Device<Mt8167GpioDevice, ddk::Unbindable>;
 
 class Mt8167GpioDevice : public DeviceType,
-                         public ddk::GpioImplProtocol<Mt8167GpioDevice> {
+                         public ddk::GpioImplProtocol<Mt8167GpioDevice, ddk::base_protocol> {
 public:
     static zx_status_t Create(zx_device_t* parent);
 
@@ -55,9 +52,12 @@ public:
     zx_status_t GpioImplSetAltFunction(uint32_t index, uint64_t function);
     zx_status_t GpioImplRead(uint32_t index, uint8_t* out_value);
     zx_status_t GpioImplWrite(uint32_t index, uint8_t value);
-    zx_status_t GpioImplGetInterrupt(uint32_t index, uint32_t flags, zx_handle_t* out_handle);
+    zx_status_t GpioImplGetInterrupt(uint32_t index, uint32_t flags, zx::interrupt* out_irq);
     zx_status_t GpioImplReleaseInterrupt(uint32_t index);
     zx_status_t GpioImplSetPolarity(uint32_t index, uint32_t polarity);
+
+protected:
+    fbl::Array<zx::interrupt> interrupts_; // Protected to be changed in unit tests.
 
 private:
     void ShutDown();
@@ -74,6 +74,5 @@ private:
     zx::interrupt int_;
     zx::port port_;
     thrd_t thread_;
-    fbl::Array<zx::interrupt> interrupts_;
 };
 } // namespace gpio

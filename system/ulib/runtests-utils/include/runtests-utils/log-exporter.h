@@ -1,9 +1,14 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Code for listening to logger service and dumping the logs.
 // This implements LogListener interface for logger fidl @ //zircon/system/fidl/fuchsia-logger.
 
 #ifndef ZIRCON_SYSTEM_ULIB_RUNTESTS_UTILS_INCLUDE_RUNTESTS_UTILS_LOG_EXPORTER_H_
 #define ZIRCON_SYSTEM_ULIB_RUNTESTS_UTILS_INCLUDE_RUNTESTS_UTILS_LOG_EXPORTER_H_
+
+#include <memory>
 
 #include <fbl/string.h>
 #include <fbl/vector.h>
@@ -16,6 +21,8 @@
 // TODO(FIDL-182): Remove this once fixed.
 typedef zx_handle_t fuchsia_logger_LogListener;
 #include <fuchsia/logger/c/fidl.h>
+
+#include <utility>
 
 namespace runtests {
 
@@ -37,7 +44,7 @@ enum ExporterLaunchError {
 //    zx::channel channel;
 //    //init above channel to link to logger service
 //    ...
-//    LogExporter l(fbl::move(channel), f);
+//    LogExporter l(std::move(channel), f);
 //    l->StartThread();
 class LogExporter {
 public:
@@ -67,14 +74,14 @@ public:
     // while serving |channel_|. If an error occurs, the channel will close and
     // the listener thread will stop.
     void set_error_handler(ErrorHandler error_handler) {
-        error_handler_ = fbl::move(error_handler);
+        error_handler_ = std::move(error_handler);
     }
 
     // Sets Error handler which would be called whenever there is an error
     // writing to file. If an error occurs, the channel will close and the
     // listener thread will stop.
     void set_file_error_handler(FileErrorHandler error_handler) {
-        file_error_handler_ = fbl::move(error_handler);
+        file_error_handler_ = std::move(error_handler);
     }
 
 private:
@@ -128,7 +135,7 @@ private:
 // |error| error to set in case of failure.
 //
 // Returns nullptr if it is not possible to launch Log Exporter.
-fbl::unique_ptr<LogExporter> LaunchLogExporter(fbl::StringPiece syslog_path,
+std::unique_ptr<LogExporter> LaunchLogExporter(fbl::StringPiece syslog_path,
                                                ExporterLaunchError* error);
 
 } // namespace runtests

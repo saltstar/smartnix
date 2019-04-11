@@ -7,12 +7,16 @@
 #include <debug.h>
 #include <kernel/cpu.h>
 #include <kernel/spinlock.h>
+#include <kernel/timer.h>
 #include <kernel/wait.h>
 #include <list.h>
 #include <sys/types.h>
 #include <vm/kstack.h>
 #include <zircon/compiler.h>
 #include <zircon/types.h>
+
+// fwd decl for the user_thread member below.
+class ThreadDispatcher;
 
 __BEGIN_CDECLS
 
@@ -21,6 +25,7 @@ enum thread_state {
     THREAD_READY,
     THREAD_RUNNING,
     THREAD_BLOCKED,
+    THREAD_BLOCKED_READ_LOCK,
     THREAD_SLEEPING,
     THREAD_SUSPENDED,
     THREAD_DEATH,
@@ -32,10 +37,13 @@ enum thread_user_state_change {
     THREAD_USER_STATE_RESUME,
 };
 
+// scheduler lock
+extern spin_lock_t thread_lock;
+
 typedef int (*thread_start_routine)(void* arg);
 typedef void (*thread_trampoline_routine)(void) __NO_RETURN;
 typedef void (*thread_user_callback_t)(enum thread_user_state_change new_state,
-                                       void* user_thread);
+                                       struct thread* thread_context);
 typedef void (*thread_tls_callback_t)(void* tls_value);
 
 // clang-format off
@@ -130,7 +138,7 @@ typedef struct thread {
     struct vmm_aspace* aspace;
 
     // pointer to user thread if one exists for this thread
-    void* user_thread;
+    ThreadDispatcher* user_thread;
     uint64_t user_tid;
     uint64_t user_pid;
 
@@ -274,17 +282,22 @@ static inline bool thread_stopped_in_exception(const thread_t* thread) {
     return !!thread->exception_context;
 }
 
-// wait until after the specified deadline. interruptable may return early with
-// ZX_ERR_INTERNAL_INTR_KILLED if thread is signaled for kill.
-zx_status_t thread_sleep_etc(zx_time_t deadline, bool interruptable);
+// wait until the deadline has occurred.
+//
+// if interruptable, may return early with ZX_ERR_INTERNAL_INTR_KILLED if
+// thread is signaled for kill.
+zx_status_t thread_sleep_etc(const Deadline& deadline,
+                             bool interruptable,
+                             zx_time_t now);
 
-// non interruptable version of thread_sleep_etc
-static inline zx_status_t thread_sleep(zx_time_t deadline) {
-    return thread_sleep_etc(deadline, false);
-}
+// non-interruptable version of thread_sleep_etc
+zx_status_t thread_sleep(zx_time_t deadline);
 
 // non-interruptable relative delay version of thread_sleep
 zx_status_t thread_sleep_relative(zx_duration_t delay);
+
+// interruptable version of thread_sleep
+zx_status_t thread_sleep_interruptable(zx_time_t deadline);
 
 // return the number of nanoseconds a thread has been running for
 zx_duration_t thread_runtime(const thread_t* t);
@@ -299,13 +312,29 @@ static inline bool thread_is_signaled(thread_t* t) {
 
 // process pending signals, may never return because of kill signal
 void thread_process_pending_signals(void);
-
-void dump_thread(thread_t* t, bool full);
+void dump_thread_locked(thread_t* t, bool full) TA_REQ(thread_lock);
+void dump_thread(thread_t* t, bool full) TA_EXCL(thread_lock);
 void arch_dump_thread(thread_t* t);
-void dump_all_threads(bool full);
-void dump_all_threads_locked(bool full);
-void dump_thread_user_tid(uint64_t tid, bool full);
-void dump_thread_user_tid_locked(uint64_t tid, bool full);
+void dump_all_threads_locked(bool full) TA_REQ(thread_lock);
+void dump_all_threads(bool full) TA_EXCL(thread_lock);
+void dump_thread_user_tid(uint64_t tid, bool full) TA_EXCL(thread_lock);
+void dump_thread_user_tid_locked(uint64_t tid, bool full) TA_REQ(thread_lock);
+
+static inline void dump_thread_during_panic(thread_t* t, bool full) TA_NO_THREAD_SAFETY_ANALYSIS {
+    // Skip grabbing the lock if we are panic'ing
+    dump_thread_locked(t, full);
+}
+
+static inline void dump_all_threads_during_panic(bool full) TA_NO_THREAD_SAFETY_ANALYSIS {
+    // Skip grabbing the lock if we are panic'ing
+    dump_all_threads_locked(full);
+}
+
+static inline void dump_thread_user_tid_during_panic(uint64_t tid, bool full)
+    TA_NO_THREAD_SAFETY_ANALYSIS {
+    // Skip grabbing the lock if we are panic'ing
+    dump_thread_user_tid_locked(tid, full);
+}
 
 // find a thread based on the thread id
 // NOTE: used only for debugging, its a slow linear search through the
@@ -328,9 +357,6 @@ static inline bool thread_is_real_time_or_idle(thread_t* t) {
 #include <arch/current_thread.h>
 thread_t* get_current_thread(void);
 void set_current_thread(thread_t*);
-
-// scheduler lock
-extern spin_lock_t thread_lock;
 
 static inline bool thread_lock_held(void) {
     return spin_lock_held(&thread_lock);

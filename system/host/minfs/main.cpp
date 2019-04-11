@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #define _XOPEN_SOURCE
 
@@ -6,10 +9,12 @@
 #include <string.h>
 
 #include <fbl/algorithm.h>
-#include <fbl/unique_free_ptr.h>
 #include <minfs/fsck.h>
 #include <minfs/host.h>
 #include <minfs/minfs.h>
+#include <minfs/transaction-limits.h>
+
+#include <utility>
 
 #include "minfs.h"
 
@@ -307,17 +312,27 @@ zx_status_t MinfsCreator::CalculateRequiredSize(off_t* out) {
     // but for our current purposes it should be sufficient.
     uint32_t dir_blocks = dir_count + (dir_bytes_ / minfs::kMinfsBlockSize);
 
-    uint32_t inodes = minfs::kMinfsDefaultInodeCount;
-    uint32_t blocks = data_blocks_ + dir_blocks;
+    minfs::Superblock info;
+    info.flags = 0;
+    info.inode_count = minfs::kMinfsDefaultInodeCount;
+    info.block_count = data_blocks_ + dir_blocks;
 
     // Calculate number of blocks we will need for all minfs structures.
-    uint32_t inoblks = (inodes + minfs::kMinfsInodesPerBlock - 1) / minfs::kMinfsInodesPerBlock;
-    uint32_t ibmblks = (inodes + minfs::kMinfsBlockBits - 1) / minfs::kMinfsBlockBits;
-    uint32_t abmblks = (blocks + minfs::kMinfsBlockBits - 1) / minfs::kMinfsBlockBits;
+    uint32_t inode_bitmap_blocks = (info.inode_count + minfs::kMinfsBlockBits - 1)
+                                   / minfs::kMinfsBlockBits;
+    uint32_t block_bitmap_blocks = (info.block_count + minfs::kMinfsBlockBits - 1)
+                                   / minfs::kMinfsBlockBits;
+    uint32_t inode_table_blocks = (info.inode_count + minfs::kMinfsInodesPerBlock - 1)
+                                  / minfs::kMinfsInodesPerBlock;
 
-    *out = (8 + fbl::round_up(inoblks, 8u) + fbl::round_up(ibmblks, 8u) +
-            fbl::round_up(abmblks, 8u) + blocks) *
-           minfs::kMinfsBlockSize;
+    info.ibm_block = 8;
+    info.abm_block = info.ibm_block + fbl::round_up(inode_bitmap_blocks, 8u);
+    info.ino_block = info.abm_block + fbl::round_up(block_bitmap_blocks, 8u);
+    info.journal_start_block = info.ino_block + inode_table_blocks;
+    minfs::TransactionLimits limits(info);
+    info.dat_block = info.journal_start_block + limits.GetRecommendedJournalBlocks();
+
+    *out = (info.dat_block + info.block_count) * minfs::kMinfsBlockSize;
     return ZX_OK;
 }
 
@@ -331,7 +346,7 @@ zx_status_t MinfsCreator::Mkfs() {
     }
 
     // Consume the bcache to mkfs.
-    if ((status = minfs::Mkfs(fbl::move(bc))) != ZX_OK) {
+    if ((status = minfs::Mkfs(std::move(bc))) != ZX_OK) {
         return status;
     }
 
@@ -350,7 +365,7 @@ zx_status_t MinfsCreator::Fsck() {
     if ((status = GenerateBcache(&bc)) != ZX_OK) {
         return status;
     }
-    return minfs::Fsck(fbl::move(bc));
+    return minfs::Fsck(std::move(bc));
 }
 
 zx_status_t MinfsCreator::Add() {
@@ -625,14 +640,14 @@ zx_status_t MinfsCreator::GenerateBcache(fbl::unique_ptr<minfs::Bcache>* out) {
     int dupfd = dup(fd_.get());
 
     fbl::unique_ptr<minfs::Bcache> bc;
-    if (minfs::Bcache::Create(&bc, fbl::move(fd_), block_count) < 0) {
+    if (minfs::Bcache::Create(&bc, std::move(fd_), block_count) < 0) {
         fprintf(stderr, "error: cannot create block cache\n");
         return ZX_ERR_IO;
     }
 
     bc->SetOffset(GetOffset());
     fd_.reset(dupfd);
-    *out = fbl::move(bc);
+    *out = std::move(bc);
     return ZX_OK;
 }
 
@@ -648,7 +663,7 @@ zx_status_t MinfsCreator::MountMinfs() {
         return status;
     }
 
-    return emu_mount_bcache(fbl::move(bc));
+    return emu_mount_bcache(std::move(bc));
 }
 
 int main(int argc, char** argv) {

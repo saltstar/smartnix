@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_BANJO_INCLUDE_BANJO_PARSER_H_
 #define ZIRCON_SYSTEM_HOST_BANJO_INCLUDE_BANJO_PARSER_H_
@@ -176,7 +179,6 @@ private:
     std::unique_ptr<raw::TrueLiteral> ParseTrueLiteral();
     std::unique_ptr<raw::FalseLiteral> ParseFalseLiteral();
     std::unique_ptr<raw::Literal> ParseLiteral();
-    std::unique_ptr<raw::Ordinal> ParseOrdinal();
 
     std::unique_ptr<raw::Constant> ParseConstant();
 

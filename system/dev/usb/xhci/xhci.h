@@ -4,23 +4,21 @@
 
 #pragma once
 
+#include <atomic>
 #include <lib/sync/completion.h>
-#include <zircon/hw/usb.h>
-#include <zircon/hw/usb-hub.h>
-#include <zircon/types.h>
-#include <zircon/listnode.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <threads.h>
+#include <zircon/hw/usb.h>
+#include <zircon/listnode.h>
+#include <zircon/types.h>
 
 #include <ddk/device.h>
 #include <ddk/mmio-buffer.h>
 #include <ddk/protocol/pci.h>
-#include <ddk/protocol/platform-device.h>
 #include <ddk/protocol/platform-device-lib.h>
-#include <ddk/protocol/usb-bus.h>
-#include <ddk/protocol/usb.h>
-#include <fbl/atomic.h>
+#include <ddk/protocol/platform/device.h>
+#include <ddk/protocol/usb/bus.h>
+#include <ddk/protocol/usb/request.h>
 #include <usb/usb-request.h>
 
 #include "xhci-hw.h"
@@ -84,12 +82,15 @@ typedef struct xhci_slot {
 
 typedef struct xhci_usb_request_internal {
      // callback to the upper layer
-     usb_request_complete_cb complete_cb;
-     // context for the callback
-     void* cookie;
+     usb_request_complete_t complete_cb;
      // for queueing request at xhci level
      list_node_t node;
+     void* context;
 } xhci_usb_request_internal_t;
+
+#define USB_REQ_TO_XHCI_INTERNAL(req) \
+    ((xhci_usb_request_internal_t *)((uintptr_t)(req) + sizeof(usb_request_t)))
+#define XHCI_INTERNAL_TO_USB_REQ(ctx) ((usb_request_t *)((uintptr_t)(ctx) - sizeof(usb_request_t)))
 
 typedef struct xhci xhci_t;
 
@@ -115,7 +116,7 @@ struct xhci {
     usb_bus_interface_t bus;
 
     xhci_mode_t mode;
-    fbl::atomic<bool> suspended;
+    std::atomic<bool> suspended;
 
     // Desired number of interrupters. This may be greater than what is
     // supported by hardware. The actual number of interrupts configured
@@ -230,6 +231,12 @@ void xhci_wait_bits64(volatile uint64_t* ptr, uint64_t bits, uint64_t expected);
 void xhci_stop(xhci_t* xhci);
 void xhci_free(xhci_t* xhci);
 
+bool xhci_add_to_list_tail(xhci_t* xhci, list_node_t* list, usb_request_t* req);
+bool xhci_add_to_list_head(xhci_t* xhci, list_node_t* list, usb_request_t* req);
+bool xhci_remove_from_list_head(xhci_t* xhci, list_node_t* list, usb_request_t** req);
+bool xhci_remove_from_list_tail(xhci_t* xhci, list_node_t* list, usb_request_t** req);
+void xhci_delete_req_node(xhci_t* xhci, usb_request_t* req);
+
 // returns monotonically increasing frame count
 uint64_t xhci_get_current_frame(xhci_t* xhci);
 
@@ -246,8 +253,5 @@ static inline bool xhci_is_root_hub(xhci_t* xhci, uint32_t device_id) {
 zx_status_t xhci_add_device(xhci_t* xhci, int slot_id, int hub_address, int speed);
 void xhci_remove_device(xhci_t* xhci, int slot_id);
 
-void xhci_request_queue(xhci_t* xhci, usb_request_t* req);
-
-__BEGIN_CDECLS
-zx_status_t usb_xhci_bind(void* ctx, zx_device_t* parent);
-__END_CDECLS
+void xhci_request_queue(xhci_t* xhci, usb_request_t* req,
+                        const usb_request_complete_t* complete_cb);

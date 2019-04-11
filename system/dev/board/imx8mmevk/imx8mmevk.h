@@ -6,12 +6,17 @@
 
 #include <ddk/debug.h>
 #include <ddk/device.h>
-#include <ddk/protocol/gpio-impl.h>
 #include <ddktl/device.h>
-#include <ddktl/protocol/platform-bus.h>
+#include <ddktl/protocol/gpioimpl.h>
+#include <ddktl/protocol/platform/bus.h>
 #include <threads.h>
 
 namespace imx8mmevk {
+
+// BTI IDs for our devices
+enum {
+    BTI_SYSMEM,
+};
 
 #define ERROR(fmt, ...) zxlogf(ERROR, "[%s %d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
 
@@ -28,11 +33,12 @@ public:
 
 private:
     zx_status_t StartAll();
+    zx_status_t StartSysmem();
     zx_status_t StartGpio();
     int Thread();
 
-    ddk::PBusProtocolProxy pbus_;
-    gpio_impl_protocol_t gpio_impl_ = {};
+    ddk::PBusProtocolClient pbus_;
+    ddk::GpioImplProtocolClient gpio_impl_ = {};
     thrd_t thread_ = {};
 };
 

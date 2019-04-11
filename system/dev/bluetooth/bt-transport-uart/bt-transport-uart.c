@@ -7,7 +7,7 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/bt-hci.h>
+#include <ddk/protocol/bt/hci.h>
 #include <ddk/protocol/serial.h>
 #include <zircon/device/bt-hci.h>
 #include <zircon/device/serial.h>
@@ -66,7 +66,7 @@ typedef struct {
     size_t event_buffer_offset;
 
     // for accumulating ACL data packets
-    uint8_t acl_buffer[EVENT_BUF_SIZE];
+    uint8_t acl_buffer[ACL_MAX_FRAME_SIZE];
     size_t acl_buffer_offset;
 
     mtx_t mutex;

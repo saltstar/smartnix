@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -71,8 +74,6 @@
 #include <zircon/types.h>
 #define UNITTEST_CRASH_HANDLER_SUPPORTED
 #endif // __Fuchsia__
-
-#define PRINT_BUFFER_SIZE (512)
 
 // The following helper function makes the "msg" argument optional in
 // C++, so that you can write either of the following:

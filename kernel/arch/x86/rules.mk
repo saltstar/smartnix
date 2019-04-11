@@ -3,7 +3,7 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 
 MODULE := $(LOCAL_DIR)
 
-BOOT_HEADER_SIZE ?= 0x70
+BOOT_HEADER_SIZE ?= 0x50
 KERNEL_LOAD_OFFSET ?= 0x00100000 # 1MB
 KERNEL_BASE ?= 0xffffffff80100000 # has KERNEL_LOAD_OFFSET baked into it
 KERNEL_SIZE ?= 0x40000000 # 1GB
@@ -68,6 +68,7 @@ MODULE_SRCS += \
 
 MODULE_DEPS += \
 	kernel/arch/x86/page_tables \
+	kernel/arch/x86/cpuid \
 	kernel/dev/iommu/dummy \
 	kernel/dev/iommu/intel \
 	kernel/lib/bitmap \

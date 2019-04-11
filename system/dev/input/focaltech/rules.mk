@@ -10,9 +10,10 @@ MODULE_TYPE := driver
 
 MODULE_SRCS := \
     $(LOCAL_DIR)/focaltech.c \
-    $(LOCAL_DIR)/ft3x27.cpp \
+    $(LOCAL_DIR)/ft_device.cpp \
 
 MODULE_STATIC_LIBS := \
+    system/dev/lib/focaltech \
     system/ulib/ddk \
     system/ulib/ddktl \
     system/ulib/hid \
@@ -23,5 +24,12 @@ MODULE_STATIC_LIBS := \
     system/ulib/hid
 
 MODULE_LIBS := system/ulib/driver system/ulib/zircon system/ulib/c
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-hidbus \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-test \
 
 include make/module.mk

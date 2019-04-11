@@ -25,5 +25,11 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/zircon \
     system/ulib/c \
+    system/dev/lib/fake-bti \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-test \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-request \
 
 include make/module.mk

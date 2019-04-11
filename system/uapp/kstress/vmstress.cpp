@@ -1,6 +1,8 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/algorithm.h>
-#include <fbl/atomic.h>
 #include <fbl/auto_call.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_ptr.h>
@@ -11,6 +13,7 @@
 #include <zircon/syscalls.h>
 
 #include <assert.h>
+#include <atomic>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -40,7 +43,7 @@ private:
     thrd_t threads_[16]{};
 
     // used by the worker threads at runtime
-    fbl::atomic<bool> shutdown_{false};
+    std::atomic<bool> shutdown_{false};
     zx::vmo vmo_{};
 };
 
@@ -54,7 +57,7 @@ VmStressTest vmstress;
 // the vmo asynchronously. Intended to pick out any internal races with a single VMO and
 // with the VMAR mapping/unmapping system.
 //
-// Currently does not validate that any given operation was sucessfully performed, only
+// Currently does not validate that any given operation was successfully performed, only
 // that the apis do not return an error.
 //
 // Will evolve over time to use multiple VMOs simultaneously along with cloned vmos.

@@ -15,7 +15,9 @@
 #include <zircon/device/device.h>
 
 #include <minfs/format.h>
+
 #include "minfs-private.h"
+#include <utility>
 
 namespace minfs {
 
@@ -61,7 +63,7 @@ int Bcache::Sync() {
 
 zx_status_t Bcache::Create(fbl::unique_ptr<Bcache>* out, fbl::unique_fd fd, uint32_t blockmax) {
     fbl::AllocChecker ac;
-    fbl::unique_ptr<Bcache> bc(new (&ac) Bcache(fbl::move(fd), blockmax));
+    fbl::unique_ptr<Bcache> bc(new (&ac) Bcache(std::move(fd), blockmax));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
@@ -80,12 +82,12 @@ zx_status_t Bcache::Create(fbl::unique_ptr<Bcache>* out, fbl::unique_fd fd, uint
         return static_cast<zx_status_t>(r);
     }
     zx_status_t status;
-    if ((status = block_client::Client::Create(fbl::move(fifo), &bc->fifo_client_)) != ZX_OK) {
+    if ((status = block_client::Client::Create(std::move(fifo), &bc->fifo_client_)) != ZX_OK) {
         return status;
     }
 #endif
 
-    *out = fbl::move(bc);
+    *out = std::move(bc);
     return ZX_OK;
 }
 
@@ -100,15 +102,15 @@ zx_status_t Bcache::GetDevicePath(size_t buffer_len, char* out_name, size_t* out
 
 }
 
-zx_status_t Bcache::AttachVmo(zx_handle_t vmo, vmoid_t* out) const {
-    zx_handle_t xfer_vmo;
-    zx_status_t status = zx_handle_duplicate(vmo, ZX_RIGHT_SAME_RIGHTS, &xfer_vmo);
+zx_status_t Bcache::AttachVmo(const zx::vmo& vmo, vmoid_t* out) const {
+    zx::vmo xfer_vmo;
+    zx_status_t status = vmo.duplicate(ZX_RIGHT_SAME_RIGHTS, &xfer_vmo);
     if (status != ZX_OK) {
         return status;
     }
-    ssize_t r = ioctl_block_attach_vmo(fd_.get(), &xfer_vmo, out);
+    zx_handle_t raw_vmo = xfer_vmo.release();
+    ssize_t r = ioctl_block_attach_vmo(fd_.get(), &raw_vmo, out);
     if (r < 0) {
-        zx_handle_close(xfer_vmo);
         return static_cast<zx_status_t>(r);
     }
     return ZX_OK;
@@ -116,7 +118,7 @@ zx_status_t Bcache::AttachVmo(zx_handle_t vmo, vmoid_t* out) const {
 #endif
 
 Bcache::Bcache(fbl::unique_fd fd, uint32_t blockmax) :
-    fd_(fbl::move(fd)), blockmax_(blockmax) {}
+    fd_(std::move(fd)), blockmax_(blockmax) {}
 
 Bcache::~Bcache() {
 #ifdef __Fuchsia__
@@ -140,20 +142,19 @@ zx_status_t Bcache::SetSparse(off_t offset, const fbl::Vector<size_t>& extent_le
         return ZX_ERR_ALREADY_BOUND;
     }
 
-    ZX_ASSERT(extent_lengths.size() == EXTENT_COUNT);
+    ZX_ASSERT(extent_lengths.size() == kExtentCount);
 
     fbl::AllocChecker ac;
-    extent_lengths_.reset(new (&ac) size_t[EXTENT_COUNT], EXTENT_COUNT);
+    extent_lengths_.reset(new (&ac) size_t[kExtentCount], kExtentCount);
 
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
 
-    extent_lengths_[0] = extent_lengths[0];
-    extent_lengths_[1] = extent_lengths[1];
-    extent_lengths_[2] = extent_lengths[2];
-    extent_lengths_[3] = extent_lengths[3];
-    extent_lengths_[4] = extent_lengths[4];
+    for (size_t i = 0; i < extent_lengths.size(); i++) {
+        extent_lengths_[i] = extent_lengths[i];
+    }
+
     offset_ = offset;
     return ZX_OK;
 }

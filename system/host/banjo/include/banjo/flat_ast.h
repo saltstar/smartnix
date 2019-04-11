@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_BANJO_INCLUDE_BANJO_FLAT_AST_H_
 #define ZIRCON_SYSTEM_HOST_BANJO_INCLUDE_BANJO_FLAT_AST_H_
@@ -89,18 +92,6 @@ struct LiteralConstant : Constant {
         : Constant(Kind::kLiteral), literal(std::move(literal)) {}
 
     std::unique_ptr<raw::Literal> literal;
-};
-
-struct Ordinal {
-    Ordinal(std::unique_ptr<raw::Ordinal> literal, uint32_t value)
-        : literal_(std::move(literal)), value_(value) {}
-
-    uint32_t Value() const { return value_; }
-    raw::SourceElement* source_element() { return literal_ ? literal_.get() : nullptr; }
-
-private:
-    std::unique_ptr<raw::Ordinal> literal_;
-    uint32_t value_;
 };
 
 template <typename IntType>
@@ -409,9 +400,9 @@ struct Interface : public Decl {
         Method& operator=(Method&&) = default;
 
         Method(std::unique_ptr<raw::AttributeList> attributes,
-               Ordinal ordinal, SourceLocation name, std::unique_ptr<Message> maybe_request,
+               SourceLocation name, std::unique_ptr<Message> maybe_request,
                std::unique_ptr<Message> maybe_response)
-            : attributes(std::move(attributes)), ordinal(std::move(ordinal)), name(std::move(name)),
+            : attributes(std::move(attributes)), name(std::move(name)),
               maybe_request(std::move(maybe_request)), maybe_response(std::move(maybe_response)) {
             assert(this->maybe_request != nullptr || this->maybe_response != nullptr);
         }
@@ -420,7 +411,6 @@ struct Interface : public Decl {
         banjo::StringView GetAttribute(banjo::StringView name) const;
 
         std::unique_ptr<raw::AttributeList> attributes;
-        Ordinal ordinal;
         SourceLocation name;
         std::unique_ptr<Message> maybe_request;
         std::unique_ptr<Message> maybe_response;
@@ -627,38 +617,6 @@ public:
     // constant, say.
     template <typename IntType>
     bool ParseIntegerLiteral(const raw::NumericLiteral* literal, IntType* out_value) const {
-        if (!literal) {
-            return false;
-        }
-        auto data = literal->location().data();
-        std::string string_data(data.data(), data.data() + data.size());
-        if (std::is_unsigned<IntType>::value) {
-            errno = 0;
-            unsigned long long value = strtoull(string_data.data(), nullptr, 0);
-            if (errno != 0)
-                return false;
-            if (value > std::numeric_limits<IntType>::max())
-                return false;
-            *out_value = static_cast<IntType>(value);
-        } else {
-            errno = 0;
-            long long value = strtoll(string_data.data(), nullptr, 0);
-            if (errno != 0) {
-                return false;
-            }
-            if (value > std::numeric_limits<IntType>::max()) {
-                return false;
-            }
-            if (value < std::numeric_limits<IntType>::min()) {
-                return false;
-            }
-            *out_value = static_cast<IntType>(value);
-        }
-        return true;
-    }
-
-    template <typename IntType>
-    bool ParseOrdinal(const raw::Ordinal* literal, IntType* out_value) const {
         if (!literal) {
             return false;
         }

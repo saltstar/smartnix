@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Thin layer that writes/reads to audio registers in the EE_AUDIO block and
 // the PDM block.
@@ -9,7 +12,7 @@ __BEGIN_CDECLS;
 #include <ddk/device.h>
 #include <ddk/mmio-buffer.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/device.h>
 
 #include "a113-audio-regs.h"
 

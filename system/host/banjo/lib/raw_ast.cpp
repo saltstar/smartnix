@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // This file contains the implementations of the Accept methods for the AST
 // nodes.  Generally, all they do is invoke the appropriate TreeVisitor method
@@ -50,10 +53,6 @@ void IdentifierConstant::Accept(TreeVisitor& visitor) {
 void LiteralConstant::Accept(TreeVisitor& visitor) {
     SourceElementMark sem(visitor, *this);
     visitor.OnLiteral(literal);
-}
-
-void Ordinal::Accept(TreeVisitor& visitor) {
-    SourceElementMark sem(visitor, *this);
 }
 
 void Attribute::Accept(TreeVisitor& visitor) {
@@ -176,7 +175,6 @@ void InterfaceMethod::Accept(TreeVisitor& visitor) {
     if (attributes != nullptr) {
         visitor.OnAttributeList(attributes);
     }
-    visitor.OnOrdinal(*ordinal);
     visitor.OnIdentifier(identifier);
     if (maybe_request != nullptr) {
         visitor.OnParameterList(maybe_request);

@@ -1,10 +1,11 @@
 
 #pragma once
 
+#include <fbl/limits.h>
+#include <ktl/unique_ptr.h>
+#include <ktl/move.h>
 #include <vm/vm_aspace.h>
 #include <vm/vm_object.h>
-#include <fbl/limits.h>
-#include <fbl/unique_ptr.h>
 
 namespace hypervisor {
 
@@ -15,14 +16,14 @@ class GuestPtr {
 public:
     GuestPtr() = default;
     GuestPtr(fbl::RefPtr<VmMapping> mapping, zx_vaddr_t offset)
-        : mapping_(fbl::move(mapping)), offset_(offset) {}
+        : mapping_(ktl::move(mapping)), offset_(offset) {}
     GuestPtr(GuestPtr&& o)
-        : mapping_(fbl::move(o.mapping_)), offset_(o.offset_) {}
+        : mapping_(ktl::move(o.mapping_)), offset_(o.offset_) {}
     ~GuestPtr() { reset(); }
     DISALLOW_COPY_AND_ASSIGN_ALLOW_MOVE(GuestPtr);
 
     GuestPtr& operator=(GuestPtr&& o) {
-        mapping_ = fbl::move(o.mapping_);
+        mapping_ = ktl::move(o.mapping_);
         offset_ = o.offset_;
         return *this;
     }
@@ -53,7 +54,7 @@ public:
 #ifdef ARCH_ARM64
                               uint8_t vmid,
 #endif
-                              fbl::unique_ptr<GuestPhysicalAddressSpace>* gpas);
+                              ktl::unique_ptr<GuestPhysicalAddressSpace>* gpas);
 
     ~GuestPhysicalAddressSpace();
 
@@ -71,11 +72,5 @@ public:
 private:
     fbl::RefPtr<VmAspace> guest_aspace_;
 };
-
-static inline zx_status_t guest_lookup_page(void* context, size_t offset, size_t index,
-                                            zx_paddr_t pa) {
-    *static_cast<zx_paddr_t*>(context) = pa;
-    return ZX_OK;
-}
 
 } // namespace hypervisor

@@ -8,9 +8,11 @@
 //
 // This file is also compiled with and without the NTRACE macro.
 
-#pragma once
+#ifndef ZIRCON_SYSTEM_UTEST_TRACE_EVENT_TESTS_COMMON_H_
+#define ZIRCON_SYSTEM_UTEST_TRACE_EVENT_TESTS_COMMON_H_
 
 #include <trace/event.h>
+#include <trace/event_args.h>
 
 #include <unittest/unittest.h>
 #include <zircon/syscalls.h>
@@ -169,11 +171,11 @@ static bool test_counter(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"k1\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"k1\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", Counter(id: 1), {k1: int32(1)})\n\
 String(index: 5, \"k2\")\n\
 String(index: 6, \"k3\")\n\
@@ -194,7 +196,7 @@ static bool test_duration(void) {
         TRACE_DURATION("+enabled", "name");
         TRACE_DURATION("+enabled", "name", STR_ARGS1);
         TRACE_DURATION("+enabled", "name", STR_ARGS4);
-    } // end events are written when the scope exits
+    } // complete duration events are written when the scope exits
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
@@ -202,16 +204,13 @@ String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
 String(index: 3, \"name\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {})\n\
 String(index: 4, \"k1\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {k1: string(\"v1\")})\n\
 String(index: 5, \"k2\")\n\
 String(index: 6, \"k3\")\n\
 String(index: 7, \"k4\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {k1: string(\"v1\"), k2: string(\"v2\"), k3: string(\"v3\"), k4: string(\"v4\")})\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationEnd, {})\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationEnd, {})\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationEnd, {})\n\
+Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationComplete(end_ts: <>), {k1: string(\"v1\"), k2: string(\"v2\"), k3: string(\"v3\"), k4: string(\"v4\")})\n\
+Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationComplete(end_ts: <>), {k1: string(\"v1\")})\n\
+Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationComplete(end_ts: <>), {})\n\
 ",
                    "");
 
@@ -470,146 +469,6 @@ KernelObject(koid: <>, type: event, name: \"\", {k1: string(\"v1\"), k2: string(
     END_TRACE_TEST;
 }
 
-static bool test_vthread_duration_begin(void) {
-    BEGIN_TRACE_TEST;
-
-    fixture_start_tracing();
-
-    TRACE_VTHREAD_DURATION_BEGIN("+enabled", "name", "virtual-thread", 1u);
-    TRACE_VTHREAD_DURATION_BEGIN("+enabled", "name", "virtual-thread", 1u, STR_ARGS1);
-    TRACE_VTHREAD_DURATION_BEGIN("+enabled", "name", "virtual-thread", 1u, STR_ARGS4);
-
-    ASSERT_RECORDS("\
-String(index: 1, \"+enabled\")\n\
-String(index: 2, \"process\")\n\
-KernelObject(koid: <>, type: thread, name: \"virtual-thread\", {process: koid(<>)})\n\
-Thread(index: 1, <>)\n\
-String(index: 3, \"name\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {})\n\
-String(index: 4, \"k1\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {k1: string(\"v1\")})\n\
-String(index: 5, \"k2\")\n\
-String(index: 6, \"k3\")\n\
-String(index: 7, \"k4\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {k1: string(\"v1\"), k2: string(\"v2\"), k3: string(\"v3\"), k4: string(\"v4\")})\n\
-",
-                   "");
-
-    END_TRACE_TEST;
-}
-
-static bool test_vthread_duration_end(void) {
-    BEGIN_TRACE_TEST;
-
-    fixture_start_tracing();
-
-    TRACE_VTHREAD_DURATION_END("+enabled", "name", "virtual-thread", 1u);
-    TRACE_VTHREAD_DURATION_END("+enabled", "name", "virtual-thread", 1u, STR_ARGS1);
-    TRACE_VTHREAD_DURATION_END("+enabled", "name", "virtual-thread", 1u, STR_ARGS4);
-
-    ASSERT_RECORDS("\
-String(index: 1, \"+enabled\")\n\
-String(index: 2, \"process\")\n\
-KernelObject(koid: <>, type: thread, name: \"virtual-thread\", {process: koid(<>)})\n\
-Thread(index: 1, <>)\n\
-String(index: 3, \"name\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationEnd, {})\n\
-String(index: 4, \"k1\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationEnd, {k1: string(\"v1\")})\n\
-String(index: 5, \"k2\")\n\
-String(index: 6, \"k3\")\n\
-String(index: 7, \"k4\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationEnd, {k1: string(\"v1\"), k2: string(\"v2\"), k3: string(\"v3\"), k4: string(\"v4\")})\n\
-",
-                   "");
-
-    END_TRACE_TEST;
-}
-
-static bool test_vthread_flow_begin(void) {
-    BEGIN_TRACE_TEST;
-
-    fixture_start_tracing();
-
-    TRACE_VTHREAD_FLOW_BEGIN("+enabled", "name", "virtual-thread", 1u, 2u);
-    TRACE_VTHREAD_FLOW_BEGIN("+enabled", "name", "virtual-thread", 1u, 2u, STR_ARGS1);
-    TRACE_VTHREAD_FLOW_BEGIN("+enabled", "name", "virtual-thread", 1u, 2u, STR_ARGS4);
-
-    ASSERT_RECORDS("\
-String(index: 1, \"+enabled\")\n\
-String(index: 2, \"process\")\n\
-KernelObject(koid: <>, type: thread, name: \"virtual-thread\", {process: koid(<>)})\n\
-Thread(index: 1, <>)\n\
-String(index: 3, \"name\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowBegin(id: 2), {})\n\
-String(index: 4, \"k1\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowBegin(id: 2), {k1: string(\"v1\")})\n\
-String(index: 5, \"k2\")\n\
-String(index: 6, \"k3\")\n\
-String(index: 7, \"k4\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowBegin(id: 2), {k1: string(\"v1\"), k2: string(\"v2\"), k3: string(\"v3\"), k4: string(\"v4\")})\n\
-",
-                   "");
-
-    END_TRACE_TEST;
-}
-
-static bool test_vthread_flow_step(void) {
-    BEGIN_TRACE_TEST;
-
-    fixture_start_tracing();
-
-    TRACE_VTHREAD_FLOW_STEP("+enabled", "name", "virtual-thread", 1u, 2u);
-    TRACE_VTHREAD_FLOW_STEP("+enabled", "name", "virtual-thread", 1u, 2u, STR_ARGS1);
-    TRACE_VTHREAD_FLOW_STEP("+enabled", "name", "virtual-thread", 1u, 2u, STR_ARGS4);
-
-    ASSERT_RECORDS("\
-String(index: 1, \"+enabled\")\n\
-String(index: 2, \"process\")\n\
-KernelObject(koid: <>, type: thread, name: \"virtual-thread\", {process: koid(<>)})\n\
-Thread(index: 1, <>)\n\
-String(index: 3, \"name\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowStep(id: 2), {})\n\
-String(index: 4, \"k1\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowStep(id: 2), {k1: string(\"v1\")})\n\
-String(index: 5, \"k2\")\n\
-String(index: 6, \"k3\")\n\
-String(index: 7, \"k4\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowStep(id: 2), {k1: string(\"v1\"), k2: string(\"v2\"), k3: string(\"v3\"), k4: string(\"v4\")})\n\
-",
-                   "");
-
-    END_TRACE_TEST;
-}
-
-static bool test_vthread_flow_end(void) {
-    BEGIN_TRACE_TEST;
-
-    fixture_start_tracing();
-
-    TRACE_VTHREAD_FLOW_END("+enabled", "name", "virtual-thread", 1u, 2u);
-    TRACE_VTHREAD_FLOW_END("+enabled", "name", "virtual-thread", 1u, 2u, STR_ARGS1);
-    TRACE_VTHREAD_FLOW_END("+enabled", "name", "virtual-thread", 1u, 2u, STR_ARGS4);
-
-    ASSERT_RECORDS("\
-String(index: 1, \"+enabled\")\n\
-String(index: 2, \"process\")\n\
-KernelObject(koid: <>, type: thread, name: \"virtual-thread\", {process: koid(<>)})\n\
-Thread(index: 1, <>)\n\
-String(index: 3, \"name\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowEnd(id: 2), {})\n\
-String(index: 4, \"k1\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowEnd(id: 2), {k1: string(\"v1\")})\n\
-String(index: 5, \"k2\")\n\
-String(index: 6, \"k3\")\n\
-String(index: 7, \"k4\")\n\
-Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", FlowEnd(id: 2), {k1: string(\"v1\"), k2: string(\"v2\"), k3: string(\"v3\"), k4: string(\"v4\")})\n\
-",
-                   "");
-
-    END_TRACE_TEST;
-}
-
 static bool test_null_arguments(void) {
     BEGIN_TRACE_TEST;
 
@@ -623,11 +482,11 @@ static bool test_null_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: null})\n\
 ",
                    "\
@@ -653,11 +512,11 @@ static bool test_bool_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: uint32(1)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: uint32(0)})\n\
 ",
@@ -692,11 +551,11 @@ static bool test_int32_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int32(-2147483648)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int32(0)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int32(2147483647)})\n\
@@ -735,11 +594,11 @@ static bool test_uint32_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: uint32(0)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: uint32(4294967295)})\n\
 ",
@@ -772,11 +631,11 @@ static bool test_int64_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int64(-9223372036854775808)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int64(0)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int64(9223372036854775807)})\n\
@@ -805,11 +664,11 @@ static bool test_uint64_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: uint64(0)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: uint64(18446744073709551615)})\n\
 ",
@@ -896,11 +755,11 @@ static bool test_enum_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int32(-2147483648)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int32(0)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: int32(2147483647)})\n\
@@ -953,11 +812,11 @@ static bool test_double_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: double(1.000000)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: double(1.000000)})\n\
 ",
@@ -987,11 +846,11 @@ static bool test_char_array_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"\")})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"\")})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"literal\")})\n\
@@ -1028,11 +887,11 @@ static bool test_string_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"\")})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"\")})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"literal\")})\n\
@@ -1050,25 +909,26 @@ Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {ke
     END_TRACE_TEST;
 }
 
+// This function is kept pending resolution of PT-66 when TA_STRING_LITERAL()
+// is re-added.
 static bool test_string_literal_arguments(void) {
     BEGIN_TRACE_TEST;
 
     fixture_start_tracing();
 
-    TRACE_DURATION_BEGIN("+enabled", "name", "key", TA_STRING_LITERAL(NULL));
-    TRACE_DURATION_BEGIN("+enabled", "name", "key", TA_STRING_LITERAL(""));
-    TRACE_DURATION_BEGIN("+enabled", "name", "key", TA_STRING_LITERAL("literal"));
+    TRACE_DURATION_BEGIN("+enabled", "name", "key", TA_STRING(NULL));
+    TRACE_DURATION_BEGIN("+enabled", "name", "key", TA_STRING(""));
+    TRACE_DURATION_BEGIN("+enabled", "name", "key", TA_STRING("literal"));
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"\")})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"\")})\n\
-String(index: 5, \"literal\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: string(\"literal\")})\n\
 ",
                    "");
@@ -1112,11 +972,11 @@ static bool test_pointer_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: pointer(0)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: pointer(0)})\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: pointer(0)})\n\
@@ -1153,11 +1013,11 @@ static bool test_koid_arguments(void) {
 
     ASSERT_RECORDS("\
 String(index: 1, \"+enabled\")\n\
-String(index: 2, \"key\")\n\
-String(index: 3, \"process\")\n\
+String(index: 2, \"process\")\n\
 KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
 Thread(index: 1, <>)\n\
-String(index: 4, \"name\")\n\
+String(index: 3, \"name\")\n\
+String(index: 4, \"key\")\n\
 Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {key: koid(<>)})\n\
 ",
                    "");
@@ -1217,6 +1077,70 @@ Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {k1
     END_TRACE_TEST;
 }
 
+static bool test_declare_args(void) {
+    BEGIN_TRACE_TEST;
+
+#ifndef NTRACE
+    fixture_start_tracing();
+
+    trace_thread_ref_t thread_ref;
+    trace_string_ref_t category_ref;
+    trace_string_ref_t name_ref;
+    size_t num_args;
+
+    trace_context_t* context =
+        trace_acquire_context_for_category("+enabled", &category_ref);
+    ASSERT_NONNULL(context, "");
+
+    trace_context_register_current_thread(context, &thread_ref);
+    trace_context_register_string_literal(context, "name", &name_ref);
+
+    num_args = 0;
+    TRACE_DECLARE_ARGS(context, args0);
+    ASSERT_EQ(TRACE_NUM_ARGS(args0), num_args, "");
+    TRACE_COMPLETE_ARGS(context, args0, num_args);
+    trace_context_write_duration_begin_event_record(
+        context, zx_ticks_get(), &thread_ref, &category_ref,
+        &name_ref, args0, num_args);
+
+    num_args = 1;
+    TRACE_DECLARE_ARGS(context, args1, STR_ARGS1);
+    ASSERT_EQ(TRACE_NUM_ARGS(args1), num_args, "");
+    TRACE_COMPLETE_ARGS(context, args1, num_args);
+    trace_context_write_duration_begin_event_record(
+        context, zx_ticks_get(), &thread_ref, &category_ref,
+        &name_ref, args1, num_args);
+
+    num_args = 4;
+    TRACE_DECLARE_ARGS(context, args4, STR_ARGS4);
+    ASSERT_EQ(TRACE_NUM_ARGS(args4), num_args, "");
+    TRACE_COMPLETE_ARGS(context, args4, num_args);
+    trace_context_write_duration_begin_event_record(
+        context, zx_ticks_get(), &thread_ref, &category_ref,
+        &name_ref, args4, num_args);
+
+    trace_release_context(context);
+
+    ASSERT_RECORDS("\
+String(index: 1, \"+enabled\")\n\
+String(index: 2, \"process\")\n\
+KernelObject(koid: <>, type: thread, name: \"initial-thread\", {process: koid(<>)})\n\
+Thread(index: 1, <>)\n\
+String(index: 3, \"name\")\n\
+Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {})\n\
+String(index: 4, \"k1\")\n\
+Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {k1: string(\"v1\")})\n\
+String(index: 5, \"k2\")\n\
+String(index: 6, \"k3\")\n\
+String(index: 7, \"k4\")\n\
+Event(ts: <>, pt: <>, category: \"+enabled\", name: \"name\", DurationBegin, {k1: string(\"v1\"), k2: string(\"v2\"), k3: string(\"v3\"), k4: string(\"v4\")})\n\
+",
+                   "");
+#endif // !NTRACE
+
+    END_TRACE_TEST;
+}
+
 #ifdef __cplusplus
 
 #ifndef NTRACE
@@ -1256,11 +1180,6 @@ RUN_TEST(test_flow_begin)
 RUN_TEST(test_flow_step)
 RUN_TEST(test_flow_end)
 RUN_TEST(test_kernel_object)
-RUN_TEST(test_vthread_duration_begin)
-RUN_TEST(test_vthread_duration_end)
-RUN_TEST(test_vthread_flow_begin)
-RUN_TEST(test_vthread_flow_step)
-RUN_TEST(test_vthread_flow_end)
 RUN_TEST(test_null_arguments)
 RUN_TEST(test_bool_arguments)
 RUN_TEST(test_int32_arguments)
@@ -1279,9 +1198,12 @@ RUN_TEST(test_koid_arguments_no_optim)
 RUN_TEST(test_koid_arguments)
 #endif
 RUN_TEST(test_all_argument_counts)
+RUN_TEST(test_declare_args)
 _END_TEST_CASE(_NAME)
 
 #undef _LANG
 #undef _NAME
 #undef _BEGIN_TEST_CASE
 #undef _END_TEST_CASE
+
+#endif // ZIRCON_SYSTEM_UTEST_TRACE_EVENT_TESTS_COMMON_H_

@@ -1,19 +1,19 @@
 // Copyright 2018 The Fuchsia Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+#include <libzbi/zbi-cpp.h>
 
 #include <assert.h>
+#include <memory>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <fbl/auto_call.h>
+#include <pretty/hexdump.h>
+#include <unittest/unittest.h>
 #include <zircon/boot/image.h>
 #include <zircon/compiler.h>
-
-#include <unittest/unittest.h>
-
-#include <libzbi/zbi-cpp.h>
 
 const char kTestCmdline[] = "0123";
 constexpr size_t kCmdlinePayloadLen =
@@ -58,7 +58,9 @@ static uint8_t* get_test_zbi_extra(const size_t extra_bytes) {
     const size_t kAllocSize = sizeof(test_zbi_t) + extra_bytes;
     test_zbi_t* result = reinterpret_cast<test_zbi_t*>(malloc(kAllocSize));
 
-    if (!result) return nullptr;
+    if (!result) {
+        return nullptr;
+    }
 
     // Extra bytes are filled with non-zero bytes to test zero padding.
     if (extra_bytes > 0) {
@@ -197,7 +199,7 @@ static bool ZbiTestTruncated(void) {
     zbi::Zbi image(test_zbi);
 
     zbi_header_t* bootdata_header = reinterpret_cast<zbi_header_t*>(test_zbi);
-    bootdata_header->length -= 8;   // Truncate the image.
+    bootdata_header->length -= 8; // Truncate the image.
 
     zbi_header_t* trace = nullptr;
     ASSERT_NE(image.Check(&trace), ZBI_RESULT_OK,
@@ -240,12 +242,12 @@ static bool ZbiTestAppend(void) {
     zbi::Zbi image(test_zbi, kBufferSize);
 
     zbi_result_t result = image.AppendSection(
-        static_cast<uint32_t>(sizeof(kAppendRD)),  // Length
-        ZBI_TYPE_STORAGE_RAMDISK,                  // Type
-        0,                                         // Extra
-        0,                                         // Flags
-        reinterpret_cast<const void*>(kAppendRD)   // Payload.
-    );
+        static_cast<uint32_t>(sizeof(kAppendRD)), // Length
+        ZBI_TYPE_STORAGE_RAMDISK,                 // Type
+        0,                                        // Extra
+        0,                                        // Flags
+        reinterpret_cast<const void*>(kAppendRD)  // Payload.
+        );
 
     ASSERT_EQ(result, ZBI_RESULT_OK, "Append failed");
 
@@ -275,13 +277,13 @@ static bool ZbiTestAppendFull(void) {
 
     ASSERT_NONNULL(test_zbi, "failed to alloc test image");
 
-    auto cleanup = fbl::MakeAutoCall([test_zbi]{
+    auto cleanup = fbl::MakeAutoCall([test_zbi] {
         free(test_zbi);
     });
 
     // Fill the space after the buffer with sentinel bytes and make sure those
     // bytes are never touched by the append operation.
-    const uint8_t kSentinelByte = 0xa5;    // 0b1010 1010 0101 0101
+    const uint8_t kSentinelByte = 0xa5; // 0b1010 1010 0101 0101
     memset(test_zbi + kZbiSize, kSentinelByte, kExtraSentinelLength);
 
     zbi::Zbi image(test_zbi, kZbiSize);
@@ -293,12 +295,11 @@ static bool ZbiTestAppendFull(void) {
     // Try to append a buffer that's one byte too big and make sure we reject
     // it.
     zbi_result_t res = image.AppendSection(
-        kMaxAppendPayloadSize + 1,      // One more than the max length!
+        kMaxAppendPayloadSize + 1, // One more than the max length!
         ZBI_TYPE_STORAGE_RAMDISK,
         0,
         0,
-        reinterpret_cast<const void*>(dataBuffer)
-    );
+        reinterpret_cast<const void*>(dataBuffer));
 
     ASSERT_NE(res, ZBI_RESULT_OK, "zbi appended a section that was too big");
 
@@ -309,8 +310,7 @@ static bool ZbiTestAppendFull(void) {
         ZBI_TYPE_STORAGE_RAMDISK,
         0,
         0,
-        reinterpret_cast<const void*>(dataBuffer)
-    );
+        reinterpret_cast<const void*>(dataBuffer));
 
     ASSERT_EQ(res, ZBI_RESULT_OK, "zbi_append rejected a section that should "
                                   "have fit.");
@@ -331,7 +331,6 @@ static bool ZbiTestAppendMulti(void) {
     auto cleanup = fbl::MakeAutoCall([reference_zbi]() {
         free(reference_zbi);
     });
-
 
     alignas(ZBI_ALIGNMENT) uint8_t test_zbi[sizeof(test_zbi_t)];
     zbi_header_t* hdr = reinterpret_cast<zbi_header_t*>(test_zbi);
@@ -362,13 +361,172 @@ static bool ZbiTestAppendMulti(void) {
     END_TEST;
 }
 
+constexpr size_t kTestBufferSize = 1024;
+// Test that we can initialize empty buffers as ZBI containers.
+static bool ZbiTestInit(void) {
+    BEGIN_TEST;
+
+    std::unique_ptr<uint8_t[]> buffer;
+    buffer.reset(new uint8_t[kTestBufferSize]);
+
+    zbi::Zbi image(buffer.get(), kTestBufferSize);
+    zbi_result_t result = image.Reset();
+    ASSERT_EQ(result, ZBI_RESULT_OK);
+
+    // Make sure that we've initialized a valid image.
+    ASSERT_EQ(image.Check(nullptr), ZBI_RESULT_OK);
+
+    result = image.AppendSection(sizeof(kTestCmdline), ZBI_TYPE_CMDLINE, 0, 0, kTestCmdline);
+    ASSERT_EQ(result, ZBI_RESULT_OK);
+
+    END_TEST;
+}
+
+// Test that we don't try to create a ZBI in a container that's not big enough.
+static bool ZbiTestInitTooSmall(void) {
+    BEGIN_TEST;
+
+    constexpr uint8_t kSentinel = 0xab;
+
+    // If all goes well, we should never write to this buffer.
+    std::unique_ptr<uint8_t[]> buffer;
+    buffer.reset(new uint8_t[kTestBufferSize]);
+
+    // Write a known value into the buffer to ensure that it's not touched.
+    memset(buffer.get(), kSentinel, kTestBufferSize);
+
+    // Create a zbi that's too small to even contain a header.
+    constexpr size_t kMinBufferSize = sizeof(zbi_header_t);
+    zbi::Zbi image(buffer.get(), kMinBufferSize - 1);
+
+    // Try to initialize this ZBI (should fail because there's not enough buffer)
+    zbi_result_t result = image.Reset();
+    EXPECT_NE(result, ZBI_RESULT_OK);
+
+    // Make sure that the underlying buffer was never touched by libzbi.
+    for (size_t i = 0; i < kTestBufferSize; i++) {
+        EXPECT_EQ(buffer.get()[i], kSentinel);
+    }
+
+    END_TEST;
+}
+
+// Test the happy case.
+// Make two zbi containers, extend the first by tacking the second to the back
+// of it. Observe that everything went okay.
+static bool ZbiTestExtendOkay(void) {
+    BEGIN_TEST;
+
+    // Create a dst zbi that has enough space to contain the src zbi.
+    uint8_t* src_buf = get_test_zbi();
+
+    const size_t kExtraBytes = (reinterpret_cast<zbi_header_t*>(src_buf))->length;
+    const size_t kDstCapacity = kExtraBytes + sizeof(test_zbi);
+    uint8_t* dst_buf = get_test_zbi_extra(kExtraBytes);
+
+    auto cleanup = fbl::MakeAutoCall([src_buf, dst_buf] {
+        free(src_buf);
+        free(dst_buf);
+    });
+
+    // Count the number of sections in the source buffer and the destination
+    // buffer.
+    uint32_t src_sections = 0;
+    uint32_t dst_sections = 0;
+    uint32_t combined_sections = 0;
+
+    ASSERT_EQ(zbi_for_each(src_buf, check_contents, &src_sections), ZBI_RESULT_OK);
+    ASSERT_EQ(zbi_for_each(dst_buf, check_contents, &dst_sections), ZBI_RESULT_OK);
+
+    EXPECT_EQ(zbi_extend(dst_buf, kDstCapacity, src_buf), ZBI_RESULT_OK);
+
+    ASSERT_EQ(zbi_for_each(dst_buf, check_contents, &combined_sections), ZBI_RESULT_OK);
+    ASSERT_EQ(src_sections + dst_sections, combined_sections);
+
+    END_TEST;
+}
+
+static bool ZbiTestNoOverflow(void) {
+    BEGIN_TEST;
+    constexpr size_t kBufferSize = 1024;
+    constexpr size_t kUsableBufferSize = kBufferSize / 2;
+    constexpr uint8_t kSentinel = 0xab;
+
+    static_assert(kBufferSize % ZBI_ALIGNMENT == 0);
+    static_assert(kUsableBufferSize % ZBI_ALIGNMENT == 0);
+
+    uint8_t* dst_buffer = new uint8_t[kBufferSize];
+    std::unique_ptr<uint8_t[]> dst_deleter;
+    dst_deleter.reset(dst_buffer);
+    memset(dst_buffer, kSentinel, kBufferSize);
+
+    uint8_t* src_buffer = new uint8_t[kBufferSize];
+    std::unique_ptr<uint8_t[]> src_deleter;
+    src_deleter.reset(src_buffer);
+    memset(src_buffer, kSentinel, kBufferSize);
+
+    uint8_t* test_data = new uint8_t[kUsableBufferSize];
+    std::unique_ptr<uint8_t[]> test_data_deleter;
+    test_data_deleter.reset(test_data);
+    memset(test_data, 0x12, kUsableBufferSize);
+
+    ASSERT_EQ(zbi_init(dst_buffer, kUsableBufferSize), ZBI_RESULT_OK);
+    ASSERT_EQ(zbi_init(src_buffer, kUsableBufferSize), ZBI_RESULT_OK);
+
+    ASSERT_EQ(zbi_append_section(
+                  src_buffer,
+                  kUsableBufferSize,
+                  kUsableBufferSize - (sizeof(zbi_header_t) * 2), // Leave room for ZBI header _and_ section header
+                  ZBI_TYPE_CMDLINE,
+                  0, // Extra
+                  0, // Flags
+                  test_data),
+              ZBI_RESULT_OK);
+
+    ASSERT_EQ(zbi_extend(dst_buffer, kUsableBufferSize, src_buffer), ZBI_RESULT_OK);
+
+    // Make sure we haven't trampled any bytes that we shouldn't have.
+    for (size_t i = kUsableBufferSize; i < kUsableBufferSize; i++) {
+        ASSERT_EQ(dst_buffer[i], kSentinel);
+    }
+
+    ASSERT_EQ(zbi_init(dst_buffer, kUsableBufferSize), ZBI_RESULT_OK);
+
+    ASSERT_EQ(zbi_init(src_buffer, kUsableBufferSize + 1), ZBI_RESULT_OK);
+
+    ASSERT_EQ(zbi_append_section(
+                  src_buffer,
+                  ZBI_ALIGN(kUsableBufferSize + 1),
+                  (kUsableBufferSize + 1) - (sizeof(zbi_header_t) * 2), // This payload is too big.
+                  ZBI_TYPE_CMDLINE,
+                  0, // Extra
+                  0, // Flags
+                  test_data),
+              ZBI_RESULT_OK);
+
+    ASSERT_NE(zbi_extend(dst_buffer, kUsableBufferSize, src_buffer), ZBI_RESULT_OK);
+
+    END_TEST;
+}
+
 BEGIN_TEST_CASE(zbi_tests)
+// Basic tests.
 RUN_TEST(ZbiTestBasic)
 RUN_TEST(ZbiTestBadContainer)
 RUN_TEST(ZbiTestTruncated)
+
+// Append tests.
 RUN_TEST(ZbiTestAppend)
 RUN_TEST(ZbiTestAppendFull)
 RUN_TEST(ZbiTestAppendMulti)
+
+// Init tests.
+RUN_TEST(ZbiTestInit)
+RUN_TEST(ZbiTestInitTooSmall)
+
+// Extend tests.
+RUN_TEST(ZbiTestExtendOkay)
+RUN_TEST(ZbiTestNoOverflow)
 END_TEST_CASE(zbi_tests)
 
 int main(int argc, char** argv) {

@@ -33,7 +33,8 @@
 
 #include <list.h>
 #include <malloc.h>
-#include <object/c_user_thread.h>
+#include <object/process_dispatcher.h>
+#include <object/thread_dispatcher.h>
 #include <platform.h>
 #include <printf.h>
 #include <string.h>
@@ -106,7 +107,7 @@ static void invoke_user_callback(thread_t* t, enum thread_user_state_change new_
     TA_EXCL(thread_lock) {
     DEBUG_ASSERT(!arch_ints_disabled() || !spin_lock_held(&thread_lock));
     if (t->user_callback) {
-        t->user_callback(new_state, t->user_thread);
+        t->user_callback(new_state, t);
     }
 }
 
@@ -307,11 +308,11 @@ zx_status_t thread_detach_and_resume(thread_t* t) {
 }
 
 /**
- * @brief  Suspend a ready/running thread
+ * @brief  Suspend an initialized/ready/running thread
  *
  * @param t  Thread to suspend
  *
- * @return ZX_OK on success.
+ * @return ZX_OK on success, ZX_ERR_BAD_STATE if the thread is dead
  */
 zx_status_t thread_suspend(thread_t* t) {
     DEBUG_ASSERT(t->magic == THREAD_MAGIC);
@@ -319,7 +320,7 @@ zx_status_t thread_suspend(thread_t* t) {
 
     Guard<spin_lock_t, IrqSave> guard{ThreadLock::Get()};
 
-    if (t->state == THREAD_INITIAL || t->state == THREAD_DEATH) {
+    if (t->state == THREAD_DEATH) {
         return ZX_ERR_BAD_STATE;
     }
 
@@ -327,11 +328,20 @@ zx_status_t thread_suspend(thread_t* t) {
 
     bool local_resched = false;
     switch (t->state) {
-    case THREAD_INITIAL:
     case THREAD_DEATH:
-        // This should be unreachable because these two states were handled
-        // above.
+        // This should be unreachable because this state was handled above.
         panic("Unexpected thread state");
+    case THREAD_INITIAL:
+        // Thread hasn't been started yet, add it to the run queue to transition
+        // properly through the INITIAL -> READY state machine first, then it
+        // will see the signal and go to SUSPEND before running user code.
+        //
+        // Though the state here is still INITIAL, the higher-level code has
+        // already executed ThreadDispatcher::Start() so all the userspace
+        // entry data has been initialized and will be ready to go as soon as
+        // the thread is unsuspended.
+        local_resched = sched_unblock(t);
+        break;
     case THREAD_READY:
         // thread is ready to run and not blocked or suspended.
         // will wake up and deal with the signal soon.
@@ -347,6 +357,7 @@ zx_status_t thread_suspend(thread_t* t) {
         // thread is suspended already
         break;
     case THREAD_BLOCKED:
+    case THREAD_BLOCKED_READ_LOCK:
         // thread is blocked on something and marked interruptable
         if (t->interruptable) {
             wait_queue_unblock_thread(t, ZX_ERR_INTERNAL_INTR_RETRY);
@@ -587,6 +598,7 @@ void thread_kill(thread_t* t) {
         local_resched = sched_unblock(t);
         break;
     case THREAD_BLOCKED:
+    case THREAD_BLOCKED_READ_LOCK:
         // thread is blocked on something and marked interruptable
         if (t->interruptable) {
             wait_queue_unblock_thread(t, ZX_ERR_INTERNAL_INTR_KILLED);
@@ -840,7 +852,7 @@ static void thread_sleep_handler(timer_t* timer, zx_time_t now, void* arg) {
 #define DIV_SLEEP_SLACK 10u
 
 // computes the amount of slack the thread_sleep timer will use
-static uint64_t sleep_slack(zx_time_t deadline, zx_time_t now) {
+static zx_duration_t sleep_slack(zx_time_t deadline, zx_time_t now) {
     if (deadline < now) {
         return MIN_SLEEP_SLACK;
     }
@@ -852,18 +864,20 @@ static uint64_t sleep_slack(zx_time_t deadline, zx_time_t now) {
  * @brief  Put thread to sleep; deadline specified in ns
  *
  * This function puts the current thread to sleep until the specified
- * deadline has expired.
+ * deadline has occurred.
  *
  * Note that this function could continue to sleep after the specified deadline
- * if other threads are running.  When the deadline expires, this thread will
+ * if other threads are running.  When the deadline occurrs, this thread will
  * be placed at the head of the run queue.
  *
  * interruptable argument allows this routine to return early if the thread was signaled
  * for something.
  */
-zx_status_t thread_sleep_etc(zx_time_t deadline, bool interruptable) {
+zx_status_t thread_sleep_etc(const Deadline& deadline,
+                             bool interruptable,
+                             zx_time_t now) {
+
     thread_t* current_thread = get_current_thread();
-    zx_time_t now = current_time();
 
     DEBUG_ASSERT(current_thread->magic == THREAD_MAGIC);
     DEBUG_ASSERT(current_thread->state == THREAD_RUNNING);
@@ -871,7 +885,7 @@ zx_status_t thread_sleep_etc(zx_time_t deadline, bool interruptable) {
     DEBUG_ASSERT(!arch_blocking_disallowed());
 
     // Skip all of the work if the deadline has already passed.
-    if (deadline <= now) {
+    if (deadline.when() <= now) {
         return ZX_OK;
     }
 
@@ -890,8 +904,7 @@ zx_status_t thread_sleep_etc(zx_time_t deadline, bool interruptable) {
     }
 
     // set a one shot timer to wake us up and reschedule
-    timer_set(&timer, deadline,
-              TIMER_SLACK_LATE, sleep_slack(deadline, now), thread_sleep_handler, current_thread);
+    timer_set(&timer, deadline, thread_sleep_handler, current_thread);
 
     current_thread->state = THREAD_SLEEPING;
     current_thread->blocked_status = ZX_OK;
@@ -906,9 +919,22 @@ zx_status_t thread_sleep_etc(zx_time_t deadline, bool interruptable) {
     return current_thread->blocked_status;
 }
 
+zx_status_t thread_sleep(zx_time_t deadline) {
+    const zx_time_t now = current_time();
+    return thread_sleep_etc(Deadline::no_slack(deadline), false, now);
+}
+
 zx_status_t thread_sleep_relative(zx_duration_t delay) {
-    zx_time_t deadline = zx_time_add_duration(current_time(), delay);
-    return thread_sleep(deadline);
+    const zx_time_t now = current_time();
+    const Deadline deadline = Deadline::no_slack(zx_time_add_duration(now, delay));
+    return thread_sleep_etc(deadline, false, now);
+}
+
+zx_status_t thread_sleep_interruptable(zx_time_t deadline) {
+    const zx_time_t now = current_time();
+    const TimerSlack slack(sleep_slack(deadline, now), TIMER_SLACK_LATE);
+    const Deadline slackDeadline(deadline, slack);
+    return thread_sleep_etc(slackDeadline, true, now);
 }
 
 /**
@@ -1128,10 +1154,9 @@ thread_t* thread_create_idle_thread(cpu_num_t cpu_num) {
  *
  * Returns "kernel" if there is no owner.
  */
-
 void thread_owner_name(thread_t* t, char out_name[THREAD_NAME_LENGTH]) {
     if (t->user_thread) {
-        get_user_thread_process_name(t->user_thread, out_name);
+        t->user_thread->process()->get_name(out_name);
         return;
     }
     memcpy(out_name, "kernel", 7);
@@ -1148,6 +1173,7 @@ static const char* thread_state_to_str(enum thread_state state) {
     case THREAD_RUNNING:
         return "run";
     case THREAD_BLOCKED:
+    case THREAD_BLOCKED_READ_LOCK:
         return "blok";
     case THREAD_SLEEPING:
         return "slep";
@@ -1161,7 +1187,7 @@ static const char* thread_state_to_str(enum thread_state state) {
 /**
  * @brief  Dump debugging info about the specified thread.
  */
-void dump_thread(thread_t* t, bool full_dump) {
+void dump_thread_locked(thread_t* t, bool full_dump) {
     if (t->magic != THREAD_MAGIC) {
         dprintf(INFO, "dump_thread WARNING: thread at %p has bad magic\n", t);
     }
@@ -1209,14 +1235,14 @@ void dump_thread(thread_t* t, bool full_dump) {
     }
 }
 
+void dump_thread(thread_t* t, bool full) {
+    Guard<spin_lock_t, IrqSave> guard{ThreadLock::Get()};
+    dump_thread_locked(t, full);
+}
+
 /**
  * @brief  Dump debugging info about all threads
  */
-void dump_all_threads(bool full) {
-    Guard<spin_lock_t, IrqSave> guard{ThreadLock::Get()};
-    dump_all_threads_locked(full);
-}
-
 void dump_all_threads_locked(bool full) {
     thread_t* t;
 
@@ -1226,8 +1252,13 @@ void dump_all_threads_locked(bool full) {
             hexdump(t, sizeof(thread_t));
             break;
         }
-        dump_thread(t, full);
+        dump_thread_locked(t, full);
     }
+}
+
+void dump_all_threads(bool full) {
+    Guard<spin_lock_t, IrqSave> guard{ThreadLock::Get()};
+    dump_all_threads_locked(full);
 }
 
 void dump_thread_user_tid(uint64_t tid, bool full) {
@@ -1248,7 +1279,7 @@ void dump_thread_user_tid_locked(uint64_t tid, bool full) {
             hexdump(t, sizeof(thread_t));
             break;
         }
-        dump_thread(t, full);
+        dump_thread_locked(t, full);
     }
 }
 
@@ -1262,8 +1293,6 @@ thread_t* thread_id_to_thread_slow(uint64_t tid) {
 
     return NULL;
 }
-
-/** @} */
 
 // Used by ktrace at the start of a trace to ensure that all
 // the running threads, processes, and their names are known
@@ -1333,10 +1362,15 @@ static zx_status_t _thread_print_backtrace(thread_t* t, void* fp) {
         return ZX_ERR_BAD_STATE;
     }
 
+    // TODO(jakehehrlich): Remove the legacy format.
     for (size_t n = 0; n < count; n++) {
         printf("bt#%02zu: %p\n", n, tb.pc[n]);
     }
     printf("bt#%02zu: end\n", count);
+
+    for (size_t n = 0; n < count; n++) {
+        printf("{{{bt:%zu:%p}}}\n", n, tb.pc[n]);
+    }
 
     return ZX_OK;
 }
@@ -1394,6 +1428,7 @@ zx_status_t thread_print_backtrace(thread_t* t) {
     void* fp = NULL;
     switch (t->state) {
     case THREAD_BLOCKED:
+    case THREAD_BLOCKED_READ_LOCK:
     case THREAD_SLEEPING:
     case THREAD_SUSPENDED:
         // thread is blocked, so ask the arch code to get us a starting point

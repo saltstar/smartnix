@@ -8,10 +8,25 @@ MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := driver
 
-MODULE_SRCS := $(LOCAL_DIR)/test.c
+MODULE_SRCS := $(LOCAL_DIR)/test.cpp
 
-MODULE_STATIC_LIBS := system/ulib/ddk
+MODULE_STATIC_LIBS := \
+	system/ulib/ddk \
+	system/ulib/ddktl \
+	system/ulib/fbl \
+	system/ulib/fidl \
+	system/ulib/zx \
+	system/ulib/zxcpp \
 
-MODULE_LIBS := system/ulib/driver system/ulib/zircon system/ulib/c
+MODULE_LIBS := \
+	system/ulib/driver \
+	system/ulib/zircon \
+	system/ulib/c
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-test \
+
+MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-device-test \
 
 include make/module.mk

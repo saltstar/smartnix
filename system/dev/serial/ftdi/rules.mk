@@ -13,4 +13,11 @@ MODULE_STATIC_LIBS := system/ulib/ddk system/dev/lib/usb
 
 MODULE_LIBS := system/ulib/driver system/ulib/zircon system/ulib/c
 
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-serial \
+    system/banjo/ddk-protocol-serialimpl \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-composite \
+    system/banjo/ddk-protocol-usb-request \
+
 include make/module.mk

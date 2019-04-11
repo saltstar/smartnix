@@ -4,16 +4,18 @@
 
 #pragma once
 
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 #include <ddktl/device.h>
 #include <ddktl/mmio.h>
-#include <ddktl/protocol/gpio-impl.h>
-#include <ddktl/protocol/platform-device.h>
+#include <ddktl/protocol/gpioimpl.h>
+#include <ddktl/protocol/platform/device.h>
 #include <fbl/array.h>
 #include <fbl/mutex.h>
 #include <fbl/vector.h>
 #include <hw/reg.h>
 #include <inttypes.h>
+
+#include <utility>
 
 namespace gpio {
 
@@ -58,7 +60,7 @@ class AmlGxlGpio;
 using DeviceType = ddk::Device<AmlGxlGpio, ddk::Unbindable>;
 
 class AmlGxlGpio : public DeviceType,
-                   public ddk::GpioImplProtocol<AmlGxlGpio> {
+                   public ddk::GpioImplProtocol<AmlGxlGpio, ddk::base_protocol> {
 
 public:
     static zx_status_t Create(zx_device_t* parent);
@@ -68,7 +70,7 @@ public:
     zx_status_t GpioImplSetAltFunction(uint32_t pin, uint64_t function);
     zx_status_t GpioImplRead(uint32_t pin, uint8_t* out_value);
     zx_status_t GpioImplWrite(uint32_t pin, uint8_t value);
-    zx_status_t GpioImplGetInterrupt(uint32_t pin, uint32_t flags, zx_handle_t* out_handle);
+    zx_status_t GpioImplGetInterrupt(uint32_t pin, uint32_t flags, zx::interrupt* out_irq);
     zx_status_t GpioImplReleaseInterrupt(uint32_t pin);
     zx_status_t GpioImplSetPolarity(uint32_t pin, uint32_t polarity);
 
@@ -82,10 +84,10 @@ private:
                const AmlGpioInterrupt* gpio_interrupt, const AmlPinMuxBlock* pinmux_blocks,
                size_t block_count, fbl::Array<fbl::Mutex> block_locks,
                fbl::Array<uint16_t> irq_info)
-        : DeviceType(parent), pdev_(pdev), mmios_{fbl::move(mmio_gpio), fbl::move(mmio_gpio_a0)},
-          mmio_interrupt_(fbl::move(mmio_interrupt)), gpio_blocks_(gpio_blocks),
+        : DeviceType(parent), pdev_(pdev), mmios_{std::move(mmio_gpio), std::move(mmio_gpio_a0)},
+          mmio_interrupt_(std::move(mmio_interrupt)), gpio_blocks_(gpio_blocks),
           gpio_interrupt_(gpio_interrupt), pinmux_blocks_(pinmux_blocks), block_count_(block_count),
-          block_locks_(fbl::move(block_locks)), irq_info_(fbl::move(irq_info)), irq_status_(0) {}
+          block_locks_(std::move(block_locks)), irq_info_(std::move(irq_info)), irq_status_(0) {}
 
     // Note: The out_pin_index returned by this API is not the index of the pin
     // in the particular GPIO block. eg. if its 7, its not GPIOH7

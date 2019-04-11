@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <dirent.h>
 #include <errno.h>
@@ -8,15 +11,17 @@
 #include <fbl/auto_call.h>
 #include <fbl/function.h>
 #include <fs-management/fvm.h>
+#include <fuchsia/hardware/block/c/fidl.h>
+#include <fuchsia/hardware/skipblock/c/fidl.h>
 #include <gpt/cros.h>
-#include <lib/fdio/watcher.h>
 #include <lib/fdio/util.h>
+#include <lib/fdio/watcher.h>
 #include <lib/fzl/fdio.h>
 #include <zircon/device/device.h>
-#include <zircon/block/c/fidl.h>
-#include <zircon/skipblock/c/fidl.h>
 #include <zircon/status.h>
 #include <zxcrypt/volume.h>
+
+#include <utility>
 
 #include "device-partitioner.h"
 #include "pave-logging.h"
@@ -25,7 +30,6 @@
 namespace paver {
 
 bool (*TestBlockFilter)(const fbl::unique_fd&) = nullptr;
-bool (*TestSkipBlockFilter)(const fbl::unique_fd&) = nullptr;
 
 namespace {
 
@@ -95,7 +99,7 @@ fbl::unique_ptr<T> WrapUnique(T* ptr) {
 }
 
 
-zx_status_t OpenPartition(const char* path,
+zx_status_t OpenPartition(const fbl::unique_fd& devfs_root, const char* path,
                           fbl::Function<bool(const fbl::unique_fd&)> should_filter_file,
                           zx_duration_t timeout, fbl::unique_fd* out_partition) {
     ZX_ASSERT(path != nullptr);
@@ -107,7 +111,7 @@ zx_status_t OpenPartition(const char* path,
 
     CallbackInfo info = {
         .out_partition = out_partition,
-        .should_filter_file = fbl::move(should_filter_file),
+        .should_filter_file = std::move(should_filter_file),
     };
 
     auto cb = [](int dirfd, int event, const char* filename, void* cookie) {
@@ -126,12 +130,16 @@ zx_status_t OpenPartition(const char* path,
             return ZX_OK;
         }
         if (info->out_partition) {
-            *(info->out_partition) = fbl::move(devfd);
+            *(info->out_partition) = std::move(devfd);
         }
         return ZX_ERR_STOP;
     };
 
-    DIR* dir = opendir(path);
+    fbl::unique_fd dir_fd(openat(devfs_root.get(), path, O_RDWR));
+    if (!dir_fd) {
+        return ZX_ERR_IO;
+    }
+    DIR* dir = fdopendir(dir_fd.release());
     if (dir == nullptr) {
         return ZX_ERR_IO;
     }
@@ -144,10 +152,11 @@ zx_status_t OpenPartition(const char* path,
     return ZX_OK;
 }
 
-constexpr char kBlockDevPath[] = "/dev/class/block/";
+constexpr char kBlockDevPath[] = "class/block/";
 
-zx_status_t OpenBlockPartition(const uint8_t* unique_guid, const uint8_t* type_guid,
-                               zx_duration_t timeout, fbl::unique_fd* out_fd) {
+zx_status_t OpenBlockPartition(const fbl::unique_fd& devfs_root, const uint8_t* unique_guid,
+                               const uint8_t* type_guid, zx_duration_t timeout,
+                               fbl::unique_fd* out_fd) {
     ZX_ASSERT(unique_guid || type_guid);
 
     auto cb = [&](const fbl::unique_fd& fd) {
@@ -170,25 +179,22 @@ zx_status_t OpenBlockPartition(const uint8_t* unique_guid, const uint8_t* type_g
         return false;
     };
 
-    return OpenPartition(kBlockDevPath, cb, timeout, out_fd);
+    return OpenPartition(devfs_root, kBlockDevPath, cb, timeout, out_fd);
 }
 
-constexpr char kSkipBlockDevPath[] = "/dev/class/skip-block/";
+constexpr char kSkipBlockDevPath[] = "class/skip-block/";
 
-zx_status_t OpenSkipBlockPartition(const uint8_t* type_guid, zx_duration_t timeout,
-                                   fbl::unique_fd* out_fd) {
+zx_status_t OpenSkipBlockPartition(const fbl::unique_fd& devfs_root, const uint8_t* type_guid,
+                                   zx_duration_t timeout, fbl::unique_fd* out_fd) {
     ZX_ASSERT(type_guid);
 
     auto cb = [&](const fbl::unique_fd& fd) {
-        if (TestSkipBlockFilter && TestSkipBlockFilter(fd)) {
-            return true;
-        }
-
         fzl::FdioCaller caller(fbl::unique_fd(fd.get()));
 
         zx_status_t status;
-        zircon_skipblock_PartitionInfo info;
-        zircon_skipblock_SkipBlockGetPartitionInfo(caller.borrow_channel(), &status, &info);
+        fuchsia_hardware_skipblock_PartitionInfo info;
+        fuchsia_hardware_skipblock_SkipBlockGetPartitionInfo(caller.borrow_channel(), &status,
+                                                             &info);
         caller.release().release();
         if (status != ZX_OK || memcmp(info.partition_guid, type_guid, GUID_LEN) != 0) {
             return true;
@@ -196,24 +202,25 @@ zx_status_t OpenSkipBlockPartition(const uint8_t* type_guid, zx_duration_t timeo
         return false;
     };
 
-    return OpenPartition(kSkipBlockDevPath, cb, timeout, out_fd);
+    return OpenPartition(devfs_root, kSkipBlockDevPath, cb, timeout, out_fd);
 }
 
-bool HasSkipBlockDevice() {
+bool HasSkipBlockDevice(const fbl::unique_fd& devfs_root) {
     // Our proxy for detected a skip-block device is by checking for the
     // existence of a device enumerated under the skip-block class.
     const uint8_t type[GPT_GUID_LEN] = GUID_ZIRCON_A_VALUE;
-    return OpenSkipBlockPartition(type, ZX_SEC(1), nullptr) == ZX_OK;
+    return OpenSkipBlockPartition(devfs_root, type, ZX_SEC(1), nullptr) == ZX_OK;
 }
 
 // Attempts to open and overwrite the first block of the underlying
 // partition. Does not rebind partition drivers.
 //
 // At most one of |unique_guid| and |type_guid| may be nullptr.
-zx_status_t WipeBlockPartition(const uint8_t* unique_guid, const uint8_t* type_guid) {
+zx_status_t WipeBlockPartition(const fbl::unique_fd& devfs_root, const uint8_t* unique_guid,
+                               const uint8_t* type_guid) {
     zx_status_t status = ZX_OK;
     fbl::unique_fd fd;
-    if ((status = OpenBlockPartition(unique_guid, type_guid, ZX_SEC(3), &fd)) != ZX_OK) {
+    if ((status = OpenBlockPartition(devfs_root, unique_guid, type_guid, ZX_SEC(3), &fd)) != ZX_OK) {
         ERROR("Warning: Could not open partition to wipe: %s\n",
               zx_status_get_string(status));
         return status;
@@ -250,16 +257,18 @@ zx_status_t WipeBlockPartition(const uint8_t* unique_guid, const uint8_t* type_g
 } // namespace
 
 fbl::unique_ptr<DevicePartitioner> DevicePartitioner::Create() {
+    fbl::unique_fd devfs_root(open("/dev", O_RDWR));
     fbl::unique_ptr<DevicePartitioner> device_partitioner;
 #if defined(__x86_64__)
-    if ((CrosDevicePartitioner::Initialize(&device_partitioner) == ZX_OK) ||
-        (EfiDevicePartitioner::Initialize(&device_partitioner) == ZX_OK)) {
-        return fbl::move(device_partitioner);
+    if ((CrosDevicePartitioner::Initialize(devfs_root.duplicate(), &device_partitioner) == ZX_OK) ||
+        (EfiDevicePartitioner::Initialize(std::move(devfs_root), &device_partitioner) == ZX_OK)) {
+        return device_partitioner;
     }
 #elif defined(__aarch64__)
-    if ((SkipBlockDevicePartitioner::Initialize(&device_partitioner) == ZX_OK) ||
-        (FixedDevicePartitioner::Initialize(&device_partitioner) == ZX_OK)) {
-        return fbl::move(device_partitioner);
+    if ((SkipBlockDevicePartitioner::Initialize(devfs_root.duplicate(),
+                                                &device_partitioner) == ZX_OK) ||
+        (FixedDevicePartitioner::Initialize(std::move(devfs_root), &device_partitioner) == ZX_OK)) {
+        return device_partitioner;
     }
 #endif
     return nullptr;
@@ -269,8 +278,13 @@ fbl::unique_ptr<DevicePartitioner> DevicePartitioner::Create() {
  *                  GPT Common                        *
  *====================================================*/
 
-bool GptDevicePartitioner::FindTargetGptPath(fbl::String* out) {
-    DIR* d = opendir(kBlockDevPath);
+bool GptDevicePartitioner::FindTargetGptPath(const fbl::unique_fd& devfs_root, fbl::String* out) {
+    fbl::unique_fd d_fd(openat(devfs_root.get(), kBlockDevPath, O_RDWR));
+    if (!d_fd) {
+        ERROR("Cannot inspect block devices\n");
+        return false;
+    }
+    DIR* d = fdopendir(d_fd.release());
     if (d == nullptr) {
         ERROR("Cannot inspect block devices\n");
         return false;
@@ -308,9 +322,10 @@ bool GptDevicePartitioner::FindTargetGptPath(fbl::String* out) {
     return false;
 }
 
-zx_status_t GptDevicePartitioner::InitializeGpt(fbl::unique_ptr<GptDevicePartitioner>* gpt_out) {
+zx_status_t GptDevicePartitioner::InitializeGpt(fbl::unique_fd devfs_root,
+                                                fbl::unique_ptr<GptDevicePartitioner>* gpt_out) {
     fbl::String gpt_path;
-    if (!FindTargetGptPath(&gpt_path)) {
+    if (!FindTargetGptPath(devfs_root, &gpt_path)) {
         ERROR("Failed to find GPT\n");
         return ZX_ERR_NOT_FOUND;
     }
@@ -326,20 +341,19 @@ zx_status_t GptDevicePartitioner::InitializeGpt(fbl::unique_ptr<GptDevicePartiti
         return ZX_ERR_NOT_FOUND;
     }
 
-    gpt_device_t* gpt;
-    if (gpt_device_init(fd.get(), block_info.block_size, block_info.block_count, &gpt)) {
+    fbl::unique_ptr<GptDevice> gpt;
+    if (GptDevice::Create(fd.get(), block_info.block_size, block_info.block_count, &gpt) != ZX_OK) {
         ERROR("Failed to get GPT info\n");
         return ZX_ERR_BAD_STATE;
     }
 
-    auto releaser = fbl::MakeAutoCall([&]() { gpt_device_release(gpt); });
-    if (!gpt->valid) {
+    if (!gpt->Valid()) {
         ERROR("Located GPT is invalid; Attempting to initialize\n");
-        if (gpt_partition_remove_all(gpt)) {
+        if (gpt->RemoveAllPartitions() != ZX_OK) {
             ERROR("Failed to create empty GPT\n");
             return ZX_ERR_BAD_STATE;
         }
-        if (gpt_device_sync(gpt)) {
+        if (gpt->Sync() != ZX_OK) {
             ERROR("Failed to sync empty GPT\n");
             return ZX_ERR_BAD_STATE;
         }
@@ -357,8 +371,8 @@ zx_status_t GptDevicePartitioner::InitializeGpt(fbl::unique_ptr<GptDevicePartiti
         }
     }
 
-    releaser.cancel();
-    *gpt_out = fbl::move(WrapUnique(new GptDevicePartitioner(fbl::move(fd), gpt, block_info)));
+    *gpt_out = WrapUnique(new GptDevicePartitioner(std::move(devfs_root), std::move(fd),
+                                                   std::move(gpt), block_info));
     return ZX_OK;
 }
 
@@ -378,15 +392,15 @@ zx_status_t GptDevicePartitioner::FindFirstFit(size_t bytes_requested, size_t* s
     // For simplicity, include the 'start' and 'end' reserved spots as
     // partitions.
     size_t partition_count = 0;
-    PartitionPosition partitions[PARTITIONS_COUNT + 2];
+    PartitionPosition partitions[gpt::kPartitionCount + 2];
     const size_t reserved_blocks = ReservedHeaderBlocks(block_info_.block_size);
     partitions[partition_count].start = 0;
     partitions[partition_count++].length = reserved_blocks;
     partitions[partition_count].start = block_info_.block_count - reserved_blocks;
     partitions[partition_count++].length = reserved_blocks;
 
-    for (size_t i = 0; i < PARTITIONS_COUNT; i++) {
-        const gpt_partition_t* p = gpt_->partitions[i];
+    for (uint32_t i = 0; i < gpt::kPartitionCount; i++) {
+        const gpt_partition_t* p = gpt_->GetPartition(i);
         if (!p) {
             continue;
         }
@@ -434,17 +448,17 @@ zx_status_t GptDevicePartitioner::CreateGptPartition(const char* name, uint8_t* 
     zx_cprng_draw(out_guid, GPT_GUID_LEN);
 
     zx_status_t status;
-    if ((status = gpt_partition_add(gpt_, name, type, out_guid, offset, blocks, 0))) {
+    if ((status = gpt_->AddPartition(name, type, out_guid, offset, blocks, 0)) != ZX_OK) {
         ERROR("Failed to add partition\n");
         return ZX_ERR_IO;
     }
-    if ((status = gpt_device_sync(gpt_))) {
+    if ((status = gpt_->Sync()) != ZX_OK) {
         ERROR("Failed to sync GPT\n");
         return ZX_ERR_IO;
     }
-    if ((status = gpt_partition_clear(gpt_, offset, 1))) {
+    if ((status = gpt_->ClearPartition(offset, 1)) != ZX_OK) {
         ERROR("Failed to clear first block of new partition\n");
-        return ZX_ERR_IO;
+        return status;
     }
     if ((status = static_cast<zx_status_t>(ioctl_block_rr_part(fd_.get()))) < 0) {
         ERROR("Failed to rebind GPT\n");
@@ -488,7 +502,7 @@ zx_status_t GptDevicePartitioner::AddPartition(
     }
     LOG("Added partition, waiting for bind\n");
 
-    if ((status = OpenBlockPartition(guid, type, ZX_SEC(5), out_fd)) != ZX_OK) {
+    if ((status = OpenBlockPartition(devfs_root_, guid, type, ZX_SEC(5), out_fd)) != ZX_OK) {
         ERROR("Added partition, waiting for bind - NOT FOUND\n");
         return status;
     }
@@ -498,20 +512,21 @@ zx_status_t GptDevicePartitioner::AddPartition(
 
 zx_status_t GptDevicePartitioner::FindPartition(FilterCallback filter, gpt_partition_t** out,
                                                 fbl::unique_fd* out_fd) {
-    for (size_t i = 0; i < PARTITIONS_COUNT; i++) {
-        gpt_partition_t* p = gpt_->partitions[i];
+    for (uint32_t i = 0; i < gpt::kPartitionCount; i++) {
+        gpt_partition_t* p = gpt_->GetPartition(i);
         if (!p) {
             continue;
         }
 
         if (filter(*p)) {
-            LOG("Found partition in GPT, partition %zu\n", i);
+            LOG("Found partition in GPT, partition %u\n", i);
             if (out) {
                 *out = p;
             }
             if (out_fd) {
                 zx_status_t status;
-                if ((status = OpenBlockPartition(p->guid, p->type, ZX_SEC(5), out_fd)) != ZX_OK) {
+                status = OpenBlockPartition(devfs_root_, p->guid, p->type, ZX_SEC(5), out_fd);
+                if (status != ZX_OK) {
                     ERROR("Couldn't open partition\n");
                     return status;
                 }
@@ -524,17 +539,18 @@ zx_status_t GptDevicePartitioner::FindPartition(FilterCallback filter, gpt_parti
 
 zx_status_t GptDevicePartitioner::FindPartition(FilterCallback filter,
                                                 fbl::unique_fd* out_fd) const {
-    for (size_t i = 0; i < PARTITIONS_COUNT; i++) {
-        const gpt_partition_t* p = gpt_->partitions[i];
+    for (uint32_t i = 0; i < gpt::kPartitionCount; i++) {
+        const gpt_partition_t* p = gpt_->GetPartition(i);
         if (!p) {
             continue;
         }
 
         if (filter(*p)) {
-            LOG("Found partition in GPT, partition %zu\n", i);
+            LOG("Found partition in GPT, partition %u\n", i);
             if (out_fd) {
                 zx_status_t status;
-                if ((status = OpenBlockPartition(p->guid, p->type, ZX_SEC(5), out_fd)) != ZX_OK) {
+                status = OpenBlockPartition(devfs_root_, p->guid, p->type, ZX_SEC(5), out_fd);
+                if (status != ZX_OK) {
                     ERROR("Couldn't open partition\n");
                     return status;
                 }
@@ -547,8 +563,8 @@ zx_status_t GptDevicePartitioner::FindPartition(FilterCallback filter,
 
 zx_status_t GptDevicePartitioner::WipePartitions(FilterCallback filter) {
     bool modify = false;
-    for (size_t i = 0; i < PARTITIONS_COUNT; i++) {
-        const gpt_partition_t* p = gpt_->partitions[i];
+    for (uint32_t i = 0; i < gpt::kPartitionCount; i++) {
+        const gpt_partition_t* p = gpt_->GetPartition(i);
         if (!p) {
             continue;
         }
@@ -559,9 +575,9 @@ zx_status_t GptDevicePartitioner::WipePartitions(FilterCallback filter) {
         modify = true;
 
         // Ignore the return status; wiping is a best-effort approach anyway.
-        WipeBlockPartition(p->guid, p->type);
+        WipeBlockPartition(devfs_root_, p->guid, p->type);
 
-        if (gpt_partition_remove(gpt_, p->guid)) {
+        if (gpt_->RemovePartition(p->guid) != ZX_OK) {
             ERROR("Warning: Could not remove partition\n");
         } else {
             // If we successfully clear the partition, then all subsequent
@@ -572,7 +588,7 @@ zx_status_t GptDevicePartitioner::WipePartitions(FilterCallback filter) {
         }
     }
     if (modify) {
-        gpt_device_sync(gpt_);
+        gpt_->Sync();
         LOG("Immediate reboot strongly recommended\n");
     }
     ioctl_block_rr_part(fd_.get());
@@ -583,10 +599,11 @@ zx_status_t GptDevicePartitioner::WipePartitions(FilterCallback filter) {
  *                 EFI SPECIFIC                       *
  *====================================================*/
 
-zx_status_t EfiDevicePartitioner::Initialize(fbl::unique_ptr<DevicePartitioner>* partitioner) {
+zx_status_t EfiDevicePartitioner::Initialize(fbl::unique_fd devfs_root,
+                                             fbl::unique_ptr<DevicePartitioner>* partitioner) {
     fbl::unique_ptr<GptDevicePartitioner> gpt;
     zx_status_t status;
-    if ((status = GptDevicePartitioner::InitializeGpt(&gpt)) != ZX_OK) {
+    if ((status = GptDevicePartitioner::InitializeGpt(std::move(devfs_root), &gpt)) != ZX_OK) {
         return status;
     }
     if (is_cros(gpt->GetGpt())) {
@@ -595,7 +612,7 @@ zx_status_t EfiDevicePartitioner::Initialize(fbl::unique_ptr<DevicePartitioner>*
     }
 
     LOG("Successfully initialized EFI Device Partitioner\n");
-    *partitioner = fbl::move(WrapUnique(new EfiDevicePartitioner(fbl::move(gpt))));
+    *partitioner = WrapUnique(new EfiDevicePartitioner(std::move(gpt)));
     return ZX_OK;
 }
 
@@ -704,14 +721,16 @@ zx_status_t EfiDevicePartitioner::GetBlockSize(const fbl::unique_fd& device_fd,
  *                CROS SPECIFIC                       *
  *====================================================*/
 
-zx_status_t CrosDevicePartitioner::Initialize(fbl::unique_ptr<DevicePartitioner>* partitioner) {
+zx_status_t CrosDevicePartitioner::Initialize(fbl::unique_fd devfs_root,
+                                              fbl::unique_ptr<DevicePartitioner>* partitioner) {
     fbl::unique_ptr<GptDevicePartitioner> gpt_partitioner;
     zx_status_t status;
-    if ((status = GptDevicePartitioner::InitializeGpt(&gpt_partitioner)) != ZX_OK) {
+    if ((status = GptDevicePartitioner::InitializeGpt(std::move(devfs_root),
+                                                      &gpt_partitioner)) != ZX_OK) {
         return status;
     }
 
-    gpt_device_t* gpt = gpt_partitioner->GetGpt();
+    GptDevice* gpt = gpt_partitioner->GetGpt();
     if (!is_cros(gpt)) {
         return ZX_ERR_NOT_FOUND;
     }
@@ -724,12 +743,15 @@ zx_status_t CrosDevicePartitioner::Initialize(fbl::unique_ptr<DevicePartitioner>
             ERROR("Failed to configure CrOS for Fuchsia.\n");
             return status;
         }
-        gpt_device_sync(gpt);
+        if ((status = gpt->Sync()) != ZX_OK) {
+            ERROR("Failed to sync CrOS for Fuchsia.\n");
+            return status;
+        }
         ioctl_block_rr_part(gpt_partitioner->GetFd());
     }
 
     LOG("Successfully initialized CrOS Device Partitioner\n");
-    *partitioner = fbl::move(WrapUnique(new CrosDevicePartitioner(fbl::move(gpt_partitioner))));
+    *partitioner = WrapUnique(new CrosDevicePartitioner(std::move(gpt_partitioner)));
     return ZX_OK;
 }
 
@@ -795,8 +817,8 @@ zx_status_t CrosDevicePartitioner::FinalizePartition(Partition partition_type) {
     uint16_t zircon_prefix[strlen(kPrefix)*2];
     cstring_to_utf16(&zircon_prefix[0], kPrefix, strlen(kPrefix));
 
-    for(size_t i = 0; i < PARTITIONS_COUNT; ++i) {
-        const gpt_partition_t* part = gpt_->GetGpt()->partitions[i];
+    for (uint32_t i = 0; i < gpt::kPartitionCount; ++i) {
+        const gpt_partition_t* part = gpt_->GetGpt()->GetPartition(i);
         if (part == NULL) {
             continue;
         }
@@ -844,7 +866,11 @@ zx_status_t CrosDevicePartitioner::FinalizePartition(Partition partition_type) {
         ERROR("Cannot set CrOS partition 'tries' for KERN-C\n");
         return ZX_ERR_OUT_OF_RANGE;
     }
-    gpt_device_sync(gpt_->GetGpt());
+    if ((status = gpt_->GetGpt()->Sync()) == ZX_OK) {
+        ERROR("Failed to sync CrOS partition 'tries' for KERN-C.\n");
+        return status;
+    }
+
     return ZX_OK;
 }
 
@@ -866,12 +892,13 @@ zx_status_t CrosDevicePartitioner::GetBlockSize(const fbl::unique_fd& device_fd,
  *               FIXED PARTITION MAP                  *
  *====================================================*/
 
-zx_status_t FixedDevicePartitioner::Initialize(fbl::unique_ptr<DevicePartitioner>* partitioner) {
-    if (HasSkipBlockDevice()) {
+zx_status_t FixedDevicePartitioner::Initialize(fbl::unique_fd devfs_root,
+                                               fbl::unique_ptr<DevicePartitioner>* partitioner) {
+    if (HasSkipBlockDevice(devfs_root)) {
         return ZX_ERR_NOT_SUPPORTED;
     }
     LOG("Successfully initialized FixedDevicePartitioner Device Partitioner\n");
-    *partitioner = fbl::move(WrapUnique(new FixedDevicePartitioner));
+    *partitioner = WrapUnique(new FixedDevicePartitioner(std::move(devfs_root)));
     return ZX_OK;
 }
 
@@ -895,6 +922,16 @@ zx_status_t FixedDevicePartitioner::FindPartition(Partition partition_type,
         memcpy(type, zircon_r_type, GPT_GUID_LEN);
         break;
     }
+    case Partition::kVbMetaA: {
+        const uint8_t vbmeta_a_type[GPT_GUID_LEN] = GUID_VBMETA_A_VALUE;
+        memcpy(type, vbmeta_a_type, GPT_GUID_LEN);
+        break;
+    }
+    case Partition::kVbMetaB: {
+        const uint8_t vbmeta_b_type[GPT_GUID_LEN] = GUID_VBMETA_B_VALUE;
+        memcpy(type, vbmeta_b_type, GPT_GUID_LEN);
+        break;
+    }
     case Partition::kFuchsiaVolumeManager: {
         const uint8_t fvm_type[GPT_GUID_LEN] = GUID_FVM_VALUE;
         memcpy(type, fvm_type, GPT_GUID_LEN);
@@ -905,13 +942,13 @@ zx_status_t FixedDevicePartitioner::FindPartition(Partition partition_type,
         return ZX_ERR_NOT_SUPPORTED;
     }
 
-    return OpenBlockPartition(nullptr, type, ZX_SEC(5), out_fd);
+    return OpenBlockPartition(devfs_root_, nullptr, type, ZX_SEC(5), out_fd);
 }
 
 zx_status_t FixedDevicePartitioner::WipePartitions() {
     const uint8_t fvm_type[GPT_GUID_LEN] = GUID_FVM_VALUE;
     zx_status_t status;
-    if ((status = WipeBlockPartition(nullptr, fvm_type)) != ZX_OK) {
+    if ((status = WipeBlockPartition(devfs_root_, nullptr, fvm_type)) != ZX_OK) {
         ERROR("Failed to wipe FVM.\n");
     } else {
         LOG("Wiped FVM successfully.\n");
@@ -936,13 +973,18 @@ zx_status_t FixedDevicePartitioner::GetBlockSize(const fbl::unique_fd& device_fd
  *====================================================*/
 
 zx_status_t SkipBlockDevicePartitioner::Initialize(
-    fbl::unique_ptr<DevicePartitioner>* partitioner) {
+    fbl::unique_fd devfs_root, fbl::unique_ptr<DevicePartitioner>* partitioner) {
 
-    if (!HasSkipBlockDevice()) {
+    // TODO(surajmalhtora): Use common devfs_root fd for both block and
+    // skip-block devices.
+    fbl::unique_fd block_devfs_root(open("/dev", O_RDWR));
+
+    if (!HasSkipBlockDevice(devfs_root)) {
         return ZX_ERR_NOT_SUPPORTED;
     }
     LOG("Successfully initialized SkipBlockDevicePartitioner Device Partitioner\n");
-    *partitioner = fbl::move(WrapUnique(new SkipBlockDevicePartitioner));
+    *partitioner = WrapUnique(new SkipBlockDevicePartitioner(std::move(devfs_root),
+                                                             std::move(block_devfs_root)));
     return ZX_OK;
 }
 
@@ -971,25 +1013,36 @@ zx_status_t SkipBlockDevicePartitioner::FindPartition(Partition partition_type,
         memcpy(type, zircon_r_type, GPT_GUID_LEN);
         break;
     }
+    case Partition::kVbMetaA: {
+        const uint8_t vbmeta_a_type[GPT_GUID_LEN] = GUID_VBMETA_A_VALUE;
+        memcpy(type, vbmeta_a_type, GPT_GUID_LEN);
+        break;
+    }
+    case Partition::kVbMetaB: {
+        const uint8_t vbmeta_b_type[GPT_GUID_LEN] = GUID_VBMETA_B_VALUE;
+        memcpy(type, vbmeta_b_type, GPT_GUID_LEN);
+        break;
+    }
     case Partition::kFuchsiaVolumeManager: {
         const uint8_t fvm_type[GPT_GUID_LEN] = GUID_FVM_VALUE;
         memcpy(type, fvm_type, GPT_GUID_LEN);
         // FVM partition is managed so it should expose a normal block device.
-        return OpenBlockPartition(nullptr, type, ZX_SEC(5), out_fd);
+        return OpenBlockPartition(block_devfs_root_, nullptr, type, ZX_SEC(5), out_fd);
     }
     default:
         ERROR("partition_type is invalid!\n");
         return ZX_ERR_NOT_SUPPORTED;
     }
 
-    return OpenSkipBlockPartition(type, ZX_SEC(5), out_fd);
+    return OpenSkipBlockPartition(devfs_root_, type, ZX_SEC(5), out_fd);
 }
 
 zx_status_t SkipBlockDevicePartitioner::WipePartitions() {
     const uint8_t fvm_type[GPT_GUID_LEN] = GUID_FVM_VALUE;
     zx_status_t status;
     fbl::unique_fd block_fd;
-    if ((status = OpenBlockPartition(nullptr, fvm_type, ZX_SEC(3), &block_fd)) != ZX_OK) {
+    status = OpenBlockPartition(block_devfs_root_, nullptr, fvm_type, ZX_SEC(3), &block_fd);
+    if (status != ZX_OK) {
         ERROR("Warning: Could not open partition to wipe: %s\n", zx_status_get_string(status));
         return ZX_OK;
     }
@@ -1018,7 +1071,7 @@ zx_status_t SkipBlockDevicePartitioner::WipePartitions() {
         return status;
     }
     zx_status_t status2;
-    status = zircon_block_FtlFormat(svc.get(), &status2);
+    status = fuchsia_hardware_block_FtlFormat(svc.get(), &status2);
 
     return status == ZX_OK ? status2 : status;
 }
@@ -1036,8 +1089,9 @@ zx_status_t SkipBlockDevicePartitioner::GetBlockSize(const fbl::unique_fd& devic
     fzl::FdioCaller caller(fbl::unique_fd(device_fd.get()));
 
     zx_status_t status;
-    zircon_skipblock_PartitionInfo part_info;
-    zircon_skipblock_SkipBlockGetPartitionInfo(caller.borrow_channel(), &status, &part_info);
+    fuchsia_hardware_skipblock_PartitionInfo part_info;
+    fuchsia_hardware_skipblock_SkipBlockGetPartitionInfo(caller.borrow_channel(), &status,
+                                                         &part_info);
     caller.release().release();
     if (status != ZX_OK) {
         ERROR("Failed to get partition info with status: %d\n", status);

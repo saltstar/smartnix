@@ -8,9 +8,9 @@
 #include <ddk/binding.h>
 #include <ddk/protocol/hidbus.h>
 #include <ddk/protocol/usb.h>
-#include <ddk/usb/usb.h>
+#include <usb/usb.h>
 #include <usb/usb-request.h>
-#include <zircon/hw/usb-hid.h>
+#include <zircon/hw/usb/hid.h>
 
 #include <zircon/status.h>
 #include <zircon/types.h>
@@ -42,10 +42,11 @@ typedef struct usb_hid_device {
     uint8_t interface;
     usb_desc_iter_t desc_iter;
     usb_hid_descriptor_t* hid_desc;
+    size_t parent_req_size;
 } usb_hid_device_t;
 
-static void usb_interrupt_callback(usb_request_t* req, void* cookie) {
-    usb_hid_device_t* hid = (usb_hid_device_t*)cookie;
+static void usb_interrupt_callback(void* ctx, usb_request_t* req) {
+    usb_hid_device_t* hid = (usb_hid_device_t*)ctx;
     // TODO use usb request copyfrom instead of mmap
     void* buffer;
     zx_status_t status = usb_request_mmap(req, &buffer);
@@ -78,7 +79,11 @@ static void usb_interrupt_callback(usb_request_t* req, void* cookie) {
     }
 
     if (requeue) {
-        usb_request_queue(&hid->usb, req);
+        usb_request_complete_t complete = {
+            .callback = usb_interrupt_callback,
+            .ctx = hid,
+        };
+        usb_request_queue(&hid->usb, req, &complete);
     } else {
         hid->req_queued = false;
     }
@@ -105,7 +110,11 @@ static zx_status_t usb_hid_start(void* ctx, const hidbus_ifc_t* ifc) {
     hid->ifc = *ifc;
     if (!hid->req_queued) {
         hid->req_queued = true;
-        usb_request_queue(&hid->usb, hid->req);
+        usb_request_complete_t complete = {
+            .callback = usb_interrupt_callback,
+            .ctx = hid,
+        };
+        usb_request_queue(&hid->usb, hid->req, &complete);
     }
     mtx_unlock(&hid->lock);
     return ZX_OK;
@@ -123,8 +132,14 @@ static void usb_hid_stop(void* ctx) {
 static zx_status_t usb_hid_control(usb_hid_device_t* hid, uint8_t req_type, uint8_t request,
                                    uint16_t value, uint16_t index, void* data, size_t length,
                                    size_t* out_length) {
-    zx_status_t status = usb_control(&hid->usb, req_type, request, value, index, data, length,
-                                     ZX_TIME_INFINITE, out_length);
+    zx_status_t status;
+    if ((req_type & USB_DIR_MASK) == USB_DIR_OUT) {
+        status = usb_control_out(&hid->usb, req_type, request, value, index, ZX_TIME_INFINITE,
+                             data, length);
+    } else {
+        status = usb_control_in(&hid->usb, req_type, request, value, index, ZX_TIME_INFINITE,
+                                data, length, out_length);
+    }
     if (status == ZX_ERR_IO_REFUSED || status == ZX_ERR_IO_INVALID) {
         usb_reset_endpoint(&hid->usb, 0);
     }
@@ -249,6 +264,8 @@ static zx_status_t usb_hid_bind(void* ctx, zx_device_t* dev) {
         goto fail;
     }
 
+    usbhid->parent_req_size = usb_get_request_size(&usbhid->usb);
+
     status = usb_desc_iter_init(&usbhid->usb, &usbhid->desc_iter);
     if (status != ZX_OK) {
         goto fail;
@@ -297,13 +314,11 @@ static zx_status_t usb_hid_bind(void* ctx, zx_device_t* dev) {
 
     status = usb_request_alloc(&usbhid->req, usb_ep_max_packet(endpt),
                                endpt->bEndpointAddress,
-                               sizeof(usb_request_t));
+                               usbhid->parent_req_size);
     if (status != ZX_OK) {
         status = ZX_ERR_NO_MEMORY;
         goto fail;
     }
-    usbhid->req->complete_cb = usb_interrupt_callback;
-    usbhid->req->cookie = usbhid;
 
     device_add_args_t args = {
         .version = DEVICE_ADD_ARGS_VERSION,

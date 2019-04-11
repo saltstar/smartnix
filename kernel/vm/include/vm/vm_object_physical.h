@@ -26,14 +26,13 @@ public:
 
     uint64_t size() const override { return size_; }
 
-    zx_status_t LookupUser(uint64_t offset, uint64_t len, user_inout_ptr<paddr_t> buffer,
-                           size_t buffer_size) override;
-    zx_status_t Lookup(uint64_t offset, uint64_t len, uint pf_flags,
+    zx_status_t Lookup(uint64_t offset, uint64_t len,
                        vmo_lookup_fn_t lookup_fn, void* context) override;
 
     void Dump(uint depth, bool verbose) override;
 
     zx_status_t GetPageLocked(uint64_t offset, uint pf_flags, list_node* free_list,
+                              PageRequest* page_request,
                               vm_page_t**, paddr_t* pa) override TA_REQ(lock_);
 
     uint32_t GetMappingCachePolicy() const override;

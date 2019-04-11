@@ -1,13 +1,17 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
+#include <new>
 #include <stddef.h>
+#include <utility>
 
 #include <zircon/assert.h>
 #include <fbl/algorithm.h>
 #include <fbl/alloc_checker.h>
 #include <fbl/macros.h>
-#include <fbl/new.h>
 #include <fbl/type_support.h>
 #include <fbl/unique_ptr.h>
 
@@ -82,11 +86,11 @@ template <typename Callable, typename Result, typename... Args>
 class InlineFunctionTarget final : public FunctionTarget<Result, Args...> {
 public:
     explicit InlineFunctionTarget(Callable target)
-        : target_(fbl::move(target)) {}
+        : target_(std::move(target)) {}
     InlineFunctionTarget(Callable target, AllocChecker* ac)
-        : target_(fbl::move(target)) { ac->arm(0u, true); }
+        : target_(std::move(target)) { ac->arm(0u, true); }
     InlineFunctionTarget(InlineFunctionTarget&& other)
-        : target_(fbl::move(other.target_)) {}
+        : target_(std::move(other.target_)) {}
     ~InlineFunctionTarget() final = default;
 
     DISALLOW_COPY_AND_ASSIGN_ALLOW_MOVE(InlineFunctionTarget);
@@ -94,11 +98,11 @@ public:
     bool is_null() const final { return false; }
 
     Result operator()(Args... args) const final {
-        return target_(fbl::forward<Args>(args)...);
+        return target_(std::forward<Args>(args)...);
     }
 
     void MoveInitializeTo(void* ptr) final {
-        new (ptr) InlineFunctionTarget(fbl::move(*this));
+        new (ptr) InlineFunctionTarget(std::move(*this));
     }
 
 private:
@@ -109,11 +113,11 @@ template <typename Callable, typename Result, typename... Args>
 class HeapFunctionTarget final : public FunctionTarget<Result, Args...> {
 public:
     explicit HeapFunctionTarget(Callable target)
-        : target_ptr_(fbl::make_unique<Callable>(fbl::move(target))) {}
+        : target_ptr_(fbl::make_unique<Callable>(std::move(target))) {}
     HeapFunctionTarget(Callable target, AllocChecker* ac)
-        : target_ptr_(fbl::make_unique_checked<Callable>(ac, fbl::move(target))) {}
+        : target_ptr_(fbl::make_unique_checked<Callable>(ac, std::move(target))) {}
     HeapFunctionTarget(HeapFunctionTarget&& other)
-        : target_ptr_(fbl::move(other.target_ptr_)) {}
+        : target_ptr_(std::move(other.target_ptr_)) {}
     ~HeapFunctionTarget() final = default;
 
     DISALLOW_COPY_AND_ASSIGN_ALLOW_MOVE(HeapFunctionTarget);
@@ -121,11 +125,11 @@ public:
     bool is_null() const final { return false; }
 
     Result operator()(Args... args) const final {
-        return (*target_ptr_)(fbl::forward<Args>(args)...);
+        return (*target_ptr_)(std::forward<Args>(args)...);
     }
 
     void MoveInitializeTo(void* ptr) final {
-        new (ptr) HeapFunctionTarget(fbl::move(*this));
+        new (ptr) HeapFunctionTarget(std::move(*this));
     }
 
 private:
@@ -159,12 +163,12 @@ struct FunctionTargetHolder final {
 
     template <typename Callable>
     void InitializeTarget(Callable target) {
-        new (&bits_) typename TargetHelper<Callable>::Type(fbl::move(target));
+        new (&bits_) typename TargetHelper<Callable>::Type(std::move(target));
     }
 
     template <typename Callable>
     void InitializeTarget(Callable target, AllocChecker* ac) {
-        new (&bits_) typename TargetHelper<Callable>::Type(fbl::move(target), ac);
+        new (&bits_) typename TargetHelper<Callable>::Type(std::move(target), ac);
     }
 
     void MoveInitializeTargetFrom(FunctionTargetHolder& other) {
@@ -213,12 +217,12 @@ public:
 
     template <typename Callable>
     Function(Callable target) {
-        InitializeTarget(fbl::move(target));
+        InitializeTarget(std::move(target));
     }
 
     template <typename Callable>
     Function(Callable target, AllocChecker* ac) {
-        InitializeTarget(fbl::move(target), ac);
+        InitializeTarget(std::move(target), ac);
     }
 
     ~Function() {
@@ -232,7 +236,7 @@ public:
     };
 
     Result operator()(Args... args) const {
-        return holder_.target()(fbl::forward<Args>(args)...);
+        return holder_.target()(std::forward<Args>(args)...);
     }
 
     Function& operator=(decltype(nullptr)) {
@@ -250,20 +254,20 @@ public:
 
     template <typename Callable>
     Function& operator=(Callable target) {
-        SetTarget(fbl::move(target));
+        SetTarget(std::move(target));
         return *this;
     }
 
     template <typename Callable>
     void SetTarget(Callable target) {
         holder_.DestroyTarget();
-        InitializeTarget(fbl::move(target));
+        InitializeTarget(std::move(target));
     }
 
     template <typename Callable>
     void SetTarget(Callable target, AllocChecker* ac) {
         holder_.DestroyTarget();
-        InitializeTarget(fbl::move(target), ac);
+        InitializeTarget(std::move(target), ac);
     }
 
     void swap(Function& other) {
@@ -281,7 +285,7 @@ private:
         if (IsNull(target)) {
             holder_.InitializeNullTarget();
         } else {
-            holder_.InitializeTarget(fbl::move(target));
+            holder_.InitializeTarget(std::move(target));
         }
     }
 
@@ -292,7 +296,7 @@ private:
         if (IsNull(target)) {
             holder_.InitializeNullTarget();
         } else {
-            holder_.InitializeTarget(fbl::move(target), ac);
+            holder_.InitializeTarget(std::move(target), ac);
         }
     }
 
@@ -309,7 +313,7 @@ public:
         : instance_(instance), fn_(fn) {}
 
     R operator()(Args... args) const {
-        return (instance_->*fn_)(fbl::forward<Args>(args)...);
+        return (instance_->*fn_)(std::forward<Args>(args)...);
     }
 
 private:
@@ -321,7 +325,7 @@ private:
 
 // The default size allowance for callable objects which can be inlined within
 // a function object.  This default allows for inline storage of callables
-// consiting of a function pointer and an object pointer (or similar callables
+// consisting of a function pointer and an object pointer (or similar callables
 // of the same size).
 constexpr size_t kDefaultInlineCallableSize = sizeof(void*) * 2;
 

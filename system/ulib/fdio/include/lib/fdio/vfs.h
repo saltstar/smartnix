@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -9,8 +12,6 @@
 #include <unistd.h>  // ssize_t
 
 __BEGIN_CDECLS
-
-#define VFS_MAX_HANDLES 2
 
 // On Fuchsia, the Block Device is transmitted by file descriptor, rather than
 // by path. This can prevent some racy behavior relating to FS start-up.

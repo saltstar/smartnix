@@ -5,7 +5,6 @@
 #include <ddk/binding.h>
 #include <ddk/debug.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/usb-function.h>
 #include <usb/usb-request.h>
 #include <fbl/auto_lock.h>
 #include <hw/reg.h>
@@ -283,14 +282,16 @@ void dwc3_reset_configuration(dwc3_t* dwc) {
     }
 }
 
-static void dwc3_request_queue(void* ctx, usb_request_t* req) {
+static void dwc3_request_queue(void* ctx, usb_request_t* req, const usb_request_complete_t* cb) {
     auto* dwc = static_cast<dwc3_t*>(ctx);
+    auto* req_int = USB_REQ_TO_INTERNAL(req);
+    req_int->complete_cb = *cb;
 
     zxlogf(LTRACE, "dwc3_request_queue ep: %u\n", req->header.ep_address);
     unsigned ep_num = dwc3_ep_num(req->header.ep_address);
     if (ep_num < 2 || ep_num >= countof(dwc->eps)) {
         zxlogf(ERROR, "dwc3_request_queue: bad ep address 0x%02X\n", req->header.ep_address);
-        usb_request_complete(req, ZX_ERR_INVALID_ARGS, 0);
+        usb_request_complete(req, ZX_ERR_INVALID_ARGS, 0, cb);
         return;
     }
 
@@ -324,14 +325,10 @@ static zx_status_t dwc3_clear_stall(void* ctx, uint8_t ep_address) {
     return dwc3_ep_set_stall(dwc, dwc3_ep_num(ep_address), false);
 }
 
-static zx_status_t dwc3_get_bti(void* ctx, zx_handle_t* out_handle) {
-    auto* dwc = static_cast<dwc3_t*>(ctx);
-    *out_handle = dwc->bti_handle.get();
-    return ZX_OK;
-}
-
 static size_t dwc3_get_request_size(void* ctx) {
-    return sizeof(usb_request_t);
+    //Allocate dwc_usb_req_internal_t after usb_request_t, to accommodate queueing in
+    //the dwc3 layer.
+    return sizeof(usb_request_t) + sizeof(dwc_usb_req_internal_t);
 }
 
 usb_dci_protocol_ops_t dwc_dci_ops = {
@@ -341,7 +338,6 @@ usb_dci_protocol_ops_t dwc_dci_ops = {
     .disable_ep = dwc3_disable_ep,
     .ep_set_stall = dwc3_set_stall,
     .ep_clear_stall = dwc3_clear_stall,
-    .get_bti = dwc3_get_bti,
     .get_request_size = dwc3_get_request_size,
 };
 
@@ -491,8 +487,8 @@ zx_status_t dwc3_bind(void* ctx, zx_device_t* parent) {
     dwc->usb_mode = USB_MODE_NONE;
 
     mmio_buffer_t mmio;
-    status = pdev_map_mmio_buffer2(&dwc->pdev, MMIO_USB3OTG, ZX_CACHE_POLICY_UNCACHED_DEVICE,
-                                   &mmio);
+    status = pdev_map_mmio_buffer(&dwc->pdev, MMIO_USB3OTG, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+                                  &mmio);
     if (status != ZX_OK) {
         zxlogf(ERROR, "dwc3_bind: pdev_map_mmio_buffer failed\n");
         goto fail;
@@ -542,3 +538,18 @@ fail:
     dwc3_release(dwc);
     return status;
 }
+
+static zx_driver_ops_t dwc3_driver_ops = [](){
+    zx_driver_ops_t ops;
+    ops.version = DRIVER_OPS_VERSION;
+    ops.bind = dwc3_bind;
+    return ops;
+}();
+
+// clang-format off
+ZIRCON_DRIVER_BEGIN(dwc3, dwc3_driver_ops, "zircon", "0.1", 3)
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_VID, PDEV_VID_GENERIC),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_PID, PDEV_PID_GENERIC),
+    BI_MATCH_IF(EQ, BIND_PLATFORM_DEV_DID, PDEV_DID_USB_DWC3),
+ZIRCON_DRIVER_END(dwc3)
+// clang-format on

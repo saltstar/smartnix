@@ -12,9 +12,9 @@
 #include <ddk/driver.h>
 #include <ddk/io-buffer.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/display-controller.h>
-#include <ddk/protocol/i2c-impl.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/display/controller.h>
+#include <ddk/protocol/i2cimpl.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddk/protocol/platform-device-lib.h>
 #include <fbl/auto_call.h>
 #include <fbl/auto_lock.h>
@@ -27,13 +27,14 @@
 #include <string.h>
 #include <unistd.h>
 #include <zircon/assert.h>
+#include <zircon/pixelformat.h>
 #include <zircon/syscalls.h>
 
 /* Default formats */
 static const uint8_t _ginput_color_format   = HDMI_COLOR_FORMAT_444;
 static const uint8_t _gcolor_depth          = HDMI_COLOR_DEPTH_24B;
 
-static const zx_pixel_format_t _gsupported_pixel_formats[] = { ZX_PIXEL_FORMAT_RGB_x888, ZX_PIXEL_FORMAT_NV12 };
+static zx_pixel_format_t _gsupported_pixel_formats[] = { ZX_PIXEL_FORMAT_RGB_x888, ZX_PIXEL_FORMAT_NV12 };
 
 typedef struct image_info {
     zx_handle_t pmt;
@@ -47,8 +48,8 @@ void populate_added_display_args(vim2_display_t* display, added_display_args_t* 
     args->display_id = display->display_id;
     args->edid_present = true;
     args->panel.i2c_bus_id = 0;
-    args->pixel_formats = _gsupported_pixel_formats;
-    args->pixel_format_count = sizeof(_gsupported_pixel_formats) / sizeof(zx_pixel_format_t);
+    args->pixel_format_list = _gsupported_pixel_formats;
+    args->pixel_format_count = countof(_gsupported_pixel_formats);
     args->cursor_info_count = 0;
 }
 
@@ -58,19 +59,21 @@ static uint32_t vim_compute_linear_stride(void* ctx, uint32_t width, zx_pixel_fo
     return ROUNDUP(width, 32 / ZX_PIXEL_FORMAT_BYTES(format));
 }
 
-static void vim_set_display_controller_cb(void* ctx, void* cb_ctx, display_controller_cb_t* cb) {
+static void vim_set_display_controller_interface(void* ctx,
+                                                 const display_controller_interface_t* intf) {
     vim2_display_t* display = static_cast<vim2_display_t*>(ctx);
     mtx_lock(&display->display_lock);
 
-    display->dc_cb = cb;
-    display->dc_cb_ctx = cb_ctx;
+    display->dc_intf = *intf;
 
     if (display->display_attached) {
         added_display_args_t args;
+        added_display_info_t info;
         populate_added_display_args(display, &args);
-        display->dc_cb->on_displays_changed(display->dc_cb_ctx, &args, 1, NULL, 0);
+        display_controller_interface_on_displays_changed(&display->dc_intf, &args, 1, NULL, 0,
+                                                         &info, 1, NULL);
 
-        if (args.is_standard_srgb_out) {
+        if (info.is_standard_srgb_out) {
             display->output_color_format = HDMI_COLOR_FORMAT_RGB;
         } else {
             display->output_color_format = HDMI_COLOR_FORMAT_444;
@@ -79,7 +82,9 @@ static void vim_set_display_controller_cb(void* ctx, void* cb_ctx, display_contr
     mtx_unlock(&display->display_lock);
 }
 
-static zx_status_t vim_import_vmo_image(void* ctx, image_t* image, zx_handle_t vmo, size_t offset) {
+static zx_status_t vim_import_vmo_image(void* ctx, image_t* image, zx_handle_t vmo_in, size_t offset) {
+    zx::vmo vmo(vmo_in);
+
     fbl::AllocChecker ac;
     fbl::unique_ptr<image_info_t> import_info = fbl::make_unique_checked<image_info_t>(&ac);
     if (!ac.check()) {
@@ -107,18 +112,13 @@ static zx_status_t vim_import_vmo_image(void* ctx, image_t* image, zx_handle_t v
         info.blkmode = 0;
         info.endianness = 0;
 
-        zx_handle_t dup_vmo;
-        status = zx_handle_duplicate(vmo, ZX_RIGHT_SAME_RIGHTS, &dup_vmo);
-        if (status != ZX_OK) {
-            return status;
-        }
-
-        status = canvas_config(&display->canvas, dup_vmo, offset + image->planes[0].byte_offset,
-                               &info, &import_info->canvas_idx[0]);
+        status = amlogic_canvas_config(&display->canvas, vmo.release(),
+                                       offset + image->planes[0].byte_offset,
+                                       &info, &import_info->canvas_idx[0]);
         if (status != ZX_OK) {
             return ZX_ERR_NO_RESOURCES;
         }
-        image->handle = (void*)(uint64_t)import_info->canvas_idx[0];
+        image->handle = import_info->canvas_idx[0];
     } else if (image->pixel_format == ZX_PIXEL_FORMAT_NV12) {
         if (image->height % 2 != 0) {
             return ZX_ERR_INVALID_ARGS;
@@ -135,22 +135,17 @@ static zx_status_t vim_import_vmo_image(void* ctx, image_t* image, zx_handle_t v
         // Do 64-bit endianness conversion.
         info.endianness = 7;
 
-        zx_handle_t dup_vmo;
-        status = zx_handle_duplicate(vmo, ZX_RIGHT_SAME_RIGHTS, &dup_vmo);
+        zx::vmo dup_vmo;
+        status = vmo.duplicate(ZX_RIGHT_SAME_RIGHTS, &dup_vmo);
         if (status != ZX_OK) {
             return status;
         }
 
-        status = canvas_config(&display->canvas, dup_vmo, offset + image->planes[0].byte_offset,
-                               &info, &import_info->canvas_idx[0]);
+        status = amlogic_canvas_config(&display->canvas, dup_vmo.release(),
+                                       offset + image->planes[0].byte_offset,
+                                       &info, &import_info->canvas_idx[0]);
         if (status != ZX_OK) {
             return ZX_ERR_NO_RESOURCES;
-        }
-
-        status = zx_handle_duplicate(vmo, ZX_RIGHT_SAME_RIGHTS, &dup_vmo);
-        if (status != ZX_OK) {
-            canvas_free(&display->canvas, import_info->canvas_idx[0]);
-            return status;
         }
 
         info.height /= 2;
@@ -158,15 +153,16 @@ static zx_status_t vim_import_vmo_image(void* ctx, image_t* image, zx_handle_t v
         if (info.stride_bytes == 0)
             info.stride_bytes = stride * ZX_PIXEL_FORMAT_BYTES(image->pixel_format);
 
-        status = canvas_config(&display->canvas, dup_vmo, offset + image->planes[1].byte_offset,
-                               &info, &import_info->canvas_idx[1]);
+        status = amlogic_canvas_config(&display->canvas, vmo.release(),
+                                       offset + image->planes[1].byte_offset,
+                                       &info, &import_info->canvas_idx[1]);
         if (status != ZX_OK) {
-            canvas_free(&display->canvas, import_info->canvas_idx[0]);
+            amlogic_canvas_free(&display->canvas, import_info->canvas_idx[0]);
             return ZX_ERR_NO_RESOURCES;
         }
         // The handle used by hardware is VVUUYY, so the UV plane is included twice.
-        image->handle = (void*)(((uint64_t)import_info->canvas_idx[1] << 16) |
-                                (import_info->canvas_idx[1] << 8) | import_info->canvas_idx[0]);
+        image->handle = (((uint64_t)import_info->canvas_idx[1] << 16) |
+                         (import_info->canvas_idx[1] << 8) | import_info->canvas_idx[0]);
     } else {
         return ZX_ERR_INVALID_ARGS;
     }
@@ -193,27 +189,26 @@ static void vim_release_image(void* ctx, image_t* image) {
     mtx_unlock(&display->image_lock);
 
     if (info) {
-        canvas_free(&display->canvas, info->canvas_idx[0]);
+        amlogic_canvas_free(&display->canvas, info->canvas_idx[0]);
         if (info->format == ZX_PIXEL_FORMAT_NV12)
-            canvas_free(&display->canvas, info->canvas_idx[1]);
+            amlogic_canvas_free(&display->canvas, info->canvas_idx[1]);
         free(info);
     }
 }
 
-static void vim_check_configuration(void* ctx,
-                                    const display_config_t** display_configs,
-                                    uint32_t* display_cfg_result,
-                                    uint32_t** layer_cfg_results,
-                                    uint32_t display_count) {
-    *display_cfg_result = CONFIG_DISPLAY_OK;
+static uint32_t vim_check_configuration(void* ctx,
+                                        const display_config_t** display_configs,
+                                        size_t display_count,
+                                        uint32_t** layer_cfg_results,
+                                        size_t* layer_cfg_result_count) {
     if (display_count != 1) {
         if (display_count > 1) {
             // The core display driver should never see a configuration with more
             // than 1 display, so this is a bug in the core driver.
             ZX_DEBUG_ASSERT(false);
-            *display_cfg_result = CONFIG_DISPLAY_TOO_MANY;
+            return CONFIG_DISPLAY_TOO_MANY;
         }
-        return;
+        return CONFIG_DISPLAY_OK;
     }
     vim2_display_t* display = static_cast<vim2_display_t*>(ctx);
     mtx_lock(&display->display_lock);
@@ -221,7 +216,7 @@ static void vim_check_configuration(void* ctx,
     // no-op, just wait for the client to try a new config
     if (!display->display_attached || display_configs[0]->display_id != display->display_id) {
         mtx_unlock(&display->display_lock);
-        return;
+        return CONFIG_DISPLAY_OK;
     }
 
     struct hdmi_param p;
@@ -229,8 +224,7 @@ static void vim_check_configuration(void* ctx,
             && get_vic(&display_configs[0]->mode, &p) != ZX_OK)
             || (display_configs[0]->mode.v_addressable % 8)) {
         mtx_unlock(&display->display_lock);
-        *display_cfg_result = CONFIG_DISPLAY_UNSUPPORTED_MODES;
-        return;
+        return CONFIG_DISPLAY_UNSUPPORTED_MODES;
     }
 
     bool success;
@@ -239,7 +233,7 @@ static void vim_check_configuration(void* ctx,
     } else {
         uint32_t width = display_configs[0]->mode.h_addressable;
         uint32_t height = display_configs[0]->mode.v_addressable;
-        primary_layer_t* layer = &display_configs[0]->layers[0]->cfg.primary;
+        primary_layer_t* layer = &display_configs[0]->layer_list[0]->cfg.primary;
         frame_t frame = {
                 .x_pos = 0, .y_pos = 0, .width = width, .height = height,
         };
@@ -247,7 +241,7 @@ static void vim_check_configuration(void* ctx,
                                                            layer->image.width,
                                                            layer->image.pixel_format)
                 * ZX_PIXEL_FORMAT_BYTES(layer->image.pixel_format);
-        success = display_configs[0]->layers[0]->type == LAYER_PRIMARY
+        success = display_configs[0]->layer_list[0]->type == LAYER_TYPE_PRIMARY
                 && layer->transform_mode == FRAME_TRANSFORM_IDENTITY
                 && layer->image.width == width
                 && layer->image.height == height
@@ -264,13 +258,15 @@ static void vim_check_configuration(void* ctx,
         for (unsigned i = 1; i < display_configs[0]->layer_count; i++) {
             layer_cfg_results[0][i] = CLIENT_MERGE_SRC;
         }
+        layer_cfg_result_count[0] = display_configs[0]->layer_count;
     }
     mtx_unlock(&display->display_lock);
+    return CONFIG_DISPLAY_OK;
 }
 
 static void vim_apply_configuration(void* ctx,
                                     const display_config_t** display_configs,
-                                    uint32_t display_count) {
+                                    size_t display_count) {
     vim2_display_t* display = static_cast<vim2_display_t*>(ctx);
     mtx_lock(&display->display_lock);
 
@@ -298,14 +294,14 @@ static void vim_apply_configuration(void* ctx,
             mtx_unlock(&display->display_lock);
             return;
         }
-        if (display_configs[0]->layers[0]->cfg.primary.image.pixel_format == ZX_PIXEL_FORMAT_NV12) {
+        if (display_configs[0]->layer_list[0]->cfg.primary.image.pixel_format == ZX_PIXEL_FORMAT_NV12) {
             uint32_t addr =
-                (uint32_t)(uint64_t)display_configs[0]->layers[0]->cfg.primary.image.handle;
+                (uint32_t)(uint64_t)display_configs[0]->layer_list[0]->cfg.primary.image.handle;
             flip_vd(display, 0, addr);
             disable_osd(display, 1);
         } else {
             uint8_t addr;
-            addr = (uint8_t)(uint64_t)display_configs[0]->layers[0]->cfg.primary.image.handle;
+            addr = (uint8_t)(uint64_t)display_configs[0]->layer_list[0]->cfg.primary.image.handle;
             flip_osd(display, 1, addr);
             disable_vd(display, 0);
         }
@@ -326,8 +322,8 @@ static zx_status_t allocate_vmo(void* ctx, uint64_t size, zx_handle_t* vmo_out) 
     return status;
 }
 
-static display_controller_protocol_ops_t display_controller_ops = {
-    .set_display_controller_cb = vim_set_display_controller_cb,
+static display_controller_impl_protocol_ops_t display_controller_ops = {
+    .set_display_controller_interface = vim_set_display_controller_interface,
     .import_vmo_image = vim_import_vmo_image,
     .release_image = vim_release_image,
     .check_configuration = vim_check_configuration,
@@ -428,6 +424,7 @@ static void display_release(void* ctx) {
     if (display) {
         disable_osd(display, 1);
         disable_vd(display, 0);
+        release_osd(display);
         bool wait_for_vsync_shutdown = false;
         if (display->vsync_interrupt != ZX_HANDLE_INVALID) {
             zx_interrupt_trigger(display->vsync_interrupt, 0, 0);
@@ -472,7 +469,7 @@ static void display_unbind(void* ctx) {
 
 static zx_status_t display_get_protocol(void* ctx, uint32_t proto_id, void* protocol) {
     if (proto_id == ZX_PROTOCOL_DISPLAY_CONTROLLER_IMPL) {
-        auto ops = static_cast<display_controller_protocol_t*>(protocol);
+        auto ops = static_cast<display_controller_impl_protocol_t*>(protocol);
         ops->ctx = ctx;
         ops->ops = &display_controller_ops;
     } else if (proto_id == ZX_PROTOCOL_I2C_IMPL) {
@@ -524,6 +521,7 @@ static int hdmi_irq_handler(void *arg) {
 
         bool display_added = false;
         added_display_args_t args;
+        added_display_info_t info;
         uint64_t display_removed = INVALID_DISPLAY_ID;
         if (hpd && !display->display_attached) {
             DISP_ERROR("Display is connected\n");
@@ -544,27 +542,30 @@ static int hdmi_irq_handler(void *arg) {
             gpio_set_polarity(&display->gpio, GPIO_POLARITY_HIGH);
         }
 
-        if (display->dc_cb &&
+        if (display->dc_intf.ops &&
                 (display_removed != INVALID_DISPLAY_ID || display_added)) {
-            display->dc_cb->on_displays_changed(display->dc_cb_ctx,
-                                                &args,
-                                                display_added ? 1 : 0,
-                                                &display_removed,
-                                                display_removed != INVALID_DISPLAY_ID);
+            display_controller_interface_on_displays_changed(&display->dc_intf,
+                                                             &args,
+                                                             display_added ? 1 : 0,
+                                                             &display_removed,
+                                                             display_removed != INVALID_DISPLAY_ID,
+                                                             &info,
+                                                             display_added ? 1 : 0,
+                                                             NULL);
             if (display_added) {
                 // See if we need to change output color to RGB
-                if (args.is_standard_srgb_out) {
+                if (info.is_standard_srgb_out) {
                     display->output_color_format = HDMI_COLOR_FORMAT_RGB;
                 } else {
                     display->output_color_format = HDMI_COLOR_FORMAT_444;
                 }
-                display->audio_format_count = args.audio_format_count;
+                display->audio_format_count = info.audio_format_count;
 
-                display->manufacturer_name = args.manufacturer_name;
-                memcpy(display->monitor_name, args.monitor_name, sizeof(args.monitor_name));
-                memcpy(display->monitor_serial, args.monitor_serial, sizeof(args.monitor_serial));
-                static_assert(sizeof(display->monitor_name) == sizeof(args.monitor_name), "");
-                static_assert(sizeof(display->monitor_serial) == sizeof(args.monitor_serial), "");
+                display->manufacturer_name = info.manufacturer_name;
+                memcpy(display->monitor_name, info.monitor_name, sizeof(info.monitor_name));
+                memcpy(display->monitor_serial, info.monitor_serial, sizeof(info.monitor_serial));
+                static_assert(sizeof(display->monitor_name) == sizeof(info.monitor_name), "");
+                static_assert(sizeof(display->monitor_serial) == sizeof(info.monitor_serial), "");
             }
         }
 
@@ -574,14 +575,13 @@ static int hdmi_irq_handler(void *arg) {
             vim2_audio_on_display_removed(display, display_removed);
         }
 
-        if (display_added && args.audio_format_count) {
+        if (display_added && info.audio_format_count) {
             vim2_audio_on_display_added(display, display->display_id);
         }
     }
 }
 
-static int vsync_thread(void *arg)
-{
+static int vsync_thread(void *arg) {
     vim2_display_t* display = static_cast<vim2_display_t*>(arg);
 
     for (;;) {
@@ -597,18 +597,18 @@ static int vsync_thread(void *arg)
 
         uint64_t display_id = display->display_id;
         bool attached = display->display_attached;
-        void* live[2] = {};
+        uint64_t live[2] = {};
         uint32_t current_image_count = 0;
         if (display->current_image_valid) {
-            live[current_image_count++] = (void*)(uint64_t)display->current_image;
+            live[current_image_count++] = display->current_image;
         }
         if (display->vd1_image_valid) {
-            live[current_image_count++] = (void*)(uint64_t)display->vd1_image;
+            live[current_image_count++] = display->vd1_image;
         }
 
-        if (display->dc_cb && attached) {
-            display->dc_cb->on_display_vsync(display->dc_cb_ctx, display_id, timestamp, live,
-                                             current_image_count);
+        if (display->dc_intf.ops && attached) {
+            display_controller_interface_on_display_vsync(&display->dc_intf, display_id, timestamp,
+                                                          live, current_image_count);
         }
         mtx_unlock(&display->display_lock);
     }
@@ -689,7 +689,7 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
 
     // Map all the various MMIOs
     mmio_buffer_t mmio;
-    status = pdev_map_mmio_buffer2(&display->pdev, MMIO_PRESET, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&display->pdev, MMIO_PRESET, ZX_CACHE_POLICY_UNCACHED_DEVICE,
         &mmio);
     if (status != ZX_OK) {
         DISP_ERROR("Could not map display MMIO PRESET\n");
@@ -697,7 +697,7 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
     }
     display->mmio_preset = ddk::MmioBuffer(mmio);
 
-    status = pdev_map_mmio_buffer2(&display->pdev, MMIO_HDMITX, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&display->pdev, MMIO_HDMITX, ZX_CACHE_POLICY_UNCACHED_DEVICE,
         &mmio);
     if (status != ZX_OK) {
         DISP_ERROR("Could not map display MMIO HDMITX\n");
@@ -705,7 +705,7 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
     }
     display->mmio_hdmitx = ddk::MmioBuffer(mmio);
 
-    status = pdev_map_mmio_buffer2(&display->pdev, MMIO_HIU, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&display->pdev, MMIO_HIU, ZX_CACHE_POLICY_UNCACHED_DEVICE,
         &mmio);
     if (status != ZX_OK) {
         DISP_ERROR("Could not map display MMIO HIU\n");
@@ -713,7 +713,7 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
     }
     display->mmio_hiu = ddk::MmioBuffer(mmio);
 
-    status = pdev_map_mmio_buffer2(&display->pdev, MMIO_VPU, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&display->pdev, MMIO_VPU, ZX_CACHE_POLICY_UNCACHED_DEVICE,
         &mmio);
     if (status != ZX_OK) {
         DISP_ERROR("Could not map display MMIO VPU\n");
@@ -721,7 +721,7 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
     }
     display->mmio_vpu = ddk::MmioBuffer(mmio);
 
-    status = pdev_map_mmio_buffer2(&display->pdev, MMIO_HDMTX_SEC, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&display->pdev, MMIO_HDMTX_SEC, ZX_CACHE_POLICY_UNCACHED_DEVICE,
         &mmio);
     if (status != ZX_OK) {
         DISP_ERROR("Could not map display MMIO HDMITX SEC\n");
@@ -729,7 +729,7 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
     }
     display->mmio_hdmitx_sec = ddk::MmioBuffer(mmio);
 
-    status = pdev_map_mmio_buffer2(&display->pdev, MMIO_CBUS, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&display->pdev, MMIO_CBUS, ZX_CACHE_POLICY_UNCACHED_DEVICE,
         &mmio);
     if (status != ZX_OK) {
         DISP_ERROR("Could not map display MMIO CBUS\n");
@@ -749,9 +749,15 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
         return status;
     }
 
-    status = pdev_map_interrupt(&display->pdev, 0, &display->vsync_interrupt);
+    status = pdev_map_interrupt(&display->pdev, IRQ_VSYNC, &display->vsync_interrupt);
     if (status != ZX_OK) {
         DISP_ERROR("Could not map vsync interrupt\n");
+        return status;
+    }
+
+    status = pdev_map_interrupt(&display->pdev, IRQ_RDMA, &display->rdma_interrupt);
+    if (status != ZX_OK) {
+        DISP_ERROR("Could not map RDMA interrupt\n");
         return status;
     }
 
@@ -764,6 +770,13 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
     // For some reason the vsync interrupt enable bit needs to be cleared for
     // vsync interrupts to occur at the correct rate.
     display->mmio_vpu->ClearBits32(1 << 8, VPU_VIU_MISC_CTRL0);
+
+    // Setup RDMA
+    status = setup_rdma(display);
+    if (status != ZX_OK) {
+        DISP_ERROR("Could not setup RDMA (status %d)\n", status);
+        return status;
+    }
 
     fbl::AllocChecker ac;
     display->p = new(&ac) struct hdmi_param();
@@ -790,6 +803,7 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
         .proto_ops = &display_controller_ops,
         .proxy_args = nullptr,
         .flags = 0,
+        .client_remote = ZX_HANDLE_INVALID,
     };
 
     status = device_add(display->parent, &add_args, &display->mydevice);
@@ -807,6 +821,7 @@ zx_status_t vim2_display_bind(void* ctx, zx_device_t* parent) {
 
     thrd_create_with_name(&display->main_thread, hdmi_irq_handler, display, "hdmi_irq_handler");
     thrd_create_with_name(&display->vsync_thread, vsync_thread, display, "vsync_thread");
+    thrd_create_with_name(&display->rdma_thread, rdma_thread, display, "rdma_thread");
 
     // Things went well!  Cancel our cleanup auto call
     cleanup.cancel();

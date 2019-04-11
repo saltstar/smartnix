@@ -1,7 +1,7 @@
 
 #pragma once
 
-#include <platform/pc/acpi.h>
+#include <lib/acpi_tables.h>
 #include <zircon/compiler.h>
 #include <zircon/types.h>
 

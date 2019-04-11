@@ -5,8 +5,9 @@
 #include <digest/digest.h>
 #include <fbl/algorithm.h>
 #include <fbl/alloc_checker.h>
-#include <fbl/limits.h>
+#include <limits>
 #include <soc/aml-s912/s912-audio.h>
+#include <utility>
 
 #include "hdmitx.h"
 #include "vim-display.h"
@@ -48,9 +49,9 @@ Vim2SpdifAudioStream::Vim2SpdifAudioStream(const vim2_display* display,
     : SimpleAudioStream(display->parent, false),
       display_(display),
       display_id_(display_id),
-      regs_(fbl::move(regs)),
-      ring_buffer_vmo_(fbl::move(ring_buffer_vmo)),
-      pinned_ring_buffer_(fbl::move(pinned_ring_buffer)) {
+      regs_(std::move(regs)),
+      ring_buffer_vmo_(std::move(ring_buffer_vmo)),
+      pinned_ring_buffer_(std::move(pinned_ring_buffer)) {
 }
 
 void Vim2SpdifAudioStream::ShutdownHook() {
@@ -217,7 +218,7 @@ zx_status_t Vim2SpdifAudioStream::Init() {
     if ((pinned_ring_buffer_.region_count() != 1) ||
         (pinned_ring_buffer_.region(0).size < PAGE_SIZE) ||
        ((pinned_ring_buffer_.region(0).phys_addr + pinned_ring_buffer_.region(0).size)
-        >= fbl::numeric_limits<uint32_t>::max())) {
+        >= std::numeric_limits<uint32_t>::max())) {
         zxlogf(ERROR, "Bad ring buffer scatter/gather list passed to %s\n", __PRETTY_FUNCTION__);
         return ZX_ERR_INVALID_ARGS;
     }
@@ -326,8 +327,8 @@ zx_status_t Vim2SpdifAudioStream::CreateFormatList() {
     // generate clock rates up to 192KHz, and can generate 16, 20, and 24 bit audio.
     for (unsigned i = 0; i < display_->audio_format_count; i++) {
         audio_stream_format_range_t range;
-        zx_status_t status = display_->dc_cb->get_audio_format(
-                display_->dc_cb_ctx, display_->display_id, i, &range);
+        zx_status_t status = display_controller_interface_get_audio_format(
+            &display_->dc_intf, display_->display_id, i, &range);
         ZX_ASSERT(status == ZX_OK);
 
         constexpr uint32_t SUPPORTED_FORMATS = AUDIO_SAMPLE_FORMAT_16BIT |
@@ -399,7 +400,7 @@ void Vim2SpdifAudioStream::SetupBuffer() {
     ZX_DEBUG_ASSERT(pinned_ring_buffer_.region(0).size >= 8);
     ZX_DEBUG_ASSERT((pinned_ring_buffer_.region(0).phys_addr +
                      pinned_ring_buffer_.region(0).size - 1)
-                    <= fbl::numeric_limits<uint32_t>::max());
+                    <= std::numeric_limits<uint32_t>::max());
 
     const auto& r = pinned_ring_buffer_.region(0);
     ZX_DEBUG_ASSERT(usable_buffer_size_ >= AIU_958_BYTES_PER_FRAME);

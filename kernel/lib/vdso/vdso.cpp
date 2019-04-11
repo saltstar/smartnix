@@ -3,7 +3,6 @@
 #include <lib/vdso-constants.h>
 
 #include <fbl/alloc_checker.h>
-#include <fbl/type_support.h>
 #include <kernel/cmdline.h>
 #include <object/handle.h>
 #include <platform.h>
@@ -28,8 +27,7 @@ namespace {
 template<typename T>
 class KernelVmoWindow {
 public:
-    static_assert(fbl::is_pod<T>::value,
-                  "this is for C-compatible types only!");
+    static_assert(__is_pod(T), "this is for C-compatible types only!");
 
     KernelVmoWindow(const char* name,
                     fbl::RefPtr<VmObject> vmo, uint64_t offset)
@@ -42,7 +40,7 @@ public:
         const uint arch_mmu_flags = ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE;
         zx_status_t status = VmAspace::kernel_aspace()->RootVmar()->CreateVmMapping(
                 0 /* ignored */, size, 0 /* align pow2 */, 0 /* vmar flags */,
-                fbl::move(vmo), page_offset, arch_mmu_flags, name, &mapping_);
+                ktl::move(vmo), page_offset, arch_mmu_flags, name, &mapping_);
         ASSERT(status == ZX_OK);
         data_ = reinterpret_cast<T*>(mapping_->base() + offset_in_page);
     }
@@ -80,7 +78,7 @@ public:
                   "either VDsoDynsym or gen-rodso-code.sh is suspect");
 
     explicit VDsoDynSymWindow(fbl::RefPtr<VmObject> vmo) :
-        window_("vDSO .dynsym", fbl::move(vmo), VDSO_DATA_START_dynsym) {}
+        window_("vDSO .dynsym", ktl::move(vmo), VDSO_DATA_START_dynsym) {}
 
     void get_symbol_entry(size_t i, uintptr_t* value, size_t* size) {
         *value = window_.data()->table[i].value;
@@ -119,7 +117,7 @@ public:
     using CodeBuffer = uint8_t[VDSO_CODE_END - VDSO_CODE_START];
 
     explicit VDsoCodeWindow(fbl::RefPtr<VmObject> vmo) :
-        window_("vDSO code segment", fbl::move(vmo), VDSO_CODE_START) {}
+        window_("vDSO code segment", ktl::move(vmo), VDSO_CODE_START) {}
 
     // Fill the given code region (a whole function) with safely invalid code.
     // This code should never be run, and any attempt to use it should crash.
@@ -224,7 +222,11 @@ const VDso* VDso::Create() {
     // can warn if the initializer list omits any member.
     *constants_window.data() = (vdso_constants) {
         arch_max_num_cpus(),
-        {arch_cpu_features()},
+        {
+          arch_cpu_features(),
+          arch_get_hw_breakpoint_count(),
+          arch_get_hw_watchpoint_count(),
+        },
         arch_dcache_line_size(),
         arch_icache_line_size(),
         per_second,
@@ -310,7 +312,7 @@ void VDso::CreateVariant(Variant variant) {
 
     fbl::RefPtr<Dispatcher> dispatcher;
     zx_rights_t rights;
-    status = VmObjectDispatcher::Create(fbl::move(new_vmo),
+    status = VmObjectDispatcher::Create(ktl::move(new_vmo),
                                         &dispatcher, &rights);
     ASSERT(status == ZX_OK);
 

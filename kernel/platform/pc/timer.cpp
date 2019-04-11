@@ -23,7 +23,6 @@
 #include <platform.h>
 #include <platform/console.h>
 #include <platform/pc.h>
-#include <platform/pc/acpi.h>
 #include <platform/pc/hpet.h>
 #include <platform/pc/timer.h>
 #include <platform/timer.h>
@@ -170,8 +169,9 @@ zx_time_t ticks_to_nanos(zx_ticks_t ticks) {
 }
 
 // The PIT timer will keep track of wall time if we aren't using the TSC
-static void pit_timer_tick(void* arg) {
+static interrupt_eoi pit_timer_tick(void* arg) {
     pit_ticks += 1;
+    return IRQ_EOI_DEACTIVATE;
 }
 
 // The APIC timers will call this when they fire

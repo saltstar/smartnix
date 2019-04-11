@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -203,6 +206,7 @@ static bool mmc_supports_hs400(sdmmc_device_t* dev) {
     return (device_type & (1 << 6));
 }
 
+//Called with dev->lock held
 zx_status_t sdmmc_probe_mmc(sdmmc_device_t* dev) {
     zx_status_t st = ZX_OK;
 
@@ -265,7 +269,6 @@ zx_status_t sdmmc_probe_mmc(sdmmc_device_t* dev) {
     if ((st = mmc_decode_ext_csd(dev, (const uint8_t*)dev->raw_ext_csd)) != ZX_OK) {
         goto err;
     }
-
     dev->type = SDMMC_TYPE_MMC;
     dev->bus_width = SDMMC_BUS_WIDTH_ONE;
     dev->signal_voltage = SDMMC_VOLTAGE_V330;

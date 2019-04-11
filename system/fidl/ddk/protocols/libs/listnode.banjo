@@ -1,9 +1,0 @@
-
-library zircon.listnode;
-
-[repr="C"]
-struct ListNode {
-    ListNode? prev;
-    ListNode? next;
-};
-

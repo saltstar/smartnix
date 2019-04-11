@@ -1,5 +1,10 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/auto_call.h>
+
+#include <utility>
 
 #include "debug-logging.h"
 #include "usb-audio-control-interface.h"
@@ -101,7 +106,7 @@ zx_status_t UsbAudioControlInterface::Initialize(DescriptorListMemory::Iterator*
             // collision, log a warning and move on (eg, just try to do the
             // best we can).
             uint32_t id = unit->id();
-            if (!units_.insert_or_find(fbl::move(unit))) {
+            if (!units_.insert_or_find(std::move(unit))) {
                 LOG(WARN, "Collision when attempting to add unit id %u; skipping this unit\n", id);
             }
         }
@@ -156,7 +161,7 @@ zx_status_t UsbAudioControlInterface::Initialize(DescriptorListMemory::Iterator*
             if (status != ZX_OK) {
                 LOG(TRACE, "Failed to setup path! (status %d)\n", status);
             } else {
-                paths_.push_back(fbl::move(path));
+                paths_.push_back(std::move(path));
             }
         } else {
             LOG(TRACE, "No valid path found\n");

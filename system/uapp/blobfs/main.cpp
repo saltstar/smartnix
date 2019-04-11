@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -24,6 +27,8 @@
 #include <zircon/process.h>
 #include <zircon/processargs.h>
 
+#include <utility>
+
 namespace {
 
 int Mount(fbl::unique_fd fd, blobfs::MountOptions* options) {
@@ -47,8 +52,8 @@ int Mount(fbl::unique_fd fd, blobfs::MountOptions* options) {
     async::Loop loop(&kAsyncLoopConfigNoAttachToThread);
     trace::TraceProvider provider(loop.dispatcher());
     auto loop_quit = [&loop]() { loop.Quit(); };
-    if (blobfs::Mount(loop.dispatcher(), fbl::move(fd), *options,
-                            fbl::move(root), fbl::move(loop_quit)) != ZX_OK) {
+    if (blobfs::Mount(loop.dispatcher(), std::move(fd), *options,
+                            std::move(root), std::move(loop_quit)) != ZX_OK) {
         return -1;
     }
     loop.Run();
@@ -67,11 +72,11 @@ int Mkfs(fbl::unique_fd fd, blobfs::MountOptions* options) {
 
 int Fsck(fbl::unique_fd fd, blobfs::MountOptions* options) {
     fbl::unique_ptr<blobfs::Blobfs> blobfs;
-    if (blobfs::Initialize(fbl::move(fd), *options, &blobfs) != ZX_OK) {
+    if (blobfs::Initialize(std::move(fd), *options, &blobfs) != ZX_OK) {
         return -1;
     }
 
-    return blobfs::Fsck(fbl::move(blobfs));
+    return blobfs::Fsck(std::move(blobfs));
 }
 
 typedef int (*CommandFunction)(fbl::unique_fd fd, blobfs::MountOptions* options);
@@ -173,5 +178,5 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    return func(fbl::move(fd), &options);
+    return func(std::move(fd), &options);
 }

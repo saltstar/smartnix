@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,6 +9,8 @@
 #include <fbl/intrusive_pointer_traits.h>
 #include <fbl/intrusive_single_list.h>
 #include <fbl/macros.h>
+
+#include <utility>
 
 namespace fbl {
 
@@ -139,7 +144,7 @@ public:
         // should have used insert_or_find() instead.
         ZX_DEBUG_ASSERT(FindInBucket(bucket, key).IsValid() == false);
 
-        bucket.push_front(fbl::move(ptr));
+        bucket.push_front(std::move(ptr));
         ++count_;
     }
 
@@ -171,7 +176,7 @@ public:
             return false;
         }
 
-        bucket.push_front(fbl::move(ptr));
+        bucket.push_front(std::move(ptr));
         ++count_;
         if (iter) *iter = iterator(this, ndx, bucket.begin());
         return true;
@@ -199,10 +204,10 @@ public:
             [key](const ValueType& other) -> bool {
                 return KeyTraits::EqualTo(key, KeyTraits::GetKey(other));
             },
-            fbl::move(ptr));
+            std::move(ptr));
 
         if (orig == PtrTraits::GetRaw(replaced)) {
-            bucket.push_front(fbl::move(replaced));
+            bucket.push_front(std::move(replaced));
             count_++;
             return nullptr;
         }

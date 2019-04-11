@@ -1,7 +1,12 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/alloc_checker.h>
 #include <fbl/auto_call.h>
 #include <pretty/hexdump.h>
+
+#include <utility>
 
 #include "debug-logging.h"
 #include "usb-audio-descriptors.h"
@@ -27,11 +32,12 @@ fbl::RefPtr<DescriptorListMemory> DescriptorListMemory::Create(usb_protocol_t* p
         return nullptr;
     }
 
-    zx_status_t status = usb_get_descriptor_list(proto, &ret->data_, &ret->size_);
-    if (status != ZX_OK) {
-        GLOBAL_LOG(ERROR, "Failed to fetch device descriptor list (status = %d)\n", status);
+    size_t desc_length = usb_get_descriptors_length(proto);
+    ret->data_ = malloc(desc_length);
+    if (!ret->data_) {
         return nullptr;
     }
+    usb_get_descriptors(proto, ret->data_, desc_length, &ret->size_);
 
     if (zxlog_level_enabled(SPEW)) {
         GLOBAL_LOG(SPEW, "Descriptor List is %zu bytes long\n", ret->size_);
@@ -42,7 +48,7 @@ fbl::RefPtr<DescriptorListMemory> DescriptorListMemory::Create(usb_protocol_t* p
 }
 
 DescriptorListMemory::Iterator::Iterator(fbl::RefPtr<DescriptorListMemory> mem)
-    : mem_(fbl::move(mem)) {
+    : mem_(std::move(mem)) {
     ZX_DEBUG_ASSERT(mem_ != nullptr);
     // Make sure our offset is valid, or go ahead and invalidate it right from
     // the start.

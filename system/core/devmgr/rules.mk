@@ -1,3 +1,6 @@
+# Copyright 2016 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -10,56 +13,115 @@ MODULE_TYPE := userapp
 MODULE_GROUP := core
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/bootfs.cpp \
-    $(LOCAL_DIR)/devhost-shared.cpp \
-    $(LOCAL_DIR)/devmgr.cpp \
-    $(LOCAL_DIR)/devmgr-binding.cpp \
-    $(LOCAL_DIR)/devmgr-coordinator.cpp \
-    $(LOCAL_DIR)/devmgr-devfs.cpp \
-    $(LOCAL_DIR)/devmgr-drivers.cpp \
-    $(LOCAL_DIR)/devmgr-fdio.cpp
+    $(LOCAL_DIR)/devmgr/binding.cpp \
+    $(LOCAL_DIR)/devmgr/coordinator.cpp \
+    $(LOCAL_DIR)/devmgr/devfs.cpp \
+    $(LOCAL_DIR)/devmgr/devhost-loader-service.cpp \
+    $(LOCAL_DIR)/devmgr/device.cpp \
+    $(LOCAL_DIR)/devmgr/driver.cpp \
+    $(LOCAL_DIR)/devmgr/fidl.cpp \
+    $(LOCAL_DIR)/devmgr/main.cpp \
+    $(LOCAL_DIR)/shared/env.cpp \
+    $(LOCAL_DIR)/shared/fdio.cpp \
 
 # userboot supports loading via the dynamic linker, so libc (system/ulib/c)
 # can be linked dynamically.  But it doesn't support any means to look
 # up other shared libraries, so everything else must be linked statically.
 
-# We can avoid the fuchsia.crash dependency if crashsvc connects directly to the
-# analyzer.
 MODULE_FIDL_LIBS := \
-    system/fidl/fuchsia-crash \
+    system/fidl/fuchsia-device-manager \
     system/fidl/fuchsia-io \
     system/fidl/fuchsia-mem \
 
 # ddk is needed only for ddk/device.h
 MODULE_HEADER_DEPS := \
+    system/ulib/bootsvc-protocol \
     system/ulib/ddk \
-    system/ulib/zircon-internal
+    system/ulib/devmgr-launcher \
+    system/ulib/zircon-internal \
 
 MODULE_STATIC_LIBS := \
-    system/ulib/fidl \
-    system/ulib/bootdata \
-    system/ulib/loader-service \
     system/ulib/async \
     system/ulib/async-loop \
-    system/ulib/sync \
-    third_party/ulib/lz4 \
-    system/ulib/port \
+    system/ulib/async-loop.cpp \
+    system/ulib/async.cpp \
+    system/ulib/bootdata \
     system/ulib/driver-info \
-    system/ulib/memfs \
-    system/ulib/fs \
     system/ulib/fbl \
+    system/ulib/fidl \
+    system/ulib/fit \
+    system/ulib/fs \
+    system/ulib/fzl \
+    system/ulib/libzbi \
+    system/ulib/loader-service \
+    system/ulib/memfs \
+    system/ulib/sync \
+    system/ulib/zx \
+    system/ulib/zxcpp \
+    third_party/ulib/lz4 \
+
+MODULE_LIBS := \
+    system/ulib/async.default \
+    system/ulib/c \
+    system/ulib/fdio \
+    system/ulib/launchpad \
+    system/ulib/zircon \
+
+include make/module.mk
+
+MODULE := $(LOCAL_DIR).test
+
+MODULE_NAME := devmgr-test
+MODULE_TYPE := usertest
+MODULE_USERTEST_GROUP := ddk
+
+MODULE_SRCS += \
+    $(LOCAL_DIR)/devmgr/binding.cpp \
+    $(LOCAL_DIR)/devmgr/coordinator-test.cpp \
+    $(LOCAL_DIR)/devmgr/coordinator.cpp \
+    $(LOCAL_DIR)/devmgr/devhost-loader-service.cpp \
+    $(LOCAL_DIR)/devmgr/devfs.cpp \
+    $(LOCAL_DIR)/devmgr/device.cpp \
+    $(LOCAL_DIR)/devmgr/driver.cpp \
+    $(LOCAL_DIR)/devmgr/fidl.cpp \
+    $(LOCAL_DIR)/devmgr/test-main.cpp \
+    $(LOCAL_DIR)/shared/env.cpp \
+
+MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-device-manager \
+    system/fidl/fuchsia-io \
+    system/fidl/fuchsia-mem \
+
+MODULE_HEADER_DEPS := \
+    system/ulib/ddk \
+    system/ulib/zircon-internal \
+
+MODULE_STATIC_LIBS := \
+    system/ulib/async \
+    system/ulib/async-loop \
+    system/ulib/async-loop.cpp \
+    system/ulib/async.cpp \
+    system/ulib/driver-info \
+    system/ulib/fidl \
+    system/ulib/fit \
+    system/ulib/fbl \
+    system/ulib/fs \
+    system/ulib/fzl \
+    system/ulib/libzbi \
+    system/ulib/loader-service \
+    system/ulib/memfs \
     system/ulib/zx \
     system/ulib/zxcpp \
 
 MODULE_LIBS := \
     system/ulib/async.default \
-    system/ulib/launchpad \
+    system/ulib/c \
     system/ulib/fdio \
+    system/ulib/launchpad \
+    system/ulib/unittest \
     system/ulib/zircon \
-    system/ulib/c
 
 include make/module.mk
-
 
 # fshost - container for filesystems
 
@@ -70,11 +132,11 @@ MODULE_TYPE := userapp
 MODULE_GROUP := core
 
 MODULE_SRCS := \
-    $(LOCAL_DIR)/bootfs.cpp \
-    $(LOCAL_DIR)/block-watcher.cpp \
-    $(LOCAL_DIR)/devmgr-fdio.cpp \
-    $(LOCAL_DIR)/fshost.cpp \
-    $(LOCAL_DIR)/vfs-rpc.cpp
+    $(LOCAL_DIR)/fshost/block-watcher.cpp \
+    $(LOCAL_DIR)/fshost/main.cpp \
+    $(LOCAL_DIR)/fshost/vfs-rpc.cpp \
+    $(LOCAL_DIR)/shared/env.cpp \
+    $(LOCAL_DIR)/shared/fdio.cpp \
 
 MODULE_STATIC_LIBS := \
     system/ulib/memfs.cpp \
@@ -86,7 +148,9 @@ MODULE_STATIC_LIBS := \
     system/ulib/async-loop.cpp \
     system/ulib/async-loop \
     system/ulib/bootdata \
+    system/ulib/bootfs \
     system/ulib/fbl \
+    system/ulib/fit \
     system/ulib/gpt \
     system/ulib/sync \
     system/ulib/trace \
@@ -105,7 +169,9 @@ MODULE_LIBS := \
     system/ulib/c
 
 MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-hardware-ramdisk \
     system/fidl/fuchsia-io \
+    system/fidl/fuchsia-mem \
 
 include make/module.mk
 
@@ -134,9 +200,12 @@ MODULE_TYPE := userapp
 MODULE_GROUP := core
 
 MODULE_SRCS := \
-	$(LOCAL_DIR)/devhost-main.cpp
+	$(LOCAL_DIR)/devhost/main.cpp
 
-MODULE_LIBS := system/ulib/driver system/ulib/fdio system/ulib/c
+MODULE_LIBS := \
+    system/ulib/driver \
+    system/ulib/fdio \
+    system/ulib/c \
 
 include make/module.mk
 
@@ -150,17 +219,19 @@ MODULE_TYPE := driver
 MODULE_NAME := dmctl
 
 MODULE_SRCS := \
-	$(LOCAL_DIR)/dmctl.cpp \
-	$(LOCAL_DIR)/devhost-shared.cpp \
+	$(LOCAL_DIR)/dmctl/dmctl.cpp \
 
 MODULE_STATIC_LIBS := \
     system/ulib/ddk \
     system/ulib/ddktl \
     system/ulib/fbl \
-    system/ulib/port \
+    system/ulib/fidl \
     system/ulib/zx \
     system/ulib/zxcpp \
 
 MODULE_LIBS := system/ulib/driver system/ulib/zircon system/ulib/c
+
+MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-device-manager \
 
 include make/module.mk

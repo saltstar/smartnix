@@ -5,9 +5,10 @@
 #pragma once
 
 #include <ddktl/device.h>
-#include <ddktl/protocol/tee.h>
+#include <ddktl/protocol/empty-protocol.h>
 #include <fbl/intrusive_double_list.h>
-#include <zircon/tee/c/fidl.h>
+#include <fbl/intrusive_hash_table.h>
+#include <fuchsia/hardware/tee/c/fidl.h>
 
 #include "optee-controller.h"
 
@@ -15,7 +16,7 @@ namespace optee {
 
 class OpteeClient;
 using OpteeClientBase = ddk::Device<OpteeClient, ddk::Closable, ddk::Messageable>;
-using OpteeClientProtocol = ddk::TeeProtocol<OpteeClient>;
+using OpteeClientProtocol = ddk::EmptyProtocol<ZX_PROTOCOL_TEE>;
 
 // The Optee driver allows for simultaneous access from different processes. The OpteeClient object
 // is a distinct device instance for each client connection. This allows for per-instance state to
@@ -44,17 +45,27 @@ public:
 
     // FIDL Handlers
     zx_status_t GetOsInfo(fidl_txn_t* txn) const;
-    zx_status_t OpenSession(const zircon_tee_Uuid* trusted_app,
-                            const zircon_tee_ParameterSet* parameter_set,
+    zx_status_t OpenSession(const fuchsia_hardware_tee_Uuid* trusted_app,
+                            const fuchsia_hardware_tee_ParameterSet* parameter_set,
                             fidl_txn_t* txn);
-    zx_status_t InvokeCommand(uint32_t session_id,
-                              uint32_t command_id,
-                              const zircon_tee_ParameterSet* parameter_set,
+    zx_status_t InvokeCommand(uint32_t session_id, uint32_t command_id,
+                              const fuchsia_hardware_tee_ParameterSet* parameter_set,
                               fidl_txn_t* txn);
     zx_status_t CloseSession(uint32_t session_id, fidl_txn_t* txn);
 
 private:
     using SharedMemoryList = fbl::DoublyLinkedList<fbl::unique_ptr<SharedMemory>>;
+
+    struct OpteeSession : fbl::SinglyLinkedListable<fbl::unique_ptr<OpteeSession>> {
+        OpteeSession(uint32_t id)
+            : id(id) {}
+        uint32_t GetKey() const { return id; }
+        static size_t GetHash(uint32_t key) { return static_cast<size_t>(key); }
+        uint32_t id;
+    };
+    using OpenSessionsTable = fbl::HashTable<uint32_t, fbl::unique_ptr<OpteeSession>>;
+
+    zx_status_t CloseSession(uint32_t session_id);
 
     // Attempts to allocate a block of SharedMemory from a designated memory pool.
     //
@@ -146,11 +157,12 @@ private:
     zx_status_t HandleRpcCommandFreeMemory(FreeMemoryRpcMessage* message);
     zx_status_t HandleRpcCommandFileSystem(FileSystemRpcMessage* message);
 
-    static zircon_tee_Device_ops_t kFidlOps;
+    static fuchsia_hardware_tee_Device_ops_t kFidlOps;
 
     OpteeController* controller_;
     bool needs_to_close_ = false;
     SharedMemoryList allocated_shared_memory_;
+    OpenSessionsTable open_sessions_;
 };
 
 } // namespace optee

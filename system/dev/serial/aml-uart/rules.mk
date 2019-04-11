@@ -26,6 +26,12 @@ MODULE_LIBS := \
     system/ulib/c \
     system/ulib/zircon \
 
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-platform-bus \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-serial \
+    system/banjo/ddk-protocol-serialimpl \
+
 MODULE_HEADER_DEPS := system/dev/lib/amlogic
 
 include make/module.mk

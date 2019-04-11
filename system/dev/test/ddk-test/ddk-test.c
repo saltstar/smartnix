@@ -34,7 +34,7 @@ static void update_test_report(bool success, test_report_t* report) {
     }
 }
 
-static zx_status_t ddk_test_func(void* cookie, const void* arg, size_t arglen, test_report_t* report) {
+static zx_status_t ddk_test_func(void* cookie, test_report_t* report) {
     zx_device_t* dev = (zx_device_t*)cookie;
 
     test_protocol_t proto;
@@ -43,7 +43,8 @@ static zx_status_t ddk_test_func(void* cookie, const void* arg, size_t arglen, t
         return status;
     }
 
-    zx_handle_t output = proto.ops->get_output_socket(proto.ctx);
+    zx_handle_t output;
+    proto.ops->get_output_socket(proto.ctx, &output);
     if (output != ZX_HANDLE_INVALID) {
         unittest_set_output_function(ddk_test_output_func, &output);
     }
@@ -51,6 +52,8 @@ static zx_status_t ddk_test_func(void* cookie, const void* arg, size_t arglen, t
     memset(report, 0, sizeof(*report));
     update_test_report(unittest_run_one_test(test_case_ddk_metadata, TEST_ALL), report);
     update_test_report(unittest_run_one_test(test_case_ddk_usb_request, TEST_ALL), report);
+    unittest_restore_output_function();
+    zx_handle_close(output);
     return report->n_failed == 0 ? ZX_OK : ZX_ERR_INTERNAL;
 }
 

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2016 The Fuchsia Authors
+#
+# Use of this source code is governed by a MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT
+
 function HELP {
     echo "help:"
     echo "-a <arch>            : arm64, or x64"
@@ -28,7 +34,7 @@ function HELP {
     echo "-t <binary>          : use <binary> as the QEMU->ZBI trampoline"
     echo "-u <path>            : execute qemu startUp script, default is no script"
     echo "-V                   : try to use virtio devices"
-    echo "-x <bootdata>        : DEPRECATED: use specified bootdata"
+    echo "-X                   : use XRay build"
     echo "-z <zbi>             : boot specified complete ZBI via trampoline"
     echo "--audio[=<host_drv>] : use Intel HD Audio"
     echo "                     : <host_drv> should be one of (alsa, pa, wav, none)"
@@ -65,6 +71,7 @@ DO_KVM=0
 LTO=0
 THINLTO=0
 PROFILE=0
+XRAY=0
 MEMSIZE_DEFAULT=2048
 MEMSIZE=$MEMSIZE_DEFAULT
 NET=0
@@ -75,7 +82,6 @@ VNC=
 VIRTIO=0
 SERIAL=1
 SMP=4
-DEPRECATED_INITRD=
 CMDLINE=""
 QEMU_KERNEL=
 QEMU_INITRD=
@@ -102,7 +108,7 @@ abspath() {
   esac
 }
 
-while getopts "Aa:bc:CdD:gG:I:kLlm:nNo:Pq:rs:t::u:Vx:z:h-:" FLAG; do
+while getopts "Aa:bc:CdD:gG:I:kLlm:nNo:Pq:rs:t::u:VXz:h-:" FLAG; do
     case $FLAG in
         A) ASAN=1;;
         a) ARCH=$OPTARG;;
@@ -128,7 +134,7 @@ while getopts "Aa:bc:CdD:gG:I:kLlm:nNo:Pq:rs:t::u:Vx:z:h-:" FLAG; do
         t) QEMU_KERNEL="$(abspath "$OPTARG")";;
         u) UPSCRIPT="$(abspath "$OPTARG")";;
         V) VIRTIO=1;;
-        x) DEPRECATED_INITRD="$(abspath "$OPTARG")";;
+        X) XRAY=1;;
         z) QEMU_INITRD="$(abspath "$OPTARG")";;
         h) HELP;;
         \?)
@@ -180,6 +186,9 @@ elif (( $THINLTO )); then
 elif (( $PROFILE )); then
     BUILDDIR_SUFFIX+=-profile
     BUILD_ARGS+=' -P'
+elif (( $XRAY )); then
+    BUILDDIR_SUFFIX+=-xray
+    BUILD_ARGS+=' -X'
 elif (( $CLANG )); then
     BUILDDIR_SUFFIX+=-clang
     BUILD_ARGS+=' -C'
@@ -221,16 +230,11 @@ if [[ -z $BUILDDIR ]]; then
   BUILDDIR="$(dirname "$DIR")/build-$PROJECT$BUILDDIR_SUFFIX"
 fi
 
-if [[ -n "$QEMU_INITRD" ]]; then
-    if [[ -n "$DEPRECATED_INITRD" ]]; then
-        echo >&2 "ZBI booting with -z is incompatible with deprecated -x"
-        exit 2
-    fi
-elif [[ -z "$DEPRECATED_INITRD" ]]; then
+if [[ -z "$QEMU_INITRD" ]]; then
     QEMU_INITRD="$(abspath "$BUILDDIR/zircon.zbi")"
 fi
 
-if [[ -n "$QEMU_INITRD" && -z "$QEMU_KERNEL" ]]; then
+if [[ -z "$QEMU_KERNEL" ]]; then
     case $ARCH in
     arm64) QEMU_KERNEL="$(abspath "$BUILDDIR/qemu-boot-shim.bin")" ;;
     x64) QEMU_KERNEL="$(abspath "$BUILDDIR/multiboot.bin")" ;;
@@ -394,7 +398,6 @@ fi
 case $ARCH in
     arm64)
         QEMU=${QEMUDIR}qemu-system-aarch64
-        DEPRECATED_KERNEL="$BUILDDIR/qemu-zircon.bin"
         if (( $DO_KVM )); then
           ARGS+=" -enable-kvm -cpu host"
           GIC=host
@@ -413,7 +416,6 @@ case $ARCH in
         ;;
     x64)
         QEMU=${QEMUDIR}qemu-system-x86_64
-        DEPRECATED_KERNEL="$BUILDDIR/zircon.bin"
         ARGS+=" -machine q35"
         ARGS+=" -device isa-debug-exit,iobase=0xf4,iosize=0x04"
         if (( $DO_KVM )); then
@@ -433,11 +435,6 @@ case $ARCH in
         HELP
         ;;
 esac
-
-if [[ -n "$DEPRECATED_INITRD" ]]; then
-    QEMU_KERNEL="$(abspath "$DEPRECATED_KERNEL")"
-    QEMU_INITRD="$(abspath "$DEPRECATED_INITRD")"
-fi
 
 # Propagate our TERM environment variable as a kernel command line
 # argument.  This is last so that an explicit -c TERM=foo argument

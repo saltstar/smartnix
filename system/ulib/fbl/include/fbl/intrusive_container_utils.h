@@ -1,8 +1,13 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <fbl/intrusive_pointer_traits.h>
 #include <fbl/type_support.h>
+
+#include <type_traits>
 
 namespace fbl {
 
@@ -62,7 +67,7 @@ struct DirectEraseUtils;
 template <typename ContainerType>
 struct DirectEraseUtils<
         ContainerType,
-        typename enable_if<ContainerType::SupportsConstantOrderErase == false, void>::type> {
+        typename std::enable_if<ContainerType::SupportsConstantOrderErase == false, void>::type> {
     using PtrTraits = typename ContainerType::PtrTraits;
     using PtrType   = typename PtrTraits::PtrType;
     using ValueType = typename PtrTraits::ValueType;
@@ -78,7 +83,7 @@ struct DirectEraseUtils<
 template <typename ContainerType>
 struct DirectEraseUtils<
         ContainerType,
-        typename enable_if<ContainerType::SupportsConstantOrderErase == true, void>::type> {
+        typename std::enable_if<ContainerType::SupportsConstantOrderErase == true, void>::type> {
     using PtrTraits = typename ContainerType::PtrTraits;
     using PtrType   = typename PtrTraits::PtrType;
     using ValueType = typename PtrTraits::ValueType;
@@ -100,7 +105,7 @@ template <typename ContainerType, typename KeyTraits>
 struct KeyEraseUtils<
         ContainerType,
         KeyTraits,
-        typename enable_if<ContainerType::IsAssociative == false, void>::type> {
+        typename std::enable_if<ContainerType::IsAssociative == false, void>::type> {
     using PtrTraits = typename ContainerType::PtrTraits;
     using PtrType   = typename PtrTraits::PtrType;
     using ValueType = typename PtrTraits::ValueType;
@@ -118,7 +123,7 @@ template <typename ContainerType, typename KeyTraits>
 struct KeyEraseUtils<
         ContainerType,
         KeyTraits,
-        typename enable_if<ContainerType::IsAssociative == true, void>::type> {
+        typename std::enable_if<ContainerType::IsAssociative == true, void>::type> {
     using PtrTraits = typename ContainerType::PtrTraits;
     using PtrType   = typename PtrTraits::PtrType;
 
@@ -129,7 +134,7 @@ struct KeyEraseUtils<
 };
 
 // Swaps two plain old data types with size no greater than 64 bits.
-template <class T, class = typename enable_if<is_pod<T>::value && (sizeof(T) <= 8)>::type>
+template <class T, class = typename std::enable_if<is_pod<T>::value && (sizeof(T) <= 8)>::type>
 inline void Swap(T& a, T& b) noexcept {
     T tmp = a;
     a = b;
@@ -163,20 +168,20 @@ constexpr uintptr_t kContainerSentinelBit = 1u;
 
 // Create a sentinel pointer from a raw pointer, converting it to the specified
 // type in the process.
-template <typename T, typename U, typename = typename enable_if<is_pointer<T>::value>::type>
+template <typename T, typename U, typename = typename std::enable_if<is_pointer<T>::value>::type>
 constexpr T make_sentinel(U* ptr) {
     return reinterpret_cast<T>(reinterpret_cast<uintptr_t>(ptr) |
                                kContainerSentinelBit);
 }
 
-template <typename T, typename = typename enable_if<is_pointer<T>::value>::type>
+template <typename T, typename = typename std::enable_if<is_pointer<T>::value>::type>
 constexpr T make_sentinel(decltype(nullptr)) {
     return reinterpret_cast<T>(kContainerSentinelBit);
 }
 
 // Turn a sentinel pointer back into a normal pointer, automatically
 // re-interpreting its type in the process.
-template <typename T, typename U, typename = typename enable_if<is_pointer<T>::value>::type>
+template <typename T, typename U, typename = typename std::enable_if<is_pointer<T>::value>::type>
 constexpr T unmake_sentinel(U* sentinel) {
     return reinterpret_cast<T>(reinterpret_cast<uintptr_t>(sentinel) &
                                ~kContainerSentinelBit);

@@ -42,24 +42,24 @@ bool TestJoin() {
     EXPECT_STR_EQ(path.c_str(), "/");
 
     path.Reset();
-    fbl::String str = fbl::move(path.Join(""));
+    fbl::String str = path.Join("");
     EXPECT_STR_EQ(path.c_str(), "/");
 
     path.Reset();
-    str = fbl::move(path.Join("tmp"));
+    str = path.Join("tmp");
     EXPECT_STR_EQ(str.c_str(), "/tmp");
 
-    str = fbl::move(path.Join("/foo"));
+    str = path.Join("/foo");
     EXPECT_STR_EQ(str.c_str(), "/foo");
 
-    str = fbl::move(path.Join("bar/"));
+    str = path.Join("bar/");
     EXPECT_STR_EQ(str.c_str(), "/bar");
 
-    str = fbl::move(path.Join("//baz//"));
+    str = path.Join("//baz//");
     EXPECT_STR_EQ(str.c_str(), "/baz");
 
     path.Reset();
-    str = fbl::move(path.Join("tmp//foo//bar//baz"));
+    str = path.Join("tmp//foo//bar//baz");
     EXPECT_STR_EQ(str.c_str(), "/tmp/foo/bar/baz");
 
     END_TEST;
@@ -130,7 +130,7 @@ bool TestPushAndPop() {
     END_TEST;
 }
 
-bool TestGetSize() {
+bool TestGetSizeAndExists() {
     BEGIN_TEST;
     PathFixture fixture;
     ASSERT_TRUE(fixture.Create());
@@ -142,9 +142,18 @@ bool TestGetSize() {
     EXPECT_EQ(ZX_OK, path.GetSize("r", &size));
     EXPECT_EQ(size, 0);
 
+    // Non-existent and not file
+    EXPECT_NE(ZX_OK, path.GetSize("q", &size));
+    EXPECT_NE(ZX_OK, path.GetSize("z", &size));
+
     // +1 is for null terminator
     EXPECT_EQ(ZX_OK, path.GetSize("z/qu/x", &size));
     EXPECT_EQ(size, static_cast<size_t>(strlen("hello world") + 1));
+
+    EXPECT_TRUE(path.IsFile("r"));
+    EXPECT_FALSE(path.IsFile("q"));
+    EXPECT_FALSE(path.IsFile("z"));
+    EXPECT_TRUE(path.IsFile("z/qu/x"));
 
     END_TEST;
 }
@@ -272,7 +281,7 @@ bool TestReset() {
 BEGIN_TEST_CASE(PathTest)
 RUN_TEST(TestJoin)
 RUN_TEST(TestPushAndPop)
-RUN_TEST(TestGetSize)
+RUN_TEST(TestGetSizeAndExists)
 RUN_TEST(TestList)
 RUN_TEST(TestEnsureAndRemove)
 RUN_TEST(TestRename)

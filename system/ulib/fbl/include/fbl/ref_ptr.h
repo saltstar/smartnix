@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,6 +9,9 @@
 #include <fbl/alloc_checker.h>
 #include <fbl/recycler.h>
 #include <fbl/type_support.h>
+
+#include <utility>
+#include <type_traits>
 
 namespace fbl {
 
@@ -65,7 +71,7 @@ public:
     //
     // @see the notes in unique_ptr.h
     template <typename U,
-              typename = typename enable_if<is_convertible_pointer<U*, T*>::value>::type>
+              typename = typename std::enable_if<is_convertible_pointer<U*, T*>::value>::type>
     RefPtr(const RefPtr<U>& r) : RefPtr(r.ptr_) {
         static_assert((is_class<T>::value == is_class<U>::value) &&
                       (!is_class<T>::value ||
@@ -100,7 +106,7 @@ public:
     //
     // @see the notes in RefPtr.h
     template <typename U,
-              typename = typename enable_if<is_convertible_pointer<U*, T*>::value>::type>
+              typename = typename std::enable_if<is_convertible_pointer<U*, T*>::value>::type>
     RefPtr(RefPtr<U>&& r) : ptr_(r.ptr_) {
         static_assert((is_class<T>::value == is_class<U>::value) &&
                       (!is_class<T>::value ||
@@ -115,7 +121,7 @@ public:
 
     // Move assignment
     RefPtr& operator=(RefPtr&& r) {
-        RefPtr(fbl::move(r)).swap(*this);
+        RefPtr(std::move(r)).swap(*this);
         return *this;
     }
 
@@ -133,7 +139,7 @@ public:
     //
     // fbl::RefPtr<MyBase> foo = MakeBase();
     // auto bar_copy = fbl::RefPtr<MyDerived>::Downcast(foo);
-    // auto bar_move = fbl::RefPtr<MyDerived>::Downcast(fbl::move(foo));
+    // auto bar_move = fbl::RefPtr<MyDerived>::Downcast(std::move(foo));
     //
     template <typename BaseRefPtr>
     static RefPtr Downcast(BaseRefPtr base) {
@@ -265,12 +271,12 @@ class MakeRefCountedHelper final {
  public:
   template <typename... Args>
   static RefPtr<T> MakeRefCounted(Args&&... args) {
-    return AdoptRef<T>(new T(forward<Args>(args)...));
+    return AdoptRef<T>(new T(std::forward<Args>(args)...));
   }
 
   template <typename... Args>
   static RefPtr<T> MakeRefCountedChecked(AllocChecker* ac, Args&&... args) {
-    return AdoptRef<T>(new (ac) T(forward<Args>(args)...));
+    return AdoptRef<T>(new (ac) T(std::forward<Args>(args)...));
   }
 };
 
@@ -279,13 +285,13 @@ class MakeRefCountedHelper final {
 template <typename T, typename... Args>
 RefPtr<T> MakeRefCounted(Args&&... args) {
   return internal::MakeRefCountedHelper<T>::MakeRefCounted(
-      forward<Args>(args)...);
+      std::forward<Args>(args)...);
 }
 
 template <typename T, typename... Args>
 RefPtr<T> MakeRefCountedChecked(AllocChecker* ac, Args&&... args) {
   return internal::MakeRefCountedHelper<T>::MakeRefCountedChecked(
-      ac, forward<Args>(args)...);
+      ac, std::forward<Args>(args)...);
 }
 
 } // namespace fbl

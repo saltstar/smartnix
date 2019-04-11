@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_JSON_GENERATOR_H_
 #define ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_JSON_GENERATOR_H_
@@ -86,13 +89,15 @@ private:
     void Generate(const flat::Enum::Member& value);
     void Generate(const flat::Interface& value);
     void Generate(const flat::Interface::Method* value);
-    void Generate(const flat::Interface::Method::Parameter& value);
+    void GenerateRequest(const std::string& prefix, const flat::Struct& value);
     void Generate(const flat::Struct& value);
     void Generate(const flat::Struct::Member& value);
     void Generate(const flat::Table& value);
     void Generate(const flat::Table::Member& value);
     void Generate(const flat::Union& value);
     void Generate(const flat::Union::Member& value);
+    void Generate(const flat::XUnion& value);
+    void Generate(const flat::XUnion::Member& value);
     void Generate(const flat::Library* library);
 
     void GenerateDeclarationsEntry(int count, const flat::Name& name, StringView decl);

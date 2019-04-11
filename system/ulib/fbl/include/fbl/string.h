@@ -1,11 +1,15 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
+#include <atomic>
 #include <fbl/alloc_checker.h>
-#include <fbl/atomic.h>
-#include <fbl/initializer_list.h>
 #include <fbl/string_piece.h>
 #include <fbl/string_traits.h>
+#include <initializer_list>
+#include <type_traits>
 #include <zircon/compiler.h>
 
 namespace fbl {
@@ -104,7 +108,7 @@ public:
     //
     // Works with various string types including fbl::String, fbl::StringView,
     // std::string, and std::string_view.
-    template <typename T, typename = typename enable_if<is_string_like<T>::value>::type>
+    template <typename T, typename = typename std::enable_if<is_string_like<T>::value>::type>
     constexpr String(const T& value)
         : String(GetStringData(value), GetStringLength(value)) {}
 
@@ -175,7 +179,7 @@ public:
     //
     // Works with various string types including fbl::String, fbl::StringView,
     // std::string, and std::string_view.
-    template <typename T, typename = typename enable_if<is_string_like<T>::value>::type>
+    template <typename T, typename = typename std::enable_if<is_string_like<T>::value>::type>
     String& operator=(const T& value) {
         Set(GetStringData(value), GetStringLength(value));
         return *this;
@@ -241,11 +245,12 @@ public:
     }
 
     // Concatenates the specified strings.
-    static String Concat(initializer_list<String> strings);
+    static String Concat(std::initializer_list<String> strings);
 
     // Concatenates the specified strings.
     // |ac| must not be null.
-    static String Concat(initializer_list<String> strings, AllocChecker* ac);
+    static String Concat(std::initializer_list<String> strings,
+                         AllocChecker* ac);
 
 private:
     friend struct fbl::tests::StringTestHelper;
@@ -259,13 +264,13 @@ private:
     // at the beginning of the string buffer itself.
     static constexpr size_t kLengthFieldOffset = 0u;
     static constexpr size_t kRefCountFieldOffset = sizeof(size_t);
-    static constexpr size_t kDataFieldOffset = sizeof(size_t) + sizeof(atomic_uint);
+    static constexpr size_t kDataFieldOffset = sizeof(size_t) + sizeof(std::atomic_uint);
 
     static size_t* length_field_of(char* data) {
         return reinterpret_cast<size_t*>(data - kDataFieldOffset + kLengthFieldOffset);
     }
-    static atomic_uint* ref_count_field_of(char* data) {
-        return reinterpret_cast<atomic_uint*>(data - kDataFieldOffset + kRefCountFieldOffset);
+    static std::atomic_uint* ref_count_field_of(char* data) {
+        return reinterpret_cast<std::atomic_uint*>(data - kDataFieldOffset + kRefCountFieldOffset);
     }
     static constexpr size_t buffer_size(size_t length) {
         return kDataFieldOffset + length + 1u;
@@ -273,13 +278,13 @@ private:
 
     // For use by test code only.
     unsigned int ref_count() const {
-        return ref_count_field_of(data_)->load(memory_order_relaxed);
+        return ref_count_field_of(data_)->load(std::memory_order_relaxed);
     }
 
     // Storage for an empty string.
     struct EmptyBuffer {
         size_t length{0u};
-        atomic_uint ref_count{1u};
+        std::atomic_uint ref_count{1u};
         char nul{0};
     };
     static_assert(offsetof(EmptyBuffer, length) == kLengthFieldOffset, "");

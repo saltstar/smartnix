@@ -13,23 +13,28 @@
 #include <ddktl/protocol/nand.h>
 #include <fbl/macros.h>
 #include <fbl/mutex.h>
-#include <lib/zx/vmo.h>
+#include <fuchsia/hardware/nand/c/fidl.h>
 #include <lib/sync/completion.h>
+#include <lib/zx/vmo.h>
 #include <zircon/listnode.h>
-#include <zircon/nand/c/fidl.h>
 #include <zircon/thread_annotations.h>
 #include <zircon/types.h>
 
-// Wrapper for zircon_nand_Info. It simplifies initialization of NandDevice.
-struct NandParams : public zircon_nand_Info {
+// Wrapper for fuchsia_hardware_nand_Info. It simplifies initialization of NandDevice.
+struct NandParams : public fuchsia_hardware_nand_Info {
     NandParams() : NandParams(0, 0, 0, 0, 0) {}
 
     NandParams(uint32_t page_size, uint32_t pages_per_block, uint32_t num_blocks, uint32_t ecc_bits,
                uint32_t oob_size)
-        : NandParams(zircon_nand_Info {page_size, pages_per_block, num_blocks, ecc_bits, oob_size,
-                     zircon_nand_Class_FTL, {}}) {}
+        : NandParams(fuchsia_hardware_nand_Info{page_size,
+                                                pages_per_block,
+                                                num_blocks,
+                                                ecc_bits,
+                                                oob_size,
+                                                fuchsia_hardware_nand_Class_FTL,
+                                                {}}) {}
 
-    NandParams(const zircon_nand_Info& base) {
+    NandParams(const fuchsia_hardware_nand_Info& base) {
         // NandParams has no data members.
         *this = *reinterpret_cast<const NandParams*>(&base);
     }
@@ -47,12 +52,12 @@ class NandDevice;
 using DeviceType = ddk::Device<NandDevice, ddk::GetSizable, ddk::Unbindable, ddk::Messageable>;
 
 // Provides the bulk of the functionality for a ram-backed NAND device.
-class NandDevice : public DeviceType, public ddk::NandProtocol<NandDevice> {
+class NandDevice : public DeviceType, public ddk::NandProtocol<NandDevice, ddk::base_protocol> {
   public:
     explicit NandDevice(const NandParams& params, zx_device_t* parent = nullptr);
     ~NandDevice();
 
-    zx_status_t Bind(const zircon_nand_RamNandInfo& info);
+    zx_status_t Bind(const fuchsia_hardware_nand_RamNandInfo& info);
     void DdkRelease() { delete this; }
 
     // Performs the object initialization, returning the required data to create
@@ -69,23 +74,25 @@ class NandDevice : public DeviceType, public ddk::NandProtocol<NandDevice> {
     zx_status_t Unlink();
 
     // NAND protocol implementation.
-    void Query(zircon_nand_Info* info_out, size_t* nand_op_size_out);
-    void Queue(nand_op_t* operation);
-    zx_status_t GetFactoryBadBlockList(uint32_t* bad_blocks, uint32_t bad_block_len,
-                                       uint32_t* num_bad_blocks);
+    void NandQuery(fuchsia_hardware_nand_Info* info_out, size_t* nand_op_size_out);
+    void NandQueue(nand_operation_t* operation, nand_queue_callback completion_cb,
+                   void* cookie);
+    zx_status_t NandGetFactoryBadBlockList(uint32_t* bad_blocks, size_t bad_block_len,
+                                       size_t* num_bad_blocks);
 
   private:
     void Kill();
-    bool AddToList(nand_op_t* operation);
-    bool RemoveFromList(nand_op_t** operation);
+    bool AddToList(nand_operation_t* operation, nand_queue_callback completion_cb,
+                   void* cookie);
+    bool RemoveFromList(nand_operation_t** operation);
     int WorkerThread();
     static int WorkerThreadStub(void* arg);
     uint32_t MainDataSize() const { return params_.NumPages() * params_.page_size; }
 
     // Implementation of the actual commands.
-    zx_status_t ReadWriteData(nand_op_t* operation);
-    zx_status_t ReadWriteOob(nand_op_t* operation);
-    zx_status_t Erase(nand_op_t* operation);
+    zx_status_t ReadWriteData(nand_operation_t* operation);
+    zx_status_t ReadWriteOob(nand_operation_t* operation);
+    zx_status_t Erase(nand_operation_t* operation);
 
     uintptr_t mapped_addr_ = 0;
     zx::vmo vmo_;

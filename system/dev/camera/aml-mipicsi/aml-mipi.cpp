@@ -7,11 +7,11 @@
 #include <ddk/binding.h>
 #include <ddk/debug.h>
 #include <ddk/metadata.h>
-#include <ddk/metadata/camera.h>
 #include <fbl/alloc_checker.h>
 #include <fbl/auto_call.h>
 #include <fbl/unique_ptr.h>
 #include <hw/reg.h>
+#include <memory>
 #include <stdint.h>
 #include <threads.h>
 #include <zircon/types.h>
@@ -29,40 +29,12 @@ constexpr uint32_t kAphy0 = 1;
 constexpr uint32_t kCsiHost0 = 2;
 constexpr uint32_t kMipiAdap = 3;
 constexpr uint32_t kHiu = 4;
-constexpr uint32_t kPowerDomain = 5;
-constexpr uint32_t kMemoryDomain = 6;
-constexpr uint32_t kReset = 7;
 
 // CLK Shifts & Masks
 constexpr uint32_t kClkMuxMask = 0xfff;
 constexpr uint32_t kClkEnableShift = 8;
 
 } // namespace
-
-void AmlMipiDevice::IspHWReset(bool reset) {
-    if (reset) {
-        reset_mmio_->ClearBits32(1 << 1, RESET4_LEVEL);
-    } else {
-        reset_mmio_->SetBits32(1 << 1, RESET4_LEVEL);
-    }
-}
-
-void AmlMipiDevice::PowerUpIsp() {
-    // set bit[18-19]=0
-    power_mmio_->ClearBits32(1 << 18 | 1 << 19, AO_RTI_GEN_PWR_SLEEP0);
-    zx_nanosleep(zx_deadline_after(ZX_MSEC(5)));
-
-    // set bit[18-19]=0
-    power_mmio_->ClearBits32(1 << 18 | 1 << 19, AO_RTI_GEN_PWR_ISO0);
-
-    // MEM_PD_REG0 set 0
-    memory_pd_mmio_->Write32(0, HHI_ISP_MEM_PD_REG0);
-    // MEM_PD_REG1 set 0
-    memory_pd_mmio_->Write32(0, HHI_ISP_MEM_PD_REG1);
-
-    hiu_mmio_->Write32(0x5b446585, HHI_CSI_PHY_CNTL0);
-    hiu_mmio_->Write32(0x803f4321, HHI_CSI_PHY_CNTL1);
-}
 
 void AmlMipiDevice::InitMipiClock() {
     // clear existing values
@@ -83,82 +55,51 @@ void AmlMipiDevice::InitMipiClock() {
 }
 
 zx_status_t AmlMipiDevice::InitPdev(zx_device_t* parent) {
-    zx_status_t status = device_get_protocol(parent, ZX_PROTOCOL_PDEV, &pdev_);
+    if (!pdev_.is_valid()) {
+        return ZX_ERR_NO_RESOURCES;
+    }
+
+    zx_status_t status = pdev_.MapMmio(kCsiPhy0, &csi_phy0_mmio_);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: ZX_PROTOCOL_PDEV not available %d \n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: pdev_.MapMmio failed %d\n", __func__, status);
         return status;
     }
 
-    mmio_buffer_t mmio;
-    status = pdev_map_mmio_buffer2(&pdev_,
-                                   kCsiPhy0, ZX_CACHE_POLICY_UNCACHED_DEVICE,
-                                   &mmio);
+    status = pdev_.MapMmio(kAphy0, &aphy0_mmio_);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: pdev_.MapMmio failed %d\n", __func__, status);
         return status;
     }
-    csi_phy0_mmio_ = fbl::make_unique<ddk::MmioBuffer>(mmio);
 
-    status = pdev_map_mmio_buffer2(&pdev_, kAphy0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    status = pdev_.MapMmio(kCsiHost0, &csi_host0_mmio_);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: pdev_.MapMmio failed %d\n", __func__, status);
         return status;
     }
-    aphy0_mmio_ = fbl::make_unique<ddk::MmioBuffer>(mmio);
 
-    status = pdev_map_mmio_buffer2(&pdev_, kCsiHost0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    status = pdev_.MapMmio(kMipiAdap, &mipi_adap_mmio_);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: pdev_.MapMmio failed %d\n", __func__, status);
         return status;
     }
-    csi_host0_mmio_ = fbl::make_unique<ddk::MmioBuffer>(mmio);
 
-    status = pdev_map_mmio_buffer2(&pdev_, kMipiAdap, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    status = pdev_.MapMmio(kHiu, &hiu_mmio_);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: pdev_.MapMmio failed %d\n", __func__, status);
         return status;
     }
-    mipi_adap_mmio_ = fbl::make_unique<ddk::MmioBuffer>(mmio);
-
-    status = pdev_map_mmio_buffer2(&pdev_, kHiu, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
-    if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
-        return status;
-    }
-    hiu_mmio_ = fbl::make_unique<ddk::MmioBuffer>(mmio);
-
-    status = pdev_map_mmio_buffer2(&pdev_, kPowerDomain, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
-    if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
-        return status;
-    }
-    power_mmio_ = fbl::make_unique<ddk::MmioBuffer>(mmio);
-
-    status = pdev_map_mmio_buffer2(&pdev_, kMemoryDomain, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
-    if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
-        return status;
-    }
-    memory_pd_mmio_ = fbl::make_unique<ddk::MmioBuffer>(mmio);
-
-    status = pdev_map_mmio_buffer2(&pdev_, kReset, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
-    if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: pdev_map_mmio_buffer2 failed %d\n", __FUNCTION__, status);
-        return status;
-    }
-    reset_mmio_ = fbl::make_unique<ddk::MmioBuffer>(mmio);
 
     // Get our bti.
-    status = pdev_get_bti(&pdev_, 0, bti_.reset_and_get_address());
+    status = pdev_.GetBti(0, &bti_);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: could not obtain bti: %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: could not obtain bti: %d\n", __func__, status);
         return status;
     }
 
     // Get adapter interrupt.
-    status = pdev_map_interrupt(&pdev_, 0, adap_irq_.reset_and_get_address());
+    status = pdev_.GetInterrupt(0, &adap_irq_);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: could not obtain adapter interrupt %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: could not obtain adapter interrupt %d\n", __func__, status);
         return status;
     }
 
@@ -236,102 +177,88 @@ void AmlMipiDevice::MipiCsi2Init(const mipi_info_t* info) {
     csi_host0_mmio_->Write32(0xffffffff, MIPI_CSI_PHY_SHUTDOWNZ);
 }
 
-// static
-zx_status_t AmlMipiDevice::MipiCsiInit(void* ctx,
-                                       const mipi_info_t* mipi_info,
+zx_status_t AmlMipiDevice::MipiCsiInit(const mipi_info_t* mipi_info,
                                        const mipi_adap_info_t* adap_info) {
-    auto& self = *static_cast<AmlMipiDevice*>(ctx);
-
-    // The ISP and MIPI module is in same power domain.
-    // So if we don't call the power sequence of ISP, the mipi module
-    // won't work and it will block accesses to the  mipi register block.
-    self.PowerUpIsp();
 
     // Setup MIPI CSI PHY CLK to 200MHz.
     // Setup MIPI ISP CLK to 667MHz.
-    self.InitMipiClock();
-
-    self.IspHWReset(true);
-    self.IspHWReset(false);
+    InitMipiClock();
 
     // Initialize the PHY.
-    self.MipiPhyInit(mipi_info);
+    MipiPhyInit(mipi_info);
     // Initialize the CSI Host.
-    self.MipiCsi2Init(mipi_info);
+    MipiCsi2Init(mipi_info);
 
     // Initialize the MIPI Adapter.
-    zx_status_t status = self.MipiAdapInit(adap_info);
+    zx_status_t status = MipiAdapInit(adap_info);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "%s: MipiAdapInit failed %d\n", __FUNCTION__, status);
+        zxlogf(ERROR, "%s: MipiAdapInit failed %d\n", __func__, status);
         return status;
     }
 
     // Start the MIPI Adapter.
-    self.MipiAdapStart(adap_info);
+    MipiAdapStart(adap_info);
     return status;
 }
 
-// static
-zx_status_t AmlMipiDevice::MipiCsiDeInit(void* ctx) {
-    auto& self = *static_cast<AmlMipiDevice*>(ctx);
-    self.MipiPhyReset();
-    self.MipiCsi2Reset();
-    self.MipiAdapReset();
+zx_status_t AmlMipiDevice::MipiCsiDeInit() {
+    MipiPhyReset();
+    MipiCsi2Reset();
+    MipiAdapReset();
     return ZX_OK;
 }
 
-void AmlMipiDevice::ShutDown() {
-    MipiCsiDeInit(this);
-    csi_phy0_mmio_.reset();
-    aphy0_mmio_.reset();
-    csi_host0_mmio_.reset();
-    mipi_adap_mmio_.reset();
-    hiu_mmio_.reset();
-    power_mmio_.reset();
-    memory_pd_mmio_.reset();
-    reset_mmio_.reset();
+void AmlMipiDevice::DdkUnbind() {
+    DdkRemove();
 }
 
-static void DdkUnbind(void* ctx) {
-    auto& self = *static_cast<AmlMipiDevice*>(ctx);
-    device_remove(self.device_);
+void AmlMipiDevice::DdkRelease() {
+    delete this;
 }
 
-static void DdkRelease(void* ctx) {
-    auto& self = *static_cast<AmlMipiDevice*>(ctx);
-    self.ShutDown();
-    delete &self;
+zx_status_t AmlMipiDevice::DdkGetProtocol(uint32_t proto_id, void* out_protocol) {
+    switch (proto_id) {
+    case ZX_PROTOCOL_ISP_IMPL: {
+        if (!parent_protocol_.is_valid()) {
+            return ZX_ERR_NOT_SUPPORTED;
+        }
+        parent_protocol_.GetProto(static_cast<isp_impl_protocol_t*>(out_protocol));
+        return ZX_OK;
+    }
+    case ZX_PROTOCOL_MIPI_CSI: {
+        self_protocol_.GetProto(static_cast<mipi_csi_protocol_t*>(out_protocol));
+        return ZX_OK;
+    }
+    default:
+        return ZX_ERR_NOT_SUPPORTED;
+    }
 }
 
-static mipi_csi_protocol_ops_t proto_ops = {
-    .init = AmlMipiDevice::MipiCsiInit,
-    .de_init = AmlMipiDevice::MipiCsiDeInit,
-};
+zx_status_t AmlMipiDevice::Bind(camera_sensor_t* sensor_info) {
 
-static zx_protocol_device_t mipi_device_ops = []() {
-    zx_protocol_device_t result;
+    zx_device_prop_t props[] = {
+        {BIND_PLATFORM_DEV_VID, 0, sensor_info->vid},
+        {BIND_PLATFORM_DEV_PID, 0, sensor_info->pid},
+        {BIND_PLATFORM_DEV_DID, 0, sensor_info->did},
+    };
 
-    result.version = DEVICE_OPS_VERSION;
-    result.unbind = &DdkUnbind;
-    result.release = &DdkRelease;
-    return result;
-}();
+    device_add_args_t args = {};
+    args.version = DEVICE_ADD_ARGS_VERSION;
+    args.name = "aml-mipi";
+    args.ctx = this;
+    args.ops = &ddk_device_proto_;
+    args.proto_id = ddk_proto_id_;
+    args.proto_ops = ddk_proto_ops_;
+    args.props = props;
+    args.prop_count = countof(props);
 
-static device_add_args_t mipi_dev_args = []() {
-    device_add_args_t result;
-
-    result.version = DEVICE_ADD_ARGS_VERSION;
-    result.name = "aml-mipi";
-    result.ops = &mipi_device_ops;
-    result.proto_id = ZX_PROTOCOL_MIPI_CSI;
-    result.proto_ops = &proto_ops;
-    return result;
-}();
+    return pdev_.DeviceAdd(0, &args, &zxdev_);
+}
 
 // static
 zx_status_t AmlMipiDevice::Create(zx_device_t* parent) {
     fbl::AllocChecker ac;
-    auto mipi_device = fbl::make_unique_checked<AmlMipiDevice>(&ac);
+    auto mipi_device = std::unique_ptr<AmlMipiDevice>(new (&ac) AmlMipiDevice(parent));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
@@ -340,6 +267,7 @@ zx_status_t AmlMipiDevice::Create(zx_device_t* parent) {
     if (status != ZX_OK) {
         return status;
     }
+
     // Populate board specific information
     camera_sensor_t sensor_info;
     size_t actual;
@@ -350,17 +278,7 @@ zx_status_t AmlMipiDevice::Create(zx_device_t* parent) {
         return status;
     }
 
-    static zx_device_prop_t props[] = {
-        {BIND_PLATFORM_DEV_VID, 0, sensor_info.vid},
-        {BIND_PLATFORM_DEV_PID, 0, sensor_info.pid},
-        {BIND_PLATFORM_DEV_DID, 0, sensor_info.did},
-    };
-
-    mipi_dev_args.props = props;
-    mipi_dev_args.prop_count = countof(props);
-    mipi_dev_args.ctx = mipi_device.get();
-
-    status = pdev_device_add(&mipi_device->pdev_, 0, &mipi_dev_args, &mipi_device->device_);
+    status = mipi_device->Bind(&sensor_info);
     if (status != ZX_OK) {
         zxlogf(ERROR, "aml-mipi driver failed to get added\n");
         return status;
@@ -380,8 +298,22 @@ AmlMipiDevice::~AmlMipiDevice() {
     thrd_join(irq_thread_, NULL);
 }
 
-} // namespace camera
-
-extern "C" zx_status_t aml_mipi_bind(void* ctx, zx_device_t* device) {
+zx_status_t aml_mipi_bind(void* ctx, zx_device_t* device) {
     return camera::AmlMipiDevice::Create(device);
 }
+
+static zx_driver_ops_t driver_ops = []() {
+    zx_driver_ops_t ops;
+    ops.version = DRIVER_OPS_VERSION;
+    ops.bind = aml_mipi_bind;
+    return ops;
+}();
+
+} // namespace camera
+
+// clang-format off
+ZIRCON_DRIVER_BEGIN(aml_mipi, camera::driver_ops, "aml-mipi-csi2", "0.1", 3)
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_VID, PDEV_VID_AMLOGIC),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_PID, PDEV_PID_AMLOGIC_T931),
+    BI_MATCH_IF(EQ, BIND_PLATFORM_DEV_DID, PDEV_DID_AMLOGIC_MIPI),
+ZIRCON_DRIVER_END(aml_mipi)

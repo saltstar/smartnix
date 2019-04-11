@@ -6,9 +6,9 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/protocol/serial-impl.h>
+#include <ddk/protocol/serialimpl.h>
 #include <ddk/protocol/usb.h>
-#include <ddk/usb/usb.h>
+#include <usb/usb.h>
 #include <usb/usb-request.h>
 #include <zircon/device/serial.h>
 #include <zircon/listnode.h>
@@ -56,9 +56,11 @@ typedef struct {
     // list of received packets not yet read by upper layer
     list_node_t completed_reads;
     size_t read_offset;
+
+    size_t parent_req_size;
+
     mtx_t mutex;
 } ftdi_t;
-
 
 static uint32_t ftdi_check_state(ftdi_t* ftdi) {
     uint32_t state = 0;
@@ -76,8 +78,8 @@ static uint32_t ftdi_check_state(ftdi_t* ftdi) {
     return state;
 }
 
-static void ftdi_read_complete(usb_request_t* request, void* cookie) {
-    ftdi_t* ftdi = (ftdi_t*)cookie;
+static void ftdi_read_complete(void* ctx, usb_request_t* request) {
+    ftdi_t* ftdi = (ftdi_t*)ctx;
 
     if (request->response.status == ZX_ERR_IO_NOT_PRESENT) {
         zxlogf(INFO,"FTDI: remote closed\n");
@@ -87,23 +89,31 @@ static void ftdi_read_complete(usb_request_t* request, void* cookie) {
 
     mtx_lock(&ftdi->mutex);
     if ((request->response.status == ZX_OK) && (request->response.actual > 2)) {
-        list_add_tail(&ftdi->completed_reads, &request->node);
+        zx_status_t status = usb_req_list_add_tail(&ftdi->completed_reads, request,
+                                                   ftdi->parent_req_size);
+        ZX_DEBUG_ASSERT(status == ZX_OK);
         ftdi_check_state(ftdi);
     } else {
-        usb_request_queue(&ftdi->usb, request);
+        usb_request_complete_t complete = {
+            .callback = ftdi_read_complete,
+            .ctx = ftdi,
+        };
+        usb_request_queue(&ftdi->usb, request, &complete);
     }
     mtx_unlock(&ftdi->mutex);
 }
 
-static void ftdi_write_complete(usb_request_t* request, void* cookie) {
-    ftdi_t* ftdi = (ftdi_t*)cookie;
+static void ftdi_write_complete(void* ctx, usb_request_t* request) {
+    ftdi_t* ftdi = (ftdi_t*)ctx;
 
     if (request->response.status == ZX_ERR_IO_NOT_PRESENT) {
         usb_request_release(request);
         return;
     }
     mtx_lock(&ftdi->mutex);
-    list_add_tail(&ftdi->free_write_reqs, &request->node);
+    zx_status_t status = usb_req_list_add_tail(&ftdi->free_write_reqs, request,
+                                              ftdi->parent_req_size);
+    ZX_DEBUG_ASSERT(status == ZX_OK);
     ftdi_check_state(ftdi);
     mtx_unlock(&ftdi->mutex);
 }
@@ -145,7 +155,7 @@ static zx_status_t ftdi_write(void *ctx, const void* buf, size_t length, size_t*
 
     mtx_lock(&ftdi->mutex);
 
-    req = list_remove_head_type(&ftdi->free_write_reqs, usb_request_t, node);
+    req = usb_req_list_remove_head(&ftdi->free_write_reqs, ftdi->parent_req_size);
     if (!req) {
         status = ZX_ERR_SHOULD_WAIT;
         *actual = 0;
@@ -155,7 +165,11 @@ static zx_status_t ftdi_write(void *ctx, const void* buf, size_t length, size_t*
     *actual = usb_request_copy_to(req, buf, length, 0);
     req->header.length = length;
 
-    usb_request_queue(&ftdi->usb,req);
+    usb_request_complete_t complete = {
+        .callback = ftdi_write_complete,
+        .ctx = ftdi,
+    };
+    usb_request_queue(&ftdi->usb,req, &complete);
     ftdi_check_state(ftdi);
 
 out:
@@ -170,10 +184,17 @@ static zx_status_t ftdi_read(void* ctx, void* data, size_t len, size_t* actual) 
     size_t offset = ftdi->read_offset;
     uint8_t* buffer = (uint8_t*)data;
 
+    usb_request_complete_t complete = {
+        .callback = ftdi_read_complete,
+        .ctx = ftdi,
+    };
+
     mtx_lock(&ftdi->mutex);
 
-    usb_request_t* req = list_peek_head_type(&ftdi->completed_reads,
-                                              usb_request_t, node);
+    usb_request_t* req;
+    usb_req_internal_t* req_int = list_peek_head_type(&ftdi->completed_reads,
+                                       usb_req_internal_t, node);
+    req = REQ_INTERNAL_TO_USB_REQ(req_int, ftdi->parent_req_size);
     while ((req) && (bytes_copied < len)) {
 
         size_t to_copy = req->response.actual - offset - FTDI_STATUS_SIZE;
@@ -193,11 +214,12 @@ static zx_status_t ftdi_read(void* ctx, void* data, size_t len, size_t* actual) 
         } else {
             list_remove_head(&ftdi->completed_reads);
             // requeue the read request
-            usb_request_queue(&ftdi->usb, req);
+            usb_request_queue(&ftdi->usb, req, &complete);
             offset = 0;
         }
 
-        req = list_peek_head_type(&ftdi->completed_reads, usb_request_t, node);
+        req_int = list_peek_head_type(&ftdi->completed_reads, usb_req_internal_t, node);
+        req = REQ_INTERNAL_TO_USB_REQ(req_int, ftdi->parent_req_size);
     }
     ftdi_check_state(ftdi);
 
@@ -229,9 +251,8 @@ static zx_status_t ftdi_set_baudrate(ftdi_t* ftdi, uint32_t baudrate){
     }
     value = (whole & 0x3fff) | (fraction << 14);
     index = fraction >> 2;
-    status = usb_control(&ftdi->usb, USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-                         FTDI_SIO_SET_BAUDRATE, value, index, NULL, 0,
-                         ZX_TIME_INFINITE,NULL);
+    status = usb_control_out(&ftdi->usb, USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+                             FTDI_SIO_SET_BAUDRATE, value, index, ZX_TIME_INFINITE, NULL, 0);
     if (status == ZX_OK) {
         ftdi->baudrate = baudrate;
     }
@@ -244,15 +265,8 @@ static zx_status_t ftdi_reset(ftdi_t* ftdi) {
         return ZX_ERR_INVALID_ARGS;
     }
 
-    return usb_control(
-            &ftdi->usb,
-            USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-            FTDI_SIO_RESET_REQUEST,
-            FTDI_SIO_RESET, //value
-            0, //index
-            NULL, 0, //data,length
-            ZX_TIME_INFINITE,
-            NULL);
+    return usb_control_out(&ftdi->usb, USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+                           FTDI_SIO_RESET_REQUEST, FTDI_SIO_RESET, 0, ZX_TIME_INFINITE, NULL, 0);
 }
 
 
@@ -308,13 +322,15 @@ static serial_impl_protocol_ops_t ftdi_serial_ops = {
 
 static void ftdi_free(ftdi_t* ftdi) {
     usb_request_t* req;
-    while ((req = list_remove_head_type(&ftdi->free_read_reqs, usb_request_t, node)) != NULL) {
+    while ((req = usb_req_list_remove_head(&ftdi->free_read_reqs, ftdi->parent_req_size)) != NULL) {
         usb_request_release(req);
     }
-    while ((req = list_remove_head_type(&ftdi->free_write_reqs, usb_request_t, node)) != NULL) {
+    while ((req = usb_req_list_remove_head(&ftdi->free_write_reqs,
+                                           ftdi->parent_req_size)) != NULL) {
         usb_request_release(req);
     }
-    while ((req = list_remove_head_type(&ftdi->completed_reads, usb_request_t, node)) != NULL) {
+    while ((req = usb_req_list_remove_head(&ftdi->completed_reads,
+                                           ftdi->parent_req_size)) != NULL) {
         usb_request_release(req);
     }
 
@@ -399,25 +415,26 @@ static zx_status_t ftdi_bind(void* ctx, zx_device_t* device) {
 
     mtx_init(&ftdi->mutex, mtx_plain);
 
+    ftdi->parent_req_size = usb_get_request_size(&ftdi->usb);
+    uint64_t req_size = ftdi->parent_req_size + sizeof(usb_req_internal_t);
+
     for (int i = 0; i < READ_REQ_COUNT; i++) {
         usb_request_t* req;
-        status = usb_request_alloc(&req, USB_BUF_SIZE, bulk_in_addr, sizeof(usb_request_t));
+        status = usb_request_alloc(&req, USB_BUF_SIZE, bulk_in_addr, req_size);
         if (status != ZX_OK) {
             goto fail;
         }
-        req->complete_cb = ftdi_read_complete;
-        req->cookie = ftdi;
-        list_add_head(&ftdi->free_read_reqs, &req->node);
+        status = usb_req_list_add_head(&ftdi->free_read_reqs, req, ftdi->parent_req_size);
+        ZX_DEBUG_ASSERT(status == ZX_OK);
     }
     for (int i = 0; i < WRITE_REQ_COUNT; i++) {
         usb_request_t* req;
-        status = usb_request_alloc(&req, USB_BUF_SIZE, bulk_out_addr, sizeof(usb_request_t));
+        status = usb_request_alloc(&req, USB_BUF_SIZE, bulk_out_addr, req_size);
         if (status != ZX_OK) {
             goto fail;
         }
-        req->complete_cb = ftdi_write_complete;
-        req->cookie = ftdi;
-        list_add_head(&ftdi->free_write_reqs, &req->node);
+        status = usb_req_list_add_head(&ftdi->free_write_reqs, req, ftdi->parent_req_size);
+        ZX_DEBUG_ASSERT(status == ZX_OK);
     }
 
     if (ftdi_reset(ftdi) < 0) {
@@ -448,12 +465,20 @@ static zx_status_t ftdi_bind(void* ctx, zx_device_t* device) {
         goto fail;
     }
 
+    usb_request_complete_t complete = {
+        .callback = ftdi_read_complete,
+        .ctx = ftdi,
+    };
+
     //Queue the read requests
+    usb_req_internal_t* req_int;
+    usb_req_internal_t* prev;
     usb_request_t* req;
-    usb_request_t* prev;
-    list_for_every_entry_safe (&ftdi->free_read_reqs, req, prev, usb_request_t, node) {
-        list_delete(&req->node);
-        usb_request_queue(&ftdi->usb, req);
+    list_for_every_entry_safe(&ftdi->free_read_reqs, req_int, prev,
+                               usb_req_internal_t, node) {
+        list_delete(&req_int->node);
+        req = REQ_INTERNAL_TO_USB_REQ(req_int, ftdi->parent_req_size);
+        usb_request_queue(&ftdi->usb, req, &complete);
     }
 
     zxlogf(INFO,"ftdi bind successful\n");

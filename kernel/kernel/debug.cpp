@@ -79,7 +79,7 @@ static int cmd_thread(int argc, const cmd_args* argv, uint32_t flags) {
             dump_thread(t, true);
         } else {
             if (flags & CMD_FLAG_PANIC) {
-                dump_thread_user_tid_locked(argv[2].u, true);
+                dump_thread_user_tid_during_panic(argv[2].u, true);
             } else {
                 dump_thread_user_tid(argv[2].u, true);
             }
@@ -87,14 +87,14 @@ static int cmd_thread(int argc, const cmd_args* argv, uint32_t flags) {
     } else if (!strcmp(argv[1].str, "list")) {
         printf("thread list:\n");
         if (flags & CMD_FLAG_PANIC) {
-            dump_all_threads_locked(false);
+            dump_all_threads_during_panic(false);
         } else {
             dump_all_threads(false);
         }
     } else if (!strcmp(argv[1].str, "list_full")) {
         printf("thread list:\n");
         if (flags & CMD_FLAG_PANIC) {
-            dump_all_threads_locked(true);
+            dump_all_threads_during_panic(true);
         } else {
             dump_all_threads(true);
         }
@@ -156,6 +156,8 @@ private:
     CallbackFunc func_ = nullptr;
 };
 
+static constexpr TimerSlack kSlack{ZX_MSEC(10), TIMER_SLACK_CENTER};
+
 void RecurringCallback::CallbackWrapper(timer_t* t, zx_time_t now, void* arg) {
     auto cb = static_cast<RecurringCallback*>(arg);
     cb->func_();
@@ -164,8 +166,8 @@ void RecurringCallback::CallbackWrapper(timer_t* t, zx_time_t now, void* arg) {
         Guard<SpinLock, IrqSave> guard{&cb->lock_};
 
         if (cb->started_) {
-            zx_time_t deadline = zx_time_add_duration(now, ZX_SEC(1));
-            timer_set(t, deadline, TIMER_SLACK_CENTER, ZX_MSEC(10), CallbackWrapper, arg);
+            const Deadline deadline(zx_time_add_duration(now, ZX_SEC(1)), kSlack);
+            timer_set(t, deadline, CallbackWrapper, arg);
         }
     }
 
@@ -177,10 +179,9 @@ void RecurringCallback::Toggle() {
     Guard<SpinLock, IrqSave> guard{&lock_};
 
     if (!started_) {
+        const Deadline deadline(zx_time_add_duration(current_time(), ZX_SEC(1)), kSlack);
         // start the timer
-        timer_set(&timer_, zx_time_add_duration(current_time(), ZX_SEC(1)),
-                  TIMER_SLACK_CENTER, ZX_MSEC(10),
-                  CallbackWrapper, static_cast<void*>(this));
+        timer_set(&timer_, deadline, CallbackWrapper, static_cast<void*>(this));
         started_ = true;
     } else {
         timer_cancel(&timer_);

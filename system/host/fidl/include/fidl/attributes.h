@@ -1,13 +1,17 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_ATTRIBUTES_H_
 #define ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_ATTRIBUTES_H_
 
-#include "flat_ast.h"
+#include <set>
+#include <vector>
+
+#include "error_reporter.h"
 #include "raw_ast.h"
 
 namespace fidl {
-
-bool HasSimpleLayout(const flat::Decl* decl);
 
 class AttributesBuilder {
 public:
@@ -30,14 +34,13 @@ private:
         enum Kind {
             kOk,
             kDuplicate,
-            kTypo,
         };
 
-        InsertResult(Kind kind, std::string likely_name)
-            : kind(kind), likely_name(likely_name) {}
+        InsertResult(Kind kind, std::string message_fragment)
+            : kind(kind), message_fragment(message_fragment) {}
 
         Kind kind;
-        std::string likely_name;
+        std::string message_fragment;
     };
 
     InsertResult InsertHelper(std::unique_ptr<raw::Attribute> attribute);

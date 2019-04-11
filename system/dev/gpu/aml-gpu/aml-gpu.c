@@ -11,16 +11,16 @@
 #include <ddk/driver.h>
 #include <ddk/platform-defs.h>
 #include <ddk/protocol/iommu.h>
-#include <ddk/protocol/platform-bus.h>
-#include <ddk/protocol/platform-device.h>
 #include <ddk/protocol/platform-device-lib.h>
+#include <ddk/protocol/platform/bus.h>
+#include <ddk/protocol/platform/device.h>
+#include <fuchsia/hardware/gpu/clock/c/fidl.h>
 #include <hw/reg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <zircon/device/gpu.h>
 #include <zircon/process.h>
 #include <zircon/syscalls.h>
 
@@ -146,35 +146,28 @@ static zx_status_t aml_gpu_get_protocol(void* ctx, uint32_t proto_id, void* out_
     return ZX_OK;
 }
 
-static zx_status_t aml_gpu_ioctl(void* ctx, uint32_t op,
-                                 const void* in_buf, size_t in_len,
-                                 void* out_buf, size_t out_len,
-                                 size_t* out_actual) {
+static zx_status_t aml_gpu_SetFrequencySource(void* ctx, uint32_t clk_source, fidl_txn_t* txn) {
     aml_gpu_t* gpu = ctx;
-    switch (op) {
-    case IOCTL_GPU_SET_CLK_FREQ_SOURCE: {
-        if (in_len != sizeof(int32_t)) {
-            return ZX_ERR_INVALID_ARGS;
-        }
-        int32_t* clk_source = (int32_t*)in_buf;
+    if (clk_source >= MAX_GPU_CLK_FREQ) {
+        GPU_ERROR("Invalid clock freq source index\n");
+        return fuchsia_hardware_gpu_clock_ClockSetFrequencySource_reply(txn, ZX_ERR_NOT_SUPPORTED);
+    }
+    aml_gpu_set_clk_freq_source(gpu, clk_source);
+    return fuchsia_hardware_gpu_clock_ClockSetFrequencySource_reply(txn, ZX_OK);
+}
 
-        if (*clk_source >= MAX_GPU_CLK_FREQ) {
-            GPU_ERROR("Invalid clock freq source index\n");
-            return ZX_ERR_NOT_SUPPORTED;
-        }
-        aml_gpu_set_clk_freq_source(gpu, *clk_source);
-        return ZX_OK;
-    }
-    default:
-        return ZX_ERR_NOT_SUPPORTED;
-    }
+static fuchsia_hardware_gpu_clock_Clock_ops_t fidl_ops = {.SetFrequencySource =
+                                                              aml_gpu_SetFrequencySource};
+
+static zx_status_t aml_gpu_message(void* ctx, fidl_msg_t* msg, fidl_txn_t* txn) {
+    return fuchsia_hardware_gpu_clock_Clock_dispatch(ctx, txn, msg, &fidl_ops);
 }
 
 static zx_protocol_device_t aml_gpu_protocol = {
     .version = DEVICE_OPS_VERSION,
     .release = aml_gpu_release,
     .get_protocol = aml_gpu_get_protocol,
-    .ioctl = aml_gpu_ioctl,
+    .message = aml_gpu_message,
 };
 
 static zx_status_t aml_gpu_bind(void* ctx, zx_device_t* parent) {
@@ -195,21 +188,21 @@ static zx_status_t aml_gpu_bind(void* ctx, zx_device_t* parent) {
         return status;
     }
 
-    status = pdev_map_mmio_buffer2(&gpu->pdev, MMIO_GPU, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&gpu->pdev, MMIO_GPU, ZX_CACHE_POLICY_UNCACHED_DEVICE,
                                   &gpu->gpu_buffer);
     if (status != ZX_OK) {
         GPU_ERROR("pdev_map_mmio_buffer failed\n");
         goto fail;
     }
 
-    status = pdev_map_mmio_buffer2(&gpu->pdev, MMIO_HIU, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&gpu->pdev, MMIO_HIU, ZX_CACHE_POLICY_UNCACHED_DEVICE,
                                   &gpu->hiu_buffer);
     if (status != ZX_OK) {
         GPU_ERROR("pdev_map_mmio_buffer failed\n");
         goto fail;
     }
 
-    status = pdev_map_mmio_buffer2(&gpu->pdev, MMIO_PRESET, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(&gpu->pdev, MMIO_PRESET, ZX_CACHE_POLICY_UNCACHED_DEVICE,
                                   &gpu->preset_buffer);
     if (status != ZX_OK) {
         GPU_ERROR("pdev_map_mmio_buffer failed\n");

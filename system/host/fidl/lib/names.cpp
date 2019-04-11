@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "fidl/names.h"
 
@@ -138,7 +141,7 @@ std::string NameHandleSubtype(types::HandleSubtype subtype) {
     case types::HandleSubtype::kInterrupt:
         return "interrupt";
     case types::HandleSubtype::kLog:
-        return "log";
+        return "debuglog";
     case types::HandleSubtype::kSocket:
         return "socket";
     case types::HandleSubtype::kResource:
@@ -155,6 +158,10 @@ std::string NameHandleSubtype(types::HandleSubtype subtype) {
         return "guest";
     case types::HandleSubtype::kTimer:
         return "timer";
+    case types::HandleSubtype::kBti:
+        return "bti";
+    case types::HandleSubtype::kProfile:
+        return "profile";
     }
 }
 
@@ -196,6 +203,8 @@ std::string NameFlatConstantKind(flat::Constant::Kind kind) {
         return "identifier";
     case flat::Constant::Kind::kLiteral:
         return "literal";
+    case flat::Constant::Kind::kSynthesized:
+        return "synthesized";
     }
 }
 
@@ -235,11 +244,19 @@ std::string NameHandleZXObjType(types::HandleSubtype subtype) {
         return "ZX_OBJ_TYPE_GUEST";
     case types::HandleSubtype::kTimer:
         return "ZX_OBJ_TYPE_TIMER";
+    case types::HandleSubtype::kBti:
+        return "ZX_OBJ_TYPE_BTI";
+    case types::HandleSubtype::kProfile:
+        return "ZX_OBJ_TYPE_PROFILE";
     }
 }
 
 std::string NameUnionTag(StringView union_name, const flat::Union::Member& member) {
     return std::string(union_name) + "Tag_" + NameIdentifier(member.name);
+}
+
+std::string NameXUnionTag(StringView xunion_name, const flat::XUnion::Member& member) {
+    return std::string(xunion_name) + "Tag_" + NameIdentifier(member.name);
 }
 
 std::string NameFlatConstant(const flat::Constant* constant) {
@@ -252,6 +269,9 @@ std::string NameFlatConstant(const flat::Constant* constant) {
         auto identifier_constant = static_cast<const flat::IdentifierConstant*>(constant);
         return NameName(identifier_constant->name, ".", "/");
     }
+    case flat::Constant::Kind::kSynthesized: {
+        return std::string("synthesized constant");
+    }
     } // switch
 }
 
@@ -262,9 +282,10 @@ void NameFlatTypeHelper(std::ostringstream& buf, const flat::Type* type) {
         buf << "array<";
         NameFlatTypeHelper(buf, array_type->element_type.get());
         buf << ">";
-        if (array_type->element_count.Value() != flat::Size::Max().Value()) {
+        auto element_count = static_cast<const flat::Size&>(array_type->element_count->Value());
+        if (element_count != flat::Size::Max()) {
             buf << ":";
-            buf << array_type->element_count.Value();
+            buf << element_count.value;
         }
         break;
     }
@@ -273,18 +294,20 @@ void NameFlatTypeHelper(std::ostringstream& buf, const flat::Type* type) {
         buf << "vector<";
         NameFlatTypeHelper(buf, vector_type->element_type.get());
         buf << ">";
-        if (vector_type->element_count.Value() != flat::Size::Max().Value()) {
+        auto element_count = static_cast<const flat::Size&>(vector_type->element_count->Value());
+        if (element_count != flat::Size::Max()) {
             buf << ":";
-            buf << vector_type->element_count.Value();
+            buf << element_count.value;
         }
         break;
     }
     case flat::Type::Kind::kString: {
         auto string_type = static_cast<const flat::StringType*>(type);
         buf << "string";
-        if (string_type->max_size.Value() != flat::Size::Max().Value()) {
+        auto max_size = static_cast<const flat::Size&>(string_type->max_size->Value());
+        if (max_size != flat::Size::Max()) {
             buf << ":";
-            buf << string_type->max_size.Value();
+            buf << max_size.value;
         }
         break;
     }
@@ -357,7 +380,8 @@ std::string NameFlatCType(const flat::Type* type, flat::Decl::Kind decl_kind) {
             case flat::Decl::Kind::kEnum:
             case flat::Decl::Kind::kStruct:
             case flat::Decl::Kind::kTable:
-            case flat::Decl::Kind::kUnion: {
+            case flat::Decl::Kind::kUnion:
+            case flat::Decl::Kind::kXUnion: {
                 std::string name = NameName(identifier_type->name, "_", "_");
                 if (identifier_type->nullability == types::Nullability::kNullable) {
                     name.push_back('*');
@@ -367,7 +391,9 @@ std::string NameFlatCType(const flat::Type* type, flat::Decl::Kind decl_kind) {
             case flat::Decl::Kind::kInterface: {
                 return "zx_handle_t";
             }
-            default: { abort(); }
+            default: {
+                abort();
+            }
             }
         }
         }
@@ -382,7 +408,7 @@ std::string NameIdentifier(SourceLocation name) {
 std::string NameName(const flat::Name& name, StringView library_separator, StringView name_separator) {
     std::string compiled_name = LibraryName(name.library(), library_separator);
     compiled_name += name_separator;
-    compiled_name += name.name().data();
+    compiled_name += name.name_part();
     return compiled_name;
 }
 
@@ -409,6 +435,13 @@ std::string NameMethod(StringView interface_name, const flat::Interface::Method&
 std::string NameOrdinal(StringView method_name) {
     std::string ordinal_name(method_name);
     ordinal_name += "Ordinal";
+    return ordinal_name;
+}
+
+// TODO: Remove post-FIDL-425
+std::string NameGenOrdinal(StringView method_name) {
+    std::string ordinal_name(method_name);
+    ordinal_name += "GenOrdinal";
     return ordinal_name;
 }
 
@@ -460,6 +493,10 @@ std::string NameCodedTable(const flat::Table* table_decl) {
 
 std::string NameCodedUnion(const flat::Union* union_decl) {
     return NameName(union_decl->name, "_", "_");
+}
+
+std::string NameCodedXUnion(const flat::XUnion* xunion_decl) {
+    return NameName(xunion_decl->name, "_", "_");
 }
 
 std::string NameCodedHandle(types::HandleSubtype subtype, types::Nullability nullability) {

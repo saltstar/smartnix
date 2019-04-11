@@ -8,8 +8,8 @@
 #include <ddk/metadata.h>
 #include <ddk/mmio-buffer.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-bus.h>
-#include <ddk/protocol/usb-mode-switch.h>
+#include <ddk/protocol/platform/bus.h>
+#include <ddk/protocol/usb/modeswitch.h>
 #include <hw/reg.h>
 #include <limits.h>
 #include <soc/imx8m/imx8m-gpio.h>

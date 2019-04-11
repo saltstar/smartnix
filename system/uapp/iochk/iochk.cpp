@@ -1,4 +1,8 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
+#include <atomic>
 #include <assert.h>
 #include <fcntl.h>
 #include <math.h>
@@ -6,9 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <utility>
 
 #include <block-client/cpp/client.h>
-#include <fbl/atomic.h>
 #include <fbl/auto_lock.h>
 #include <fbl/macros.h>
 #include <fbl/mutex.h>
@@ -19,11 +23,11 @@
 #include <lib/zx/fifo.h>
 #include <lib/zx/thread.h>
 
+#include <fuchsia/hardware/skipblock/c/fidl.h>
+#include <lib/zircon-internal/xorshiftrand.h>
 #include <zircon/assert.h>
 #include <zircon/device/block.h>
-#include <lib/zircon-internal/xorshiftrand.h>
 #include <zircon/process.h>
-#include <zircon/skipblock/c/fidl.h>
 #include <zircon/syscalls.h>
 #include <zircon/threads.h>
 
@@ -105,7 +109,7 @@ public:
         fbl::unique_fd fd;
     } block;
     struct {
-        zircon_skipblock_PartitionInfo info = {};
+        fuchsia_hardware_skipblock_PartitionInfo info = {};
         fzl::FdioCaller caller;
     } skip;
     // Protects |iochk_failure| and |progress|
@@ -166,7 +170,7 @@ protected:
 
         while (idx < length / sizeof(uint64_t)) {
             if (buf[idx] != expected) {
-                printf("inital read verification failed: "
+                printf("initial read verification failed: "
                        "block_idx=%d offset=%zu expected=0x%016lx val=0x%016lx\n",
                        block_idx, idx, expected, buf[idx]);
                 return ZX_ERR_INTERNAL;
@@ -210,7 +214,7 @@ public:
         groupid_t group = next_txid_.fetch_add(1);
         ZX_ASSERT(group < MAX_TXN_GROUP_COUNT);
 
-        checker->reset(new BlockChecker(fbl::move(mapping), info, client, vmoid, group));
+        checker->reset(new BlockChecker(std::move(mapping), info, client, vmoid, group));
         return ZX_OK;
     }
 
@@ -277,11 +281,11 @@ public:
 private:
     BlockChecker(fzl::OwnedVmoMapper mapper, block_info_t info,
                  block_client::Client& client, vmoid_t vmoid, groupid_t group)
-        : Checker(mapper.start()), mapper_(fbl::move(mapper)), info_(info),
+        : Checker(mapper.start()), mapper_(std::move(mapper)), info_(info),
           client_(client), vmoid_(vmoid), group_(group) {}
     ~BlockChecker() = default;
 
-    static fbl::atomic<uint16_t> next_txid_;
+    static std::atomic<uint16_t> next_txid_;
 
     fzl::OwnedVmoMapper mapper_;
     block_info_t info_;
@@ -290,11 +294,12 @@ private:
     groupid_t group_;
 };
 
-fbl::atomic<uint16_t> BlockChecker::next_txid_;
+std::atomic<uint16_t> BlockChecker::next_txid_;
 
 class SkipBlockChecker : public Checker {
 public:
-    static zx_status_t Initialize(fzl::FdioCaller& caller, zircon_skipblock_PartitionInfo info,
+    static zx_status_t Initialize(fzl::FdioCaller& caller,
+                                  fuchsia_hardware_skipblock_PartitionInfo info,
                                   fbl::unique_ptr<Checker>* checker) {
         fzl::VmoMapper mapping;
         zx::vmo vmo;
@@ -305,7 +310,7 @@ public:
             return status;
         }
 
-        checker->reset(new SkipBlockChecker(fbl::move(mapping), fbl::move(vmo), caller, info));
+        checker->reset(new SkipBlockChecker(std::move(mapping), std::move(vmo), caller, info));
         return ZX_OK;
     }
 
@@ -325,15 +330,15 @@ public:
             }
 
             GenerateBlockData(block_idx, block_size);
-            zircon_skipblock_ReadWriteOperation request = {
+            fuchsia_hardware_skipblock_ReadWriteOperation request = {
                 .vmo = dup.release(),
                 .vmo_offset = 0,
                 .block = static_cast<uint32_t>((block_idx * block_size) / info_.block_size_bytes),
                 .block_count = static_cast<uint32_t>(length / info_.block_size_bytes),
             };
             bool bad_block_grown;
-            zircon_skipblock_SkipBlockWrite(caller_.borrow_channel(), &request, &st,
-                                            &bad_block_grown);
+            fuchsia_hardware_skipblock_SkipBlockWrite(caller_.borrow_channel(), &request, &st,
+                                                      &bad_block_grown);
             if (st != ZX_OK) {
                 printf("SkipBlockWrite error %d\n", st);
                 return st;
@@ -357,13 +362,13 @@ public:
                 return st;
             }
 
-            zircon_skipblock_ReadWriteOperation request = {
+            fuchsia_hardware_skipblock_ReadWriteOperation request = {
                 .vmo = dup.release(),
                 .vmo_offset = 0,
                 .block = static_cast<uint32_t>((block_idx * block_size) / info_.block_size_bytes),
                 .block_count = static_cast<uint32_t>(length / info_.block_size_bytes),
             };
-            zircon_skipblock_SkipBlockRead(caller_.borrow_channel(), &request, &st);
+            fuchsia_hardware_skipblock_SkipBlockRead(caller_.borrow_channel(), &request, &st);
             if (st != ZX_OK) {
                 printf("SkipBlockRead error %d\n", st);
                 return st;
@@ -379,15 +384,15 @@ public:
 
 private:
     SkipBlockChecker(fzl::VmoMapper mapper, zx::vmo vmo, fzl::FdioCaller& caller,
-                     zircon_skipblock_PartitionInfo info)
-        : Checker(mapper.start()), mapper_(fbl::move(mapper)), vmo_(fbl::move(vmo)),
+                     fuchsia_hardware_skipblock_PartitionInfo info)
+        : Checker(mapper.start()), mapper_(std::move(mapper)), vmo_(std::move(vmo)),
           caller_(caller), info_(info) {}
     ~SkipBlockChecker() = default;
 
     fzl::VmoMapper mapper_;
     zx::vmo vmo_;
     fzl::FdioCaller& caller_;
-    zircon_skipblock_PartitionInfo info_;
+    fuchsia_hardware_skipblock_PartitionInfo info_;
 };
 
 zx_status_t InitializeChecker(WorkContext& ctx, fbl::unique_ptr<Checker>* checker) {
@@ -570,12 +575,12 @@ int iochk(int argc, char** argv) {
     WorkContext ctx(ProgressBar(), false);
 
     if (skip) {
-        ctx.skip.caller.reset(fbl::move(fd));
+        ctx.skip.caller.reset(std::move(fd));
         // Skip Block Device Setup.
         zx_status_t status;
-        zircon_skipblock_PartitionInfo info;
-        zircon_skipblock_SkipBlockGetPartitionInfo(ctx.skip.caller.borrow_channel(), &status,
-                                                   &info);
+        fuchsia_hardware_skipblock_PartitionInfo info;
+        fuchsia_hardware_skipblock_SkipBlockGetPartitionInfo(ctx.skip.caller.borrow_channel(),
+                                                             &status, &info);
         if (status != ZX_OK) {
             printf("unable to get skip-block partition info: %d\n", status);
             printf("fd: %d\n", ctx.skip.caller.release().get());
@@ -610,7 +615,7 @@ int iochk(int argc, char** argv) {
             return -1;
         }
     } else {
-        ctx.block.fd = fbl::move(fd);
+        ctx.block.fd = std::move(fd);
         // Block Device Setup.
         block_info_t info;
         if (ioctl_block_get_info(ctx.block.fd.get(), &info) != sizeof(info)) {
@@ -657,7 +662,7 @@ int iochk(int argc, char** argv) {
             return -1;
         }
 
-        if (block_client::Client::Create(fbl::move(fifo), &ctx.block.client) != ZX_OK) {
+        if (block_client::Client::Create(std::move(fifo), &ctx.block.client) != ZX_OK) {
             printf("cannot create block client for device\n");
             return -1;
         }

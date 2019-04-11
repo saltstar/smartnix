@@ -1,7 +1,11 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-#include <math.h>
 #include <fbl/algorithm.h>
-#include <fbl/limits.h>
+#include <limits>
+#include <math.h>
+#include <utility>
 
 #include "debug-logging.h"
 #include "usb-audio-units.h"
@@ -83,8 +87,15 @@ zx_status_t AudioUnit::CtrlReq(const usb_protocol_t& proto,
     // on the code above us taking some action to shut this device down.
     constexpr uint64_t kRelativeTimeout = ZX_MSEC(500);
     size_t done = 0;
-    zx_status_t status = usb_control(proto_ptr, req_type, code, val, index(), data, len,
-                                     zx_deadline_after(kRelativeTimeout), &done);
+    zx_status_t status;
+    if ((req_type & USB_DIR_MASK) == USB_DIR_OUT) {
+        status = usb_control_out(proto_ptr, req_type, code, val, index(),
+                             zx_deadline_after(kRelativeTimeout), data, len);
+        done = len;
+    } else {
+        status = usb_control_in(proto_ptr, req_type, code, val, index(),
+                             zx_deadline_after(kRelativeTimeout), data, len, &done);
+    }
     if ((status == ZX_OK) && (done != len)) {
         status = ZX_ERR_BUFFER_TOO_SMALL;
     }
@@ -255,7 +266,7 @@ fbl::RefPtr<FeatureUnit> FeatureUnit::Create(const DescriptorListMemory::Iterato
 
                 auto ret = fbl::AdoptRef(new (&ac) FeatureUnit(iter.desc_list(),
                                                                hdr0, hdr1,
-                                                               fbl::move(feat_mem), feat_len,
+                                                               std::move(feat_mem), feat_len,
                                                                iid));
                 if (ac.check()) {
                     return ret;
@@ -492,7 +503,7 @@ bool FeatureUnit::SetMute(const usb_protocol_t& proto, bool mute) {
     } else {
         // Section 5.2.2.4.3.2 of the USB Audio 1.0 spec defines int16::min as
         // -inf dB for the purpose of setting gain.
-        int16_t tgt = mute ? fbl::numeric_limits<int16_t>::min() : vol_cur_;
+        int16_t tgt = mute ? std::numeric_limits<int16_t>::min() : vol_cur_;
         SetFeature(proto, USB_AUDIO_VOLUME_CONTROL, tgt);
     }
 

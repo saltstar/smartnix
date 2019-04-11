@@ -2,9 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#pragma once
+#ifndef LIB_ZX_BTI_H_
+#define LIB_ZX_BTI_H_
 
 #include <lib/zx/handle.h>
+#include <lib/zx/iommu.h>
 #include <lib/zx/object.h>
 #include <lib/zx/pmt.h>
 #include <lib/zx/vmo.h>
@@ -28,6 +30,8 @@ public:
         return *this;
     }
 
+    static zx_status_t create(const iommu& iommu, uint32_t options, uint64_t bti_id, bti* result);
+
     zx_status_t pin(uint32_t options, const vmo& vmo, uint64_t offset, uint64_t size,
                     zx_paddr_t* addrs, size_t addrs_count, pmt* pmt) const {
         return zx_bti_pin(get(), options, vmo.get(), offset, size, addrs, addrs_count,
@@ -40,3 +44,5 @@ public:
 using unowned_bti = unowned<bti>;
 
 } // namespace zx
+
+#endif  // LIB_ZX_BTI_H_

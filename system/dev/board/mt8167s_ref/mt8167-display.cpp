@@ -5,7 +5,7 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 
 #include <soc/mt8167/mt8167-hw.h>
 #include "mt8167.h"
@@ -18,6 +18,11 @@ zx_status_t Mt8167::DisplayInit() {
         {
             .base = MT8167_DISP_OVL_BASE,
             .length = MT8167_DISP_OVL_SIZE,
+        },
+        // Display RDMA
+        {
+            .base = MT8167_DISP_RDMA_BASE,
+            .length = MT8167_DISP_RDMA_SIZE,
         },
     };
 
@@ -37,7 +42,6 @@ zx_status_t Mt8167::DisplayInit() {
     pbus_dev_t display_dev = {};
     display_dev.name = "display";
     display_dev.vid = PDEV_VID_MEDIATEK;
-    display_dev.pid = PDEV_PID_MEDIATEK_8167S_REF;
     display_dev.did = PDEV_DID_MEDIATEK_DISPLAY;
     display_dev.mmio_list = display_mmios;
     display_dev.mmio_count = countof(display_mmios);

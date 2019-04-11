@@ -2,6 +2,7 @@
 #include <arch.h>
 #include <arch/arm64.h>
 #include <arch/arm64/feature.h>
+#include <arch/arm64/registers.h>
 #include <arch/arm64/mmu.h>
 #include <arch/mp.h>
 #include <arch/ops.h>
@@ -25,13 +26,11 @@
 // Counter-timer Kernel Control Register, EL1.
 static constexpr uint64_t CNTKCTL_EL1_ENABLE_VIRTUAL_COUNTER = 1 << 1;
 
-// Monitor Debug System Control Register, EL1.
-static constexpr uint32_t MDSCR_EL1_ENABLE_DEBUG_EXCEPTIONS = 1 << 13;
-static constexpr uint32_t MDSCR_EL1_ENABLE_DEBUG_BREAKPOINTS = 1 << 15;
-
-// Initial value for MSDCR_EL1 when starting userspace.
-static constexpr uint32_t MSDCR_EL1_INITIAL_VALUE =
-    MDSCR_EL1_ENABLE_DEBUG_EXCEPTIONS | MDSCR_EL1_ENABLE_DEBUG_BREAKPOINTS;
+// Initial value for MSDCR_EL1 when starting userspace, which disables all debug exceptions.
+// Instruction Breakpoint Exceptions (software breakpoints) cannot be disabled and MDSCR does not
+// affect single-step behaviour.
+// TODO(donosoc): Enable HW exceptions when debug context switch is implemented.
+static constexpr uint32_t MSDCR_EL1_INITIAL_VALUE = 0;
 
 // Performance Monitors Count Enable Set, EL0.
 static constexpr uint64_t PMCNTENSET_EL0_ENABLE = 1UL << 31;  // Enable cycle count register.
@@ -92,10 +91,9 @@ uint64_t arm64_get_boot_el() {
     return arch_boot_el >> 2;
 }
 
-zx_status_t arm64_create_secondary_stack(uint cluster, uint cpu) {
+zx_status_t arm64_create_secondary_stack(uint cpu_num, uint64_t mpid) {
     // Allocate a stack, indexed by CPU num so that |arm64_secondary_entry| can find it.
-    cpu_num_t cpu_num = arch_mpid_to_cpu_num(cluster, cpu);
-    DEBUG_ASSERT(cpu_num > 0 && cpu_num < SMP_MAX_CPUS);
+    DEBUG_ASSERT_MSG(cpu_num > 0 && cpu_num < SMP_MAX_CPUS, "cpu_num: %u", cpu_num);
     kstack_t* stack = &_init_thread[cpu_num - 1].stack;
     DEBUG_ASSERT(stack->base == 0);
     zx_status_t status = vm_allocate_kstack(stack);
@@ -120,7 +118,6 @@ zx_status_t arm64_create_secondary_stack(uint cluster, uint cpu) {
         return ZX_ERR_NO_RESOURCES;
 
     // Store it.
-    uint64_t mpid = ARM64_MPID(cluster, cpu);
     LTRACEF("set mpid 0x%lx sp to %p\n", mpid, sp);
 #if __has_feature(safe_stack)
     LTRACEF("set mpid 0x%lx unsafe-sp to %p\n", mpid, unsafe_sp);
@@ -133,8 +130,7 @@ zx_status_t arm64_create_secondary_stack(uint cluster, uint cpu) {
     return ZX_OK;
 }
 
-zx_status_t arm64_free_secondary_stack(uint cluster, uint cpu) {
-    cpu_num_t cpu_num = arch_mpid_to_cpu_num(cluster, cpu);
+zx_status_t arm64_free_secondary_stack(uint cpu_num) {
     DEBUG_ASSERT(cpu_num > 0 && cpu_num < SMP_MAX_CPUS);
     kstack_t* stack = &_init_thread[cpu_num - 1].stack;
     zx_status_t status = vm_free_kstack(stack);
@@ -146,32 +142,40 @@ static void arm64_cpu_early_init() {
     arm64_init_percpu_early();
 
     // Set the vector base.
-    ARM64_WRITE_SYSREG(VBAR_EL1, (uint64_t)&arm64_el1_exception_base);
+    __arm_wsr64("vbar_el1", (uint64_t)&arm64_el1_exception_base);
+    __isb(ARM_MB_SY);
 
     // Set some control bits in sctlr.
-    uint64_t sctlr = ARM64_READ_SYSREG(sctlr_el1);
+    uint64_t sctlr = __arm_rsr64("sctlr_el1");
     sctlr |= SCTLR_EL1_UCI | SCTLR_EL1_UCT | SCTLR_EL1_DZE | SCTLR_EL1_SA0 | SCTLR_EL1_SA;
     sctlr &= ~SCTLR_EL1_AC;  // Disable alignment checking for EL1, EL0.
-    ARM64_WRITE_SYSREG(sctlr_el1, sctlr);
+    __arm_wsr64("sctlr_el1", sctlr);
+    __isb(ARM_MB_SY);
 
     // Save all of the features of the cpu.
     arm64_feature_init();
 
     // Enable cycle counter.
-    ARM64_WRITE_SYSREG(pmcr_el0, PMCR_EL0_ENABLE_BIT | PMCR_EL0_LONG_COUNTER_BIT);
-    ARM64_WRITE_SYSREG(pmcntenset_el0, PMCNTENSET_EL0_ENABLE);
+    __arm_wsr64("pmcr_el0", PMCR_EL0_ENABLE_BIT | PMCR_EL0_LONG_COUNTER_BIT);
+    __isb(ARM_MB_SY);
+    __arm_wsr64("pmcntenset_el0", PMCNTENSET_EL0_ENABLE);
+    __isb(ARM_MB_SY);
 
     // Enable user space access to cycle counter.
-    ARM64_WRITE_SYSREG(pmuserenr_el0, PMUSERENR_EL0_ENABLE);
+    __arm_wsr64("pmuserenr_el0", PMUSERENR_EL0_ENABLE);
+    __isb(ARM_MB_SY);
 
     // Enable Debug Exceptions by Disabling the OS Lock. The OSLAR_EL1 is a WO
     // register with only the low bit defined as OSLK. Write 0 to disable.
-    ARM64_WRITE_SYSREG(oslar_el1, 0x0);
+    __arm_wsr64("oslar_el1", 0x0);
+    __isb(ARM_MB_SY);
 
     // Enable user space access to virtual counter (CNTVCT_EL0).
-    ARM64_WRITE_SYSREG(cntkctl_el1, CNTKCTL_EL1_ENABLE_VIRTUAL_COUNTER);
+    __arm_wsr64("cntkctl_el1", CNTKCTL_EL1_ENABLE_VIRTUAL_COUNTER);
+    __isb(ARM_MB_SY);
 
-    ARM64_WRITE_SYSREG(mdscr_el1, MSDCR_EL1_INITIAL_VALUE);
+    __arm_wsr64("mdscr_el1", MSDCR_EL1_INITIAL_VALUE);
+    __isb(ARM_MB_SY);
 
     arch_enable_fiqs();
 }

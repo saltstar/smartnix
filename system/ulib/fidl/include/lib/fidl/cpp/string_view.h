@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef LIB_FIDL_CPP_STRING_VIEW_H_
 #define LIB_FIDL_CPP_STRING_VIEW_H_
@@ -9,6 +12,7 @@ namespace fidl {
 class StringView : public fidl_string_t {
 public:
     StringView() : fidl_string_t{} {}
+    StringView(uint64_t size, char* data) : fidl_string_t{size, data} {}
 
     uint64_t size() const { return fidl_string_t::size; }
     void set_size(uint64_t size) { fidl_string_t::size = size; }

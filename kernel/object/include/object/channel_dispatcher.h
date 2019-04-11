@@ -14,7 +14,7 @@
 #include <fbl/intrusive_double_list.h>
 #include <fbl/mutex.h>
 #include <fbl/ref_counted.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 
 class ChannelDispatcher final :
     public PeeredDispatcher<ChannelDispatcher, ZX_DEFAULT_CHANNEL_RIGHTS> {
@@ -36,32 +36,27 @@ public:
     zx_status_t Read(zx_koid_t owner,
                      uint32_t* msg_size,
                      uint32_t* msg_handle_count,
-                     fbl::unique_ptr<MessagePacket>* msg,
+                     MessagePacketPtr* msg,
                      bool may_disard);
 
     // Write to the opposing endpoint's message queue. |owner| is the process attempting to
     // write to the channel, or ZX_KOID_INVALID if kernel is doing it. If |owner| does not
     // match what was last set by Dispatcher::set_owner() the call will fail.
     zx_status_t Write(zx_koid_t owner,
-                      fbl::unique_ptr<MessagePacket> msg) TA_NO_THREAD_SAFETY_ANALYSIS;
+                      MessagePacketPtr msg) TA_NO_THREAD_SAFETY_ANALYSIS;
 
     // Perform a transacted Write + Read. |owner| is the process attempting to write
     // to the channel, or ZX_KOID_INVALID if kernel is doing it. If |owner| does not
     // match what was last set by Dispatcher::set_owner() the call will fail.
     zx_status_t Call(zx_koid_t owner,
-                     fbl::unique_ptr<MessagePacket> msg,
+                     MessagePacketPtr msg,
                      zx_time_t deadline,
-                     fbl::unique_ptr<MessagePacket>* reply) TA_NO_THREAD_SAFETY_ANALYSIS;
+                     MessagePacketPtr* reply) TA_NO_THREAD_SAFETY_ANALYSIS;
 
     // Performs the wait-then-read half of Call.  This is meant for retrying
     // after an interruption caused by suspending.
-    zx_status_t ResumeInterruptedCall(MessageWaiter* waiter, zx_time_t deadline,
-                                      fbl::unique_ptr<MessagePacket>* reply);
-
-    // Returns the maximum depth this channel endpoint will queue
-    // messages to. This value is accessible to userspace via the
-    // ZX_PROP_CHANNEL_TX_MSG_MAX object property.
-    size_t TxMessageMax() const;
+    zx_status_t ResumeInterruptedCall(MessageWaiter* waiter, const Deadline& deadline,
+                                      MessagePacketPtr* reply);
 
     // MessageWaiter's state is guarded by the lock of the
     // owning ChannelDispatcher, and Deliver(), Signal(), Cancel(),
@@ -81,18 +76,18 @@ public:
         ~MessageWaiter();
 
         zx_status_t BeginWait(fbl::RefPtr<ChannelDispatcher> channel);
-        void Deliver(fbl::unique_ptr<MessagePacket> msg);
+        void Deliver(MessagePacketPtr msg);
         void Cancel(zx_status_t status);
         fbl::RefPtr<ChannelDispatcher> get_channel() { return channel_; }
         zx_txid_t get_txid() const { return txid_; }
         void set_txid(zx_txid_t txid) { txid_ = txid; };
-        zx_status_t Wait(zx_time_t deadline);
+        zx_status_t Wait(const Deadline& deadline);
         // Returns any delivered message via out and the status.
-        zx_status_t EndWait(fbl::unique_ptr<MessagePacket>* out);
+        zx_status_t EndWait(MessagePacketPtr* out);
 
     private:
         fbl::RefPtr<ChannelDispatcher> channel_;
-        fbl::unique_ptr<MessagePacket> msg_;
+        MessagePacketPtr msg_;
         // TODO(teisenbe/swetland): Investigate hoisting this outside to reduce
         // userthread size
         Event event_;
@@ -107,14 +102,14 @@ public:
     void set_owner(zx_koid_t new_owner) final;
 
 private:
-    using MessageList = fbl::DoublyLinkedList<fbl::unique_ptr<MessagePacket>>;
+    using MessageList = fbl::DoublyLinkedList<MessagePacketPtr>;
     using WaiterList = fbl::DoublyLinkedList<MessageWaiter*>;
 
     void RemoveWaiter(MessageWaiter* waiter);
 
     explicit ChannelDispatcher(fbl::RefPtr<PeerHolder<ChannelDispatcher>> holder);
     void Init(fbl::RefPtr<ChannelDispatcher> other);
-    void WriteSelf(fbl::unique_ptr<MessagePacket> msg) TA_REQ(get_lock());
+    void WriteSelf(MessagePacketPtr msg) TA_REQ(get_lock());
     zx_status_t UserSignalSelf(uint32_t clear_mask, uint32_t set_mask) TA_REQ(get_lock());
 
     fbl::Canary<fbl::magic("CHAN")> canary_;

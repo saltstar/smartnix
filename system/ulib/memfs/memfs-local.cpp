@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <inttypes.h>
 #include <fcntl.h>
@@ -15,6 +18,8 @@
 #include <lib/memfs/memfs.h>
 #include <lib/sync/completion.h>
 #include <zircon/device/vfs.h>
+
+#include <utility>
 
 #include "dnode.h"
 
@@ -51,7 +56,7 @@ zx_status_t memfs_create_filesystem_with_page_limit(async_dispatcher_t* dispatch
     if ((status = memfs::CreateFilesystem("<tmp>", &fs->vfs, &root)) != ZX_OK) {
         return status;
     }
-    if ((status = fs->vfs.ServeDirectory(fbl::move(root), fbl::move(server))) != ZX_OK) {
+    if ((status = fs->vfs.ServeDirectory(std::move(root), std::move(server))) != ZX_OK) {
         return status;
     }
 

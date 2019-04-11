@@ -1,10 +1,17 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <ddktl/device-internal.h>
 #include <ddktl/device.h>
+#include <ddktl/protocol/empty-protocol.h>
 #include <fbl/mutex.h>
 #include <fbl/vector.h>
+
+#include <atomic>
+#include <utility>
 
 #include "a113-ddr.h"
 #include "a113-pdm.h"
@@ -19,18 +26,12 @@
 namespace audio {
 namespace gauss {
 
-struct PdmInputStreamProtocol : public ddk::internal::base_protocol {
-    explicit PdmInputStreamProtocol() {
-        ddk_proto_id_ = ZX_PROTOCOL_AUDIO_INPUT;
-    }
-};
-
 class GaussPdmInputStream;
 using GaussPdmInputStreamBase =
     ddk::Device<GaussPdmInputStream, ddk::Ioctlable, ddk::Unbindable>;
 
 class GaussPdmInputStream : public GaussPdmInputStreamBase,
-                            public PdmInputStreamProtocol,
+                            public ddk::EmptyProtocol<ZX_PROTOCOL_AUDIO_INPUT>,
                             public fbl::RefCounted<GaussPdmInputStream> {
 public:
     static zx_status_t Create(zx_device_t* parent);
@@ -48,7 +49,7 @@ private:
         zx_device_t* parent,
         fbl::RefPtr<dispatcher::ExecutionDomain>&& default_domain)
         : GaussPdmInputStreamBase(parent),
-          default_domain_(fbl::move(default_domain)) {}
+          default_domain_(std::move(default_domain)) {}
 
     virtual ~GaussPdmInputStream();
 
@@ -125,8 +126,8 @@ private:
 
     uint32_t fifo_depth_ = 0x200;
 
-    fbl::atomic<size_t> ring_buffer_size_;
-    fbl::atomic<uint32_t> notifications_per_ring_;
+    std::atomic<size_t> ring_buffer_size_;
+    std::atomic<uint32_t> notifications_per_ring_;
 };
 
 } // namespace gauss

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // This file contains functions that are shared between host
 // and target implementations of Blobfs.
@@ -40,7 +43,7 @@ zx_status_t CheckSuperblock(const Superblock* info, uint64_t max);
 zx_status_t GetBlockCount(int fd, uint64_t* out);
 int Mkfs(int fd, uint64_t block_count);
 
-uint64_t MerkleTreeBlocks(const Inode& blobNode);
+uint32_t MerkleTreeBlocks(const Inode& blobNode);
 
 // Get a pointer to the nth block of the bitmap.
 inline void* GetRawBitmapData(const RawBitmap& bm, uint64_t n) {

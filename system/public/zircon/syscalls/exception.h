@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSCALLS_EXCEPTION_H_
 #define ZIRCON_SYSCALLS_EXCEPTION_H_
@@ -52,7 +55,7 @@ __BEGIN_CDECLS
 // error (for example, an invalid handle argument is passed to the
 // syscall when the ZX_POL_BAD_HANDLE policy is enabled) and
 // ZX_POL_ACTION_EXCEPTION is set for the policy.  The thread that
-// invoked the syscall may be resumed with zx_task_resume().
+// invoked the syscall may be resumed with zx_task_resume_from_exception.
 #define ZX_EXCP_POLICY_ERROR ZX_PKT_TYPE_EXCEPTION(ZX_EXCP_SYNTH | 2)
 
 // A process is starting.
@@ -107,13 +110,8 @@ typedef struct zx_exception_report {
     zx_exception_context_t context;
 } zx_exception_report_t;
 
-// Options for zx_task_resume()
-#define ZX_RESUME_EXCEPTION ((uint32_t)1)
-// Indicates that we should resume the thread from stopped-in-exception state
-// (default resume does not do so)
-
+// Options for zx_task_resume_from_exception()
 #define ZX_RESUME_TRY_NEXT ((uint32_t)2)
-// Only meaningful when combined with ZX_RESUME_EXCEPTION
 // Indicates that instead of resuming from the faulting instruction we instead
 // let the next exception handler in the search order, if any, process the
 // exception. If there are no more then the entire process is killed.
@@ -122,10 +120,6 @@ typedef struct zx_exception_report {
 #define ZX_EXCEPTION_PORT_DEBUGGER ((uint32_t)1)
 // When binding an exception port to a process, set the process's debugger
 // exception port.
-#define ZX_EXCEPTION_PORT_UNBIND_QUIETLY ((uint32_t)2)
-// When unbinding an exception port from a thread or process, any threads that
-// got an exception and are waiting for a response from this exception port
-// will continue to wait for a response.
 
 // The type of exception port a thread may be waiting for a response from.
 // These values are reported in zx_info_thread_t.wait_exception_port_type.

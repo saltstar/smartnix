@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include <fbl/type_support.h>
 #include <lib/fzl/time.h>
 #include <lib/zx/bti.h>
 #include <lib/zx/channel.h>
@@ -19,7 +18,6 @@
 #include <lib/zx/handle.h>
 #include <lib/zx/interrupt.h>
 #include <lib/zx/job.h>
-#include <lib/zx/log.h>
 #include <lib/zx/port.h>
 #include <lib/zx/process.h>
 #include <lib/zx/socket.h>
@@ -214,15 +212,6 @@ bool traits_test() {
     }
 
     {
-        zx::log log;
-        ASSERT_EQ(zx::log::create(0u, &log), ZX_OK);
-        duplicating(log);
-        user_signaling(log);
-        waiting(log);
-        peering(log);
-    }
-
-    {
         zx::debuglog debuglog;
         ASSERT_EQ(zx::debuglog::create(zx::resource(), 0u, &debuglog), ZX_OK);
         duplicating(debuglog);
@@ -273,7 +262,7 @@ bool traits_test() {
         // Creating a zx::interrupt is too hard in a generic testing
         // environment. Instead, we just assert it's got the traits we
         // want.
-        ASSERT_EQ(zx::object_traits<zx::interrupt>::supports_duplication, false);
+        ASSERT_EQ(zx::object_traits<zx::interrupt>::supports_duplication, true);
         ASSERT_EQ(zx::object_traits<zx::interrupt>::supports_user_signal, false);
         ASSERT_EQ(zx::object_traits<zx::interrupt>::supports_wait, true);
         ASSERT_EQ(zx::object_traits<zx::interrupt>::has_peer_handle, false);
@@ -287,6 +276,16 @@ bool traits_test() {
         ASSERT_EQ(zx::object_traits<zx::guest>::supports_user_signal, false);
         ASSERT_EQ(zx::object_traits<zx::guest>::supports_wait, false);
         ASSERT_EQ(zx::object_traits<zx::guest>::has_peer_handle, false);
+    }
+
+    {
+        // Creating a zx::iommu is too hard in a generic testing
+        // environment. Instead, we just assert it's got the traits we
+        // want.
+        ASSERT_EQ(zx::object_traits<zx::resource>::supports_duplication, true);
+        ASSERT_EQ(zx::object_traits<zx::resource>::supports_user_signal, true);
+        ASSERT_EQ(zx::object_traits<zx::resource>::supports_wait, true);
+        ASSERT_EQ(zx::object_traits<zx::resource>::has_peer_handle, false);
     }
 
     END_TEST;

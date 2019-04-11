@@ -7,7 +7,7 @@
 #include <ddk/metadata.h>
 #include <ddk/metadata/camera.h>
 #include <ddk/platform-defs.h>
-#include <ddktl/protocol/gpio-impl.h>
+#include <ddktl/protocol/gpioimpl.h>
 #include <fbl/unique_ptr.h>
 #include <hw/reg.h>
 #include <soc/aml-meson/g12b-clk.h>
@@ -50,20 +50,13 @@ constexpr pbus_mmio_t mipi_mmios[] = {
         .base = T931_HIU_BASE,
         .length = T931_HIU_LENGTH,
     },
-    // Power domain
+};
+
+constexpr camera_sensor_t isp_mipi[] = {
     {
-        .base = T931_POWER_DOMAIN_BASE,
-        .length = T931_POWER_DOMAIN_LENGTH,
-    },
-    // Memory PD
-    {
-        .base = T931_MEMORY_PD_BASE,
-        .length = T931_MEMORY_PD_LENGTH,
-    },
-    // Reset
-    {
-        .base = T931_RESET_BASE,
-        .length = T931_RESET_LENGTH,
+        .vid = PDEV_VID_AMLOGIC,
+        .pid = PDEV_PID_AMLOGIC_T931,
+        .did = PDEV_DID_AMLOGIC_MIPI,
     },
 };
 
@@ -96,10 +89,41 @@ constexpr pbus_metadata_t mipi_metadata[] = {
     },
 };
 
+constexpr pbus_metadata_t isp_metadata[] = {
+    {
+        .type = DEVICE_METADATA_PRIVATE,
+        .data_buffer = &isp_mipi,
+        .data_size = sizeof(isp_mipi),
+    },
+};
+
 constexpr pbus_i2c_channel_t sensor_i2c[] = {
     {
         .bus_id = SHERLOCK_I2C_3,
         .address = 0x36,
+    },
+};
+
+constexpr pbus_mmio_t isp_mmios[] = {
+    // HIU for clocks.
+    {
+        .base = T931_HIU_BASE,
+        .length = T931_HIU_LENGTH,
+    },
+    // Power domain
+    {
+        .base = T931_POWER_DOMAIN_BASE,
+        .length = T931_POWER_DOMAIN_LENGTH,
+    },
+    // Memory PD
+    {
+        .base = T931_MEMORY_PD_BASE,
+        .length = T931_MEMORY_PD_LENGTH,
+    },
+    // Reset
+    {
+        .base = T931_RESET_BASE,
+        .length = T931_RESET_LENGTH,
     },
 };
 
@@ -137,12 +161,10 @@ static const pbus_dev_t mipi_children = []() {
     return dev;
 }();
 
-static pbus_dev_t mipi_dev = []() {
+static const pbus_dev_t isp_children = []() {
+    // MIPI CSI PHY ADAPTER
     pbus_dev_t dev;
     dev.name = "mipi-csi2";
-    dev.vid = PDEV_VID_AMLOGIC;
-    dev.pid = PDEV_PID_AMLOGIC_T931;
-    dev.did = PDEV_DID_AMLOGIC_MIPI;
     dev.mmio_list = mipi_mmios;
     dev.mmio_count = countof(mipi_mmios);
     dev.metadata_list = mipi_metadata;
@@ -156,18 +178,42 @@ static pbus_dev_t mipi_dev = []() {
     return dev;
 }();
 
+static pbus_dev_t isp_dev = []() {
+    // ISP
+    pbus_dev_t dev;
+    dev.name = "isp";
+    dev.vid = PDEV_VID_ARM;
+    dev.pid = PDEV_PID_ISP;
+    dev.did = PDEV_DID_ARM_MALI_IV009;
+    dev.mmio_list = isp_mmios;
+    dev.mmio_count = countof(isp_mmios);
+    dev.metadata_list = isp_metadata;
+    dev.metadata_count = countof(isp_metadata);
+    dev.child_list = &isp_children;
+    dev.child_count = 1;
+    return dev;
+}();
+
 } // namespace
 
+// Camera Board Driver loads the following three drivers
+// with parent -> child -> child relationship
+// ISP
+//  |
+//  |
+//  -> MIPI
+//      |
+//      |
+//      -> IMX227
 zx_status_t Sherlock::CameraInit() {
 
     // Set GPIO alternate functions.
-    ddk::GpioImplProtocolProxy gpio_impl(&gpio_impl_);
-    gpio_impl.SetAltFunction(T931_GPIOAO(10), kClk24MAltFunc);
+    gpio_impl_.SetAltFunction(T931_GPIOAO(10), kClk24MAltFunc);
 
-    gpio_impl.SetAltFunction(T931_GPIOA(14), kI2cSDAAltFunc);
-    gpio_impl.SetAltFunction(T931_GPIOA(15), kI2cSCLAltFunc);
+    gpio_impl_.SetAltFunction(T931_GPIOA(14), kI2cSDAAltFunc);
+    gpio_impl_.SetAltFunction(T931_GPIOA(15), kI2cSCLAltFunc);
 
-    zx_status_t status = pbus_.DeviceAdd(&mipi_dev);
+    zx_status_t status = pbus_.DeviceAdd(&isp_dev);
     if (status != ZX_OK) {
         zxlogf(ERROR, "%s: DeviceAdd failed %d\n", __func__, status);
         return status;

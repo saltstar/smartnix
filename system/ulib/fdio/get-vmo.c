@@ -1,46 +1,53 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "private.h"
 #include "unistd.h"
 
+#include <fuchsia/io/c/fidl.h>
+#include <lib/fdio/io.h>
+#include <lib/fdio/vfs.h>
 #include <zircon/process.h>
 #include <zircon/syscalls.h>
-
-#include <lib/fdio/io.h>
-#include <lib/fdio/remoteio.h>
-#include <lib/fdio/vfs.h>
 
 #define MIN_WINDOW (PAGE_SIZE * 4)
 #define MAX_WINDOW ((size_t)64 << 20)
 
 static zx_status_t read_at(fdio_t* io, void* buf, size_t len, off_t offset,
-                           size_t* actual_len) {
-    zx_status_t status;
-    while ((status = io->ops->read_at(io, buf, len, offset)) == ZX_ERR_SHOULD_WAIT) {
+                           size_t* out_actual) {
+    size_t actual = 0u;
+    zx_status_t status = ZX_OK;
+    for (;;) {
+        status = zxio_read_at(fdio_get_zxio(io), offset, buf, len, &actual);
+        if (status != ZX_ERR_SHOULD_WAIT) {
+            break;
+        }
         status = fdio_wait(io, FDIO_EVT_READABLE, ZX_TIME_INFINITE, NULL);
         if (status != ZX_OK) {
-            return status;
+            break;
         }
     }
-    if (status < 0) {
+    if (status != ZX_OK) {
         return status;
     }
-    if (status == 0) { // EOF (?)
+    if (actual == 0) { // EOF (?)
         return ZX_ERR_OUT_OF_RANGE;
     }
-    *actual_len = status;
+    *out_actual = actual;
     return ZX_OK;
 }
 
 static zx_status_t read_file_into_vmo(fdio_t* io, zx_handle_t* out_vmo) {
     zx_handle_t current_vmar_handle = zx_vmar_root_self();
 
-    vnattr_t attr;
+    fuchsia_io_NodeAttributes attr;
     zx_status_t status = io->ops->get_attr(io, &attr);
     if (status != ZX_OK) {
         return ZX_ERR_BAD_HANDLE;
     }
 
-    uint64_t size = attr.size;
+    uint64_t size = attr.content_size;
     uint64_t offset = 0;
 
     status = zx_vmo_create(size, 0, out_vmo);
@@ -102,8 +109,8 @@ static zx_status_t read_file_into_vmo(fdio_t* io, zx_handle_t* out_vmo) {
 }
 
 static zx_status_t get_file_vmo(fdio_t* io, zx_handle_t* out_vmo) {
-    return io->ops->get_vmo(io, FDIO_MMAP_FLAG_READ | FDIO_MMAP_FLAG_EXEC |
-                            FDIO_MMAP_FLAG_PRIVATE, out_vmo);
+    return io->ops->get_vmo(io, fuchsia_io_VMO_FLAG_READ | fuchsia_io_VMO_FLAG_EXEC |
+                            fuchsia_io_VMO_FLAG_PRIVATE, out_vmo);
 }
 
 static zx_status_t copy_file_vmo(fdio_t* io, zx_handle_t* out_vmo) {
@@ -152,8 +159,8 @@ zx_status_t fdio_get_vmo_exact(int fd, zx_handle_t* out_vmo) {
         return ZX_ERR_BAD_HANDLE;
     }
 
-    zx_status_t status = io->ops->get_vmo(io, FDIO_MMAP_FLAG_READ | FDIO_MMAP_FLAG_EXEC |
-                                          FDIO_MMAP_FLAG_EXACT, out_vmo);
+    zx_status_t status = io->ops->get_vmo(io, fuchsia_io_VMO_FLAG_READ | fuchsia_io_VMO_FLAG_EXEC |
+                                          fuchsia_io_VMO_FLAG_EXACT, out_vmo);
     fdio_release(io);
 
     return status;

@@ -76,12 +76,11 @@ static int mutex_thread(void* arg) {
 }
 
 static int mutex_test(void) {
-    static mutex_t imutex = MUTEX_INITIAL_VALUE(imutex);
+    static mutex_t imutex;
     printf("preinitialized mutex:\n");
     hexdump(&imutex, sizeof(imutex));
 
     mutex_t m;
-    mutex_init(&m);
 
     thread_t* threads[5];
 
@@ -108,63 +107,57 @@ static int mutex_inherit_test() {
     constexpr uint inherit_test_mutex_count = 4;
     constexpr uint inherit_test_thread_count = 5;
 
-    // working variables to pass the working thread
-    struct args {
-        event_t test_blocker = EVENT_INITIAL_VALUE(test_blocker, false, 0);
-        mutex_t test_mutex[inherit_test_mutex_count];
-    } args;
+    {  // Explicit scope to control when the destruction of |args| happens
+        // working variables to pass the working thread
+        struct args {
+            event_t test_blocker = EVENT_INITIAL_VALUE(test_blocker, false, 0);
+            mutex_t test_mutex[inherit_test_mutex_count];
+        } args;
 
-    // worker thread to stress the priority inheritance mechanism
-    auto inherit_worker = [](void* arg) TA_NO_THREAD_SAFETY_ANALYSIS -> int {
-        struct args* args = static_cast<struct args*>(arg);
+        // worker thread to stress the priority inheritance mechanism
+        auto inherit_worker = [](void* arg) TA_NO_THREAD_SAFETY_ANALYSIS -> int {
+            struct args* args = static_cast<struct args*>(arg);
 
-        for (int count = 0; count < 100000; count++) {
-            uint r = rand_range(1, inherit_test_mutex_count);
+            for (int count = 0; count < 100000; count++) {
+                uint r = rand_range(1, inherit_test_mutex_count);
 
-            // pick a random priority
-            thread_set_priority(
-                get_current_thread(), rand_range(DEFAULT_PRIORITY - 4, DEFAULT_PRIORITY + 4));
+                // pick a random priority
+                thread_set_priority(
+                    get_current_thread(), rand_range(DEFAULT_PRIORITY - 4, DEFAULT_PRIORITY + 4));
 
-            // grab a random number of mutexes
-            for (uint j = 0; j < r; j++) {
-                mutex_acquire(&args->test_mutex[j]);
+                // grab a random number of mutexes
+                for (uint j = 0; j < r; j++) {
+                    mutex_acquire(&args->test_mutex[j]);
+                }
+
+                if (count % 1000 == 0)
+                    printf("%p: count %d\n", get_current_thread(), count);
+
+                // wait on a event for a period of time, to try to have other grabber threads
+                // need to tweak our priority in either one of the mutexes we hold or the
+                // blocking event
+                event_wait_deadline(&args->test_blocker, current_time() + ZX_USEC(rand() % 10u), true);
+
+                // release in reverse order
+                for (int j = r - 1; j >= 0; j--) {
+                    mutex_release(&args->test_mutex[j]);
+                }
             }
 
-            if (count % 1000 == 0)
-                printf("%p: count %d\n", get_current_thread(), count);
+            return 0;
+        };
 
-            // wait on a event for a period of time, to try to have other grabber threads
-            // need to tweak our priority in either one of the mutexes we hold or the
-            // blocking event
-            event_wait_deadline(&args->test_blocker, current_time() + ZX_USEC(rand() % 10u), true);
-
-            // release in reverse order
-            for (int j = r - 1; j >= 0; j--) {
-                mutex_release(&args->test_mutex[j]);
-            }
+        // create a stack of mutexes and a few threads
+        thread_t* test_thread[inherit_test_thread_count];
+        for (auto &t: test_thread) {
+            t = thread_create("mutex tester", inherit_worker, &args,
+                                       get_current_thread()->base_priority);
+            thread_resume(t);
         }
 
-        return 0;
-    };
-
-    // create a stack of mutexes and a few threads
-    for (auto &m: args.test_mutex) {
-        mutex_init(&m);
-    }
-
-    thread_t* test_thread[inherit_test_thread_count];
-    for (auto &t: test_thread) {
-        t = thread_create("mutex tester", inherit_worker, &args,
-                                   get_current_thread()->base_priority);
-        thread_resume(t);
-    }
-
-    for (auto &t: test_thread) {
-        thread_join(t, NULL, ZX_TIME_INFINITE);
-    }
-
-    for (auto &m: args.test_mutex) {
-        mutex_destroy(&m);
+        for (auto &t: test_thread) {
+            thread_join(t, NULL, ZX_TIME_INFINITE);
+        }
     }
 
     thread_sleep_relative(ZX_MSEC(100));
@@ -566,7 +559,7 @@ static void spinlock_test(void) {
     printf("seems to work\n");
 }
 
-static void sleeper_thread_exit(enum thread_user_state_change new_state, void* arg) {
+static void sleeper_thread_exit(enum thread_user_state_change new_state, thread_t* arg) {
     TRACEF("arg %p\n", arg);
 }
 
@@ -574,14 +567,14 @@ static int sleeper_kill_thread(void* arg) {
     thread_sleep_relative(ZX_MSEC(100));
 
     zx_time_t t = current_time();
-    zx_status_t err = thread_sleep_etc(t + ZX_SEC(5), true);
+    zx_status_t err = thread_sleep_interruptable(t + ZX_SEC(5));
     zx_duration_t duration = (current_time() - t) / ZX_MSEC(1);
-    TRACEF("thread_sleep_etc returns %d after %" PRIi64 " msecs\n", err, duration);
+    TRACEF("thread_sleep_interruptable returns %d after %" PRIi64 " msecs\n", err, duration);
 
     return 0;
 }
 
-static void waiter_thread_exit(enum thread_user_state_change new_state, void* arg) {
+static void waiter_thread_exit(enum thread_user_state_change new_state, thread_t* arg) {
     TRACEF("arg %p\n", arg);
 }
 
@@ -616,7 +609,6 @@ static void kill_tests(void) {
 
     printf("starting sleeper thread, then killing it while it sleeps.\n");
     t = thread_create("sleeper", sleeper_kill_thread, 0, LOW_PRIORITY);
-    t->user_thread = t;
     thread_set_user_callback(t, &sleeper_thread_exit);
     thread_resume(t);
     thread_sleep_relative(ZX_MSEC(200));
@@ -625,7 +617,6 @@ static void kill_tests(void) {
 
     printf("starting sleeper thread, then killing it before it wakes up.\n");
     t = thread_create("sleeper", sleeper_kill_thread, 0, LOW_PRIORITY);
-    t->user_thread = t;
     thread_set_user_callback(t, &sleeper_thread_exit);
     thread_resume(t);
     thread_kill(t);
@@ -633,7 +624,6 @@ static void kill_tests(void) {
 
     printf("starting sleeper thread, then killing it before it is unsuspended.\n");
     t = thread_create("sleeper", sleeper_kill_thread, 0, LOW_PRIORITY);
-    t->user_thread = t;
     thread_set_user_callback(t, &sleeper_thread_exit);
     thread_kill(t); // kill it before it is resumed
     thread_resume(t);
@@ -644,7 +634,6 @@ static void kill_tests(void) {
     printf("starting waiter thread that waits forever, then killing it while it blocks.\n");
     event_init(&e, false, 0);
     t = thread_create("waiter", waiter_kill_thread_infinite_wait, &e, LOW_PRIORITY);
-    t->user_thread = t;
     thread_set_user_callback(t, &waiter_thread_exit);
     thread_resume(t);
     thread_sleep_relative(ZX_MSEC(200));
@@ -655,7 +644,6 @@ static void kill_tests(void) {
     printf("starting waiter thread that waits forever, then killing it before it wakes up.\n");
     event_init(&e, false, 0);
     t = thread_create("waiter", waiter_kill_thread_infinite_wait, &e, LOW_PRIORITY);
-    t->user_thread = t;
     thread_set_user_callback(t, &waiter_thread_exit);
     thread_resume(t);
     thread_kill(t);
@@ -665,7 +653,6 @@ static void kill_tests(void) {
     printf("starting waiter thread that waits some time, then killing it while it blocks.\n");
     event_init(&e, false, 0);
     t = thread_create("waiter", waiter_kill_thread, &e, LOW_PRIORITY);
-    t->user_thread = t;
     thread_set_user_callback(t, &waiter_thread_exit);
     thread_resume(t);
     thread_sleep_relative(ZX_MSEC(200));
@@ -676,7 +663,6 @@ static void kill_tests(void) {
     printf("starting waiter thread that waits some time, then killing it before it wakes up.\n");
     event_init(&e, false, 0);
     t = thread_create("waiter", waiter_kill_thread, &e, LOW_PRIORITY);
-    t->user_thread = t;
     thread_set_user_callback(t, &waiter_thread_exit);
     thread_resume(t);
     thread_kill(t);
@@ -740,7 +726,7 @@ static int affinity_test_thread(void* arg) {
 
 // start a bunch of threads that randomly set the affinity of the other threads
 // to random masks while doing various work.
-// a sucessful pass is one where it completes the run without tripping over any asserts
+// a successful pass is one where it completes the run without tripping over any asserts
 // in the scheduler code.
 __NO_INLINE static void affinity_test() {
     printf("starting thread affinity test\n");

@@ -1,10 +1,13 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <fbl/intrusive_double_list.h>
 #include <fbl/intrusive_wavl_tree.h>
 #include <fbl/unique_ptr.h>
-#include <zircon/hw/usb-audio.h>
+#include <zircon/hw/usb/audio.h>
 
 #include "usb-audio-descriptors.h"
 #include "usb-audio-path.h"

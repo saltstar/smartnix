@@ -1,5 +1,12 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
+
+#include <zircon/compiler.h>
+
+__BEGIN_CDECLS
 
 // setup networking
 // if interface != NULL, only use the given topological path for networking
@@ -26,3 +33,5 @@ void netifc_recv(void* data, size_t len);
 bool netifc_send_pending(void);
 
 void netifc_get_info(uint8_t* addr, uint16_t* mtu);
+
+__END_CDECLS

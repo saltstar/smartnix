@@ -15,5 +15,11 @@ MODULE := $(LOCAL_DIR)
 
 MODULE_SRCS := $(LOCAL_DIR)/usb-cdc-ecm.c
 
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-ethernet \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-composite \
+    system/banjo/ddk-protocol-usb-request \
+
 include make/module.mk
 

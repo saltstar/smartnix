@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -7,7 +10,6 @@
 #ifndef _KERNEL
 #include <ddktl/mmio.h>
 #endif
-#include <fbl/type_support.h>
 #include <limits.h>
 #include <stdint.h>
 #include <zircon/assert.h>

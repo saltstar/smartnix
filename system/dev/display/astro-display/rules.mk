@@ -11,7 +11,6 @@ MODULE_TYPE := driver
 MODULE_SRCS += \
     $(LOCAL_DIR)/bind.c \
     $(LOCAL_DIR)/osd.cpp \
-    $(LOCAL_DIR)/backlight.cpp \
     $(LOCAL_DIR)/astro-clock.cpp \
     $(LOCAL_DIR)/dw-mipi-dsi.cpp \
     $(LOCAL_DIR)/aml-mipi-phy.cpp \
@@ -34,5 +33,12 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/zircon \
     system/ulib/c \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-amlogiccanvas \
+    system/banjo/ddk-protocol-display-controller \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-platform-device \
 
 include make/module.mk

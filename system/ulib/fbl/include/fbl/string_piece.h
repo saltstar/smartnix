@@ -1,7 +1,11 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <string.h>
+#include <type_traits>
 
 #include <fbl/string_traits.h>
 
@@ -42,7 +46,7 @@ public:
     //
     // Works with various string types including fbl::String, fbl::StringView,
     // std::string, and std::string_view.
-    template <typename T, typename = typename enable_if<is_string_like<T>::value>::type>
+    template <typename T, typename = typename std::enable_if<is_string_like<T>::value>::type>
     constexpr StringPiece(const T& value)
         : StringPiece(GetStringData(value), GetStringLength(value)) {}
 
@@ -69,7 +73,7 @@ public:
     constexpr StringPiece& operator=(const StringPiece& other) = default;
     constexpr StringPiece& operator=(StringPiece&& other) = default;
 
-    template <typename T, typename = typename enable_if<is_string_like<T>::value>::type>
+    template <typename T, typename = typename std::enable_if<is_string_like<T>::value>::type>
     constexpr StringPiece& operator=(const T& value) {
         set(GetStringData(value), GetStringLength(value));
         return *this;

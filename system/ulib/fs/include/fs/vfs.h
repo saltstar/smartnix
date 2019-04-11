@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,9 +9,7 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include <lib/fdio/remoteio.h>
 #include <lib/fdio/vfs.h>
-#include <fs/client.h>
 #include <fs/locking.h>
 #include <zircon/assert.h>
 #include <zircon/compiler.h>
@@ -21,7 +22,11 @@
 #include <lib/zx/channel.h>
 #include <lib/zx/event.h>
 #include <lib/zx/vmo.h>
+#include <fbl/intrusive_hash_table.h>
 #include <fbl/mutex.h>
+#include <fs/client.h>
+#include <fs/mount_channel.h>
+#include <fs/vnode.h>
 #endif // __Fuchsia__
 
 #include <fbl/function.h>
@@ -31,6 +36,8 @@
 #include <fbl/ref_ptr.h>
 #include <fbl/string_piece.h>
 #include <fbl/unique_ptr.h>
+
+#include <utility>
 
 namespace fs {
 
@@ -65,39 +72,6 @@ typedef struct vdircookie {
     void* p;
 } vdircookie_t;
 
-#ifdef __Fuchsia__
-
-// MountChannel functions exactly the same as a channel, except that it
-// intentionally destructs by sending a clean "shutdown" signal to the
-// underlying filesystem. Up until the point that a remote handle is
-// attached to a vnode, this wrapper guarantees not only that the
-// underlying handle gets closed on error, but also that the sub-filesystem
-// is released (which cleans up the underlying connection to the block
-// device).
-class MountChannel {
-public:
-    constexpr MountChannel() = default;
-    explicit MountChannel(zx_handle_t handle)
-        : channel_(handle) {}
-    explicit MountChannel(zx::channel channel)
-        : channel_(fbl::move(channel)) {}
-    MountChannel(MountChannel&& other)
-        : channel_(fbl::move(other.channel_)) {}
-
-    zx::channel TakeChannel() { return fbl::move(channel_); }
-
-    ~MountChannel() {
-        if (channel_.is_valid()) {
-            vfs_unmount_handle(channel_.release(), 0);
-        }
-    }
-
-private:
-    zx::channel channel_;
-};
-
-#endif // __Fuchsia__
-
 // The Vfs object contains global per-filesystem state, which
 // may be valid across a collection of Vnodes.
 //
@@ -115,7 +89,7 @@ public:
     // If the node represented by |path| contains a remote node,
     // set |pathout| to the remaining portion of the path yet to
     // be traversed (or ".", if the endpoint of |path| is the mount point),
-    // and return the node containing the ndoe in |out|.
+    // and return the node containing the node in |out|.
     zx_status_t Open(fbl::RefPtr<Vnode> vn, fbl::RefPtr<Vnode>* out,
                      fbl::StringPiece path, fbl::StringPiece* pathout,
                      uint32_t flags, uint32_t mode) FS_TA_EXCLUDES(vfs_lock_);
@@ -211,6 +185,8 @@ private:
     zx_status_t InstallRemoteLocked(fbl::RefPtr<Vnode> vn, MountChannel h) FS_TA_REQUIRES(vfs_lock_);
     zx_status_t UninstallRemoteLocked(fbl::RefPtr<Vnode> vn,
                                       zx::channel* h) FS_TA_REQUIRES(vfs_lock_);
+
+    fbl::HashTable<zx_koid_t, std::unique_ptr<VnodeToken>> vnode_tokens_;
 
     // Non-intrusive node in linked list of vnodes acting as mount points
     class MountNode final : public fbl::DoublyLinkedListable<fbl::unique_ptr<MountNode>> {

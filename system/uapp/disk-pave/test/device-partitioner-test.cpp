@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "device-partitioner.h"
 
@@ -11,20 +14,24 @@
 #include <fbl/unique_ptr.h>
 #include <fs-management/ram-nand.h>
 #include <fs-management/ramdisk.h>
+#include <fuchsia/hardware/nand/c/fidl.h>
 #include <lib/fzl/vmo-mapper.h>
 #include <unittest/unittest.h>
 #include <zircon/boot/image.h>
 #include <zircon/device/device.h>
 #include <zircon/hw/gpt.h>
-#include <zircon/nand/c/fidl.h>
 #include <zircon/syscalls.h>
 #include <zircon/types.h>
+
+#include <utility>
 
 namespace {
 
 constexpr uint8_t kZirconAType[GPT_GUID_LEN] = GUID_ZIRCON_A_VALUE;
 constexpr uint8_t kZirconBType[GPT_GUID_LEN] = GUID_ZIRCON_B_VALUE;
 constexpr uint8_t kZirconRType[GPT_GUID_LEN] = GUID_ZIRCON_R_VALUE;
+constexpr uint8_t kVbMetaAType[GPT_GUID_LEN] = GUID_VBMETA_A_VALUE;
+constexpr uint8_t kVbMetaBType[GPT_GUID_LEN] = GUID_VBMETA_B_VALUE;
 constexpr uint8_t kFvmType[GPT_GUID_LEN] = GUID_FVM_VALUE;
 
 constexpr uint64_t kBlockSize = 0x1000;
@@ -33,96 +40,115 @@ constexpr uint64_t kBlockCount = 0x10;
 constexpr uint32_t kOobSize = 8;
 constexpr uint32_t kPageSize = 1024;
 constexpr uint32_t kPagesPerBlock = 16;
-constexpr uint32_t kNumBlocks = 16;
-constexpr zircon_nand_RamNandInfo kNandInfo = {
-    .vmo = ZX_HANDLE_INVALID,
-    .padding = 0,
-    .nand_info = {
-        .page_size = kPageSize,
-        .pages_per_block = kPagesPerBlock,
-        .num_blocks = kNumBlocks,
-        .ecc_bits = 8,
-        .oob_size = kOobSize,
-        .nand_class = zircon_nand_Class_PARTMAP,
-        .partition_guid = {},
-    },
-    .partition_map = {
-        .device_guid = {},
-        .padding = 0,
-        .partition_count = 5,
-        .partitions = {
-            {
-                .type_guid = {},
-                .unique_guid = {},
-                .first_block = 0,
-                .last_block = 3,
-                .copy_count = 0,
-                .copy_byte_offset = 0,
-                .name = {},
-                .padding = 0,
-                .hidden = true,
-                .bbt = true,
-            },
-            {
-                .type_guid = GUID_BOOTLOADER_VALUE,
-                .unique_guid = {},
-                .first_block = 4,
-                .last_block = 7,
-                .copy_count = 0,
-                .copy_byte_offset = 0,
-                .name = {'b', 'o', 'o', 't', 'l', 'o', 'a', 'd', 'e', 'r'},
-                .padding = 0,
-                .hidden = false,
-                .bbt = false,
-            },
-            {
-                .type_guid = GUID_ZIRCON_A_VALUE,
-                .unique_guid = {},
-                .first_block = 8,
-                .last_block = 9,
-                .copy_count = 0,
-                .copy_byte_offset = 0,
-                .name = {'z', 'i', 'r', 'c', 'o', 'n', '-', 'a'},
-                .padding = 0,
-                .hidden = false,
-                .bbt = false,
-            },
-            {
-                .type_guid = GUID_ZIRCON_B_VALUE,
-                .unique_guid = {},
-                .first_block = 10,
-                .last_block = 11,
-                .copy_count = 0,
-                .copy_byte_offset = 0,
-                .name = {'z', 'i', 'r', 'c', 'o', 'n', '-', 'b'},
-                .padding = 0,
-                .hidden = false,
-                .bbt = false,
-            },
-            {
-                .type_guid = GUID_ZIRCON_R_VALUE,
-                .unique_guid = {},
-                .first_block = 12,
-                .last_block = 13,
-                .copy_count = 0,
-                .copy_byte_offset = 0,
-                .name = {'z', 'i', 'r', 'c', 'o', 'n', '-', 'r'},
-                .padding = 0,
-                .hidden = false,
-                .bbt = false,
-            },
-        },
-    },
-    .export_nand_config = true,
-    .export_partition_map = true,
+constexpr uint32_t kNumBlocks = 18;
+constexpr fuchsia_hardware_nand_RamNandInfo
+    kNandInfo =
+        {
+            .vmo = ZX_HANDLE_INVALID,
+            .nand_info =
+                {
+                    .page_size = kPageSize,
+                    .pages_per_block = kPagesPerBlock,
+                    .num_blocks = kNumBlocks,
+                    .ecc_bits = 8,
+                    .oob_size = kOobSize,
+                    .nand_class = fuchsia_hardware_nand_Class_PARTMAP,
+                    .partition_guid = {},
+                },
+            .partition_map =
+                {
+                    .device_guid = {},
+                    .partition_count = 7,
+                    .partitions =
+                        {
+                            {
+                                .type_guid = {},
+                                .unique_guid = {},
+                                .first_block = 0,
+                                .last_block = 3,
+                                .copy_count = 0,
+                                .copy_byte_offset = 0,
+                                .name = {},
+                                .hidden = true,
+                                .bbt = true,
+                            },
+                            {
+                                .type_guid = GUID_BOOTLOADER_VALUE,
+                                .unique_guid = {},
+                                .first_block = 4,
+                                .last_block = 7,
+                                .copy_count = 0,
+                                .copy_byte_offset = 0,
+                                .name = {'b', 'o', 'o', 't', 'l', 'o', 'a', 'd', 'e', 'r'},
+                                .hidden = false,
+                                .bbt = false,
+                            },
+                            {
+                                .type_guid = GUID_ZIRCON_A_VALUE,
+                                .unique_guid = {},
+                                .first_block = 8,
+                                .last_block = 9,
+                                .copy_count = 0,
+                                .copy_byte_offset = 0,
+                                .name = {'z', 'i', 'r', 'c', 'o', 'n', '-', 'a'},
+                                .hidden = false,
+                                .bbt = false,
+                            },
+                            {
+                                .type_guid = GUID_ZIRCON_B_VALUE,
+                                .unique_guid = {},
+                                .first_block = 10,
+                                .last_block = 11,
+                                .copy_count = 0,
+                                .copy_byte_offset = 0,
+                                .name = {'z', 'i', 'r', 'c', 'o', 'n', '-', 'b'},
+                                .hidden = false,
+                                .bbt = false,
+                            },
+                            {
+                                .type_guid = GUID_ZIRCON_R_VALUE,
+                                .unique_guid = {},
+                                .first_block = 12,
+                                .last_block = 13,
+                                .copy_count = 0,
+                                .copy_byte_offset = 0,
+                                .name = {'z', 'i', 'r', 'c', 'o', 'n', '-', 'r'},
+                                .hidden = false,
+                                .bbt = false,
+                            },
+                            {
+                                .type_guid = GUID_VBMETA_A_VALUE,
+                                .unique_guid = {},
+                                .first_block = 14,
+                                .last_block = 15,
+                                .copy_count = 0,
+                                .copy_byte_offset = 0,
+                                .name = {'v', 'b', 'm', 'e', 't', 'a', '-', 'a'},
+                                .hidden = false,
+                                .bbt = false,
+                            },
+                            {
+                                .type_guid = GUID_VBMETA_B_VALUE,
+                                .unique_guid = {},
+                                .first_block = 16,
+                                .last_block = 17,
+                                .copy_count = 0,
+                                .copy_byte_offset = 0,
+                                .name = {'v', 'b', 'm', 'e', 't', 'a', '-', 'b'},
+                                .hidden = false,
+                                .bbt = false,
+                            },
+                        },
+                },
+            .export_nand_config = true,
+            .export_partition_map = true,
 };
-
 
 static fbl::Vector<fbl::String> test_block_devices;
 static fbl::Vector<fbl::String> test_skip_block_devices;
 
 bool FilterRealBlockDevices(const fbl::unique_fd& fd) {
-    char topo_path[PATH_MAX] = { '\0' };
+    char topo_path[PATH_MAX] = {'\0'};
     if (ioctl_device_get_topo_path(fd.get(), topo_path, PATH_MAX) < 0) {
         return false;
     }
@@ -134,39 +160,20 @@ bool FilterRealBlockDevices(const fbl::unique_fd& fd) {
     return true;
 }
 
-bool FilterRealSkipBlockDevices(const fbl::unique_fd& fd) {
-    char topo_path[PATH_MAX] = { '\0' };
-    if (ioctl_device_get_topo_path(fd.get(), topo_path, PATH_MAX) < 0) {
-        return false;
-    }
-    for (const auto& device : test_skip_block_devices) {
-        if (strstr(topo_path, device.data()) == topo_path) {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool Initialize() {
     test_block_devices.reset();
-    test_skip_block_devices.reset();
     paver::TestBlockFilter = FilterRealBlockDevices;
-    paver::TestSkipBlockFilter = FilterRealSkipBlockDevices;
     return true;
 }
 
-bool InsertTestDevices(fbl::StringPiece path, bool skip) {
+bool InsertTestDevices(fbl::StringPiece path) {
     BEGIN_HELPER;
     fbl::unique_fd fd(open(path.data(), O_RDWR));
     ASSERT_TRUE(fd.is_valid());
     fbl::String topo_path(PATH_MAX, '\0');
     ASSERT_GE(ioctl_device_get_topo_path(fd.get(), const_cast<char*>(topo_path.data()), PATH_MAX),
               0);
-    if (skip) {
-        test_skip_block_devices.push_back(fbl::move(topo_path));
-    } else {
-        test_block_devices.push_back(fbl::move(topo_path));
-    }
+    test_block_devices.push_back(std::move(topo_path));
     END_HELPER;
 }
 
@@ -174,28 +181,24 @@ class BlockDevice {
 public:
     static bool Create(const uint8_t* guid, fbl::unique_ptr<BlockDevice>* device) {
         BEGIN_HELPER;
-        fbl::String path(PATH_MAX, '\0');
+        ramdisk_client_t* client;
         ASSERT_EQ(create_ramdisk_with_guid(kBlockSize, kBlockCount, guid, ZBI_PARTITION_GUID_LEN,
-                                           const_cast<char*>(path.data())),
+                                           &client),
                   ZX_OK);
-        ASSERT_TRUE(InsertTestDevices(path.ToStringPiece(), false));
-        device->reset(new BlockDevice(fbl::move(path)));
+        ASSERT_TRUE(InsertTestDevices(ramdisk_get_path(client)));
+        device->reset(new BlockDevice(client));
         END_HELPER;
     }
 
     ~BlockDevice() {
-        destroy_ramdisk(path_.data());
-    }
-
-    fbl::StringPiece GetPath() {
-        return path_.ToStringPiece();
+        ramdisk_destroy(client_);
     }
 
 private:
-    BlockDevice(fbl::String path)
-        : path_(fbl::move(path)) {}
+    BlockDevice(ramdisk_client_t* client)
+        : client_(client) {}
 
-    fbl::String path_;
+    ramdisk_client_t* client_;
 };
 
 void CreateBadBlockMap(void* buffer) {
@@ -230,28 +233,28 @@ public:
         zx::vmo dup;
         ASSERT_EQ(vmo.duplicate(ZX_RIGHT_SAME_RIGHTS, &dup), ZX_OK);
 
-        fbl::String path(PATH_MAX, '\0');
-        zircon_nand_RamNandInfo info = kNandInfo;
+        fuchsia_hardware_nand_RamNandInfo info = kNandInfo;
         info.vmo = dup.release();
-        ASSERT_EQ(create_ram_nand(&info, const_cast<char*>(path.data())), ZX_OK);
-        ASSERT_TRUE(InsertTestDevices(path.ToStringPiece(), true));
-        device->reset(new SkipBlockDevice(fbl::move(path), fbl::move(mapper)));
+        fbl::RefPtr<fs_mgmt::RamNandCtl> ctl;
+        ASSERT_EQ(fs_mgmt::RamNandCtl::Create(&ctl), ZX_OK);
+        std::optional<fs_mgmt::RamNand> ram_nand;
+        ASSERT_EQ(fs_mgmt::RamNand::Create(ctl, &info, &ram_nand), ZX_OK);
+        device->reset(new SkipBlockDevice(std::move(ctl), *std::move(ram_nand),
+                                          std::move(mapper)));
         END_HELPER;
     }
 
-    ~SkipBlockDevice() {
-        destroy_ram_nand(path_.data());
-    }
+    fbl::unique_fd devfs_root() { return fbl::unique_fd(dup(ctl_->devfs_root().get())); }
 
-    fbl::StringPiece GetPath() {
-        return path_.ToStringPiece();
-    }
+    ~SkipBlockDevice() = default;
 
 private:
-    SkipBlockDevice(fbl::String path, fzl::VmoMapper mapper)
-        : path_(fbl::move(path)), mapper_(fbl::move(mapper)) {}
+    SkipBlockDevice(fbl::RefPtr<fs_mgmt::RamNandCtl> ctl, fs_mgmt::RamNand ram_nand,
+                    fzl::VmoMapper mapper)
+        : ctl_(std::move(ctl)), ram_nand_(std::move(ram_nand)), mapper_(std::move(mapper)) {}
 
-    fbl::String path_;
+    fbl::RefPtr<fs_mgmt::RamNandCtl> ctl_;
+    fs_mgmt::RamNand ram_nand_;
     fzl::VmoMapper mapper_;
 };
 
@@ -301,8 +304,9 @@ namespace {
 bool IsCrosTest() {
     BEGIN_TEST;
 
+    fbl::unique_fd dev_fs(open("/dev", O_RDWR));
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(std::move(dev_fs), &partitioner), ZX_OK);
     ASSERT_FALSE(partitioner->IsCros());
 
     END_TEST;
@@ -311,8 +315,9 @@ bool IsCrosTest() {
 bool UseBlockInterfaceTest() {
     BEGIN_TEST;
 
+    fbl::unique_fd devfs(open("/dev", O_RDWR));
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(std::move(devfs), &partitioner), ZX_OK);
     ASSERT_FALSE(partitioner->UseSkipBlockInterface());
 
     END_TEST;
@@ -321,8 +326,9 @@ bool UseBlockInterfaceTest() {
 bool AddPartitionTest() {
     BEGIN_TEST;
 
+    fbl::unique_fd devfs(open("/dev", O_RDWR));
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(std::move(devfs), &partitioner), ZX_OK);
     ASSERT_EQ(partitioner->AddPartition(paver::Partition::kZirconB, nullptr), ZX_ERR_NOT_SUPPORTED);
 
     END_TEST;
@@ -331,8 +337,9 @@ bool AddPartitionTest() {
 bool WipePartitionsTest() {
     BEGIN_TEST;
 
+    fbl::unique_fd devfs(open("/dev", O_RDWR));
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(std::move(devfs), &partitioner), ZX_OK);
     ASSERT_EQ(partitioner->WipePartitions(), ZX_OK);
 
     END_TEST;
@@ -341,12 +348,15 @@ bool WipePartitionsTest() {
 bool FinalizePartitionTest() {
     BEGIN_TEST;
 
+    fbl::unique_fd devfs(open("/dev", O_RDWR));
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(std::move(devfs), &partitioner), ZX_OK);
 
     ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kZirconA), ZX_OK);
     ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kZirconB), ZX_OK);
     ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kZirconR), ZX_OK);
+    ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kVbMetaA), ZX_OK);
+    ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kVbMetaB), ZX_OK);
     ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kFuchsiaVolumeManager), ZX_OK);
 
     END_TEST;
@@ -356,19 +366,24 @@ bool FindPartitionTest() {
     BEGIN_TEST;
 
     ASSERT_TRUE(Initialize());
-    fbl::unique_ptr<BlockDevice> fvm, zircon_a, zircon_b, zircon_r;
+    fbl::unique_ptr<BlockDevice> fvm, zircon_a, zircon_b, zircon_r, vbmeta_a, vbmeta_b;
     ASSERT_TRUE(BlockDevice::Create(kZirconAType, &zircon_a));
     ASSERT_TRUE(BlockDevice::Create(kZirconBType, &zircon_b));
     ASSERT_TRUE(BlockDevice::Create(kZirconRType, &zircon_r));
+    ASSERT_TRUE(BlockDevice::Create(kVbMetaAType, &vbmeta_a));
+    ASSERT_TRUE(BlockDevice::Create(kVbMetaBType, &vbmeta_b));
     ASSERT_TRUE(BlockDevice::Create(kFvmType, &fvm));
 
+    fbl::unique_fd devfs(open("/dev", O_RDWR));
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(std::move(devfs), &partitioner), ZX_OK);
 
     fbl::unique_fd fd;
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kZirconA, &fd), ZX_OK);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kZirconB, &fd), ZX_OK);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kZirconR, &fd), ZX_OK);
+    ASSERT_EQ(partitioner->FindPartition(paver::Partition::kVbMetaA, &fd), ZX_OK);
+    ASSERT_EQ(partitioner->FindPartition(paver::Partition::kVbMetaB, &fd), ZX_OK);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kFuchsiaVolumeManager, &fd), ZX_OK);
 
     END_TEST;
@@ -378,14 +393,17 @@ bool GetBlockSizeTest() {
     BEGIN_TEST;
 
     ASSERT_TRUE(Initialize());
-    fbl::unique_ptr<BlockDevice> fvm, zircon_a, zircon_b, zircon_r;
+    fbl::unique_ptr<BlockDevice> fvm, zircon_a, zircon_b, zircon_r, vbmeta_a, vbmeta_b;
     ASSERT_TRUE(BlockDevice::Create(kZirconAType, &zircon_a));
     ASSERT_TRUE(BlockDevice::Create(kZirconBType, &zircon_b));
     ASSERT_TRUE(BlockDevice::Create(kZirconRType, &zircon_r));
+    ASSERT_TRUE(BlockDevice::Create(kVbMetaAType, &vbmeta_a));
+    ASSERT_TRUE(BlockDevice::Create(kVbMetaBType, &vbmeta_b));
     ASSERT_TRUE(BlockDevice::Create(kFvmType, &fvm));
 
+    fbl::unique_fd devfs(open("/dev", O_RDWR));
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::FixedDevicePartitioner::Initialize(std::move(devfs), &partitioner), ZX_OK);
 
     fbl::unique_fd fd;
     uint32_t block_size;
@@ -396,6 +414,12 @@ bool GetBlockSizeTest() {
     ASSERT_EQ(partitioner->GetBlockSize(fd, &block_size), ZX_OK);
     ASSERT_EQ(block_size, kBlockSize);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kZirconR, &fd), ZX_OK);
+    ASSERT_EQ(partitioner->GetBlockSize(fd, &block_size), ZX_OK);
+    ASSERT_EQ(block_size, kBlockSize);
+    ASSERT_EQ(partitioner->FindPartition(paver::Partition::kVbMetaA, &fd), ZX_OK);
+    ASSERT_EQ(partitioner->GetBlockSize(fd, &block_size), ZX_OK);
+    ASSERT_EQ(block_size, kBlockSize);
+    ASSERT_EQ(partitioner->FindPartition(paver::Partition::kVbMetaB, &fd), ZX_OK);
     ASSERT_EQ(partitioner->GetBlockSize(fd, &block_size), ZX_OK);
     ASSERT_EQ(block_size, kBlockSize);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kFuchsiaVolumeManager, &fd), ZX_OK);
@@ -429,7 +453,8 @@ bool IsCrosTest() {
     ASSERT_TRUE(SkipBlockDevice::Create(&device));
 
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(device->devfs_root(), &partitioner),
+              ZX_OK);
     ASSERT_FALSE(partitioner->IsCros());
 
     END_TEST;
@@ -443,7 +468,8 @@ bool UseSkipBlockInterfaceTest() {
     ASSERT_TRUE(SkipBlockDevice::Create(&device));
 
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(device->devfs_root(), &partitioner),
+              ZX_OK);
     ASSERT_TRUE(partitioner->UseSkipBlockInterface());
 
     END_TEST;
@@ -457,7 +483,8 @@ bool AddPartitionTest() {
     ASSERT_TRUE(SkipBlockDevice::Create(&device));
 
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(device->devfs_root(), &partitioner),
+              ZX_OK);
     ASSERT_EQ(partitioner->AddPartition(paver::Partition::kZirconB, nullptr), ZX_ERR_NOT_SUPPORTED);
 
     END_TEST;
@@ -471,7 +498,8 @@ bool WipePartitionsTest() {
     ASSERT_TRUE(SkipBlockDevice::Create(&device));
 
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(device->devfs_root(), &partitioner),
+              ZX_OK);
     ASSERT_EQ(partitioner->WipePartitions(), ZX_OK);
 
     END_TEST;
@@ -485,12 +513,15 @@ bool FinalizePartitionTest() {
     ASSERT_TRUE(SkipBlockDevice::Create(&device));
 
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(device->devfs_root(), &partitioner),
+              ZX_OK);
 
     ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kBootloader), ZX_OK);
     ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kZirconA), ZX_OK);
     ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kZirconB), ZX_OK);
     ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kZirconR), ZX_OK);
+    ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kVbMetaA), ZX_OK);
+    ASSERT_EQ(partitioner->FinalizePartition(paver::Partition::kVbMetaB), ZX_OK);
 
     END_TEST;
 }
@@ -505,13 +536,16 @@ bool FindPartitionTest() {
     ASSERT_TRUE(BlockDevice::Create(kFvmType, &fvm));
 
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(device->devfs_root(), &partitioner),
+              ZX_OK);
 
     fbl::unique_fd fd;
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kBootloader, &fd), ZX_OK);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kZirconA, &fd), ZX_OK);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kZirconB, &fd), ZX_OK);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kZirconR, &fd), ZX_OK);
+    ASSERT_EQ(partitioner->FindPartition(paver::Partition::kVbMetaA, &fd), ZX_OK);
+    ASSERT_EQ(partitioner->FindPartition(paver::Partition::kVbMetaB, &fd), ZX_OK);
 
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kFuchsiaVolumeManager, &fd), ZX_OK);
 
@@ -528,7 +562,8 @@ bool GetBlockSizeTest() {
     ASSERT_TRUE(BlockDevice::Create(kFvmType, &fvm));
 
     fbl::unique_ptr<paver::DevicePartitioner> partitioner;
-    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(&partitioner), ZX_OK);
+    ASSERT_EQ(paver::SkipBlockDevicePartitioner::Initialize(device->devfs_root(), &partitioner),
+              ZX_OK);
 
     fbl::unique_fd fd;
     uint32_t block_size;
@@ -542,6 +577,12 @@ bool GetBlockSizeTest() {
     ASSERT_EQ(partitioner->GetBlockSize(fd, &block_size), ZX_OK);
     ASSERT_EQ(block_size, kPageSize * kPagesPerBlock);
     ASSERT_EQ(partitioner->FindPartition(paver::Partition::kZirconR, &fd), ZX_OK);
+    ASSERT_EQ(partitioner->GetBlockSize(fd, &block_size), ZX_OK);
+    ASSERT_EQ(block_size, kPageSize * kPagesPerBlock);
+    ASSERT_EQ(partitioner->FindPartition(paver::Partition::kVbMetaA, &fd), ZX_OK);
+    ASSERT_EQ(partitioner->GetBlockSize(fd, &block_size), ZX_OK);
+    ASSERT_EQ(block_size, kPageSize * kPagesPerBlock);
+    ASSERT_EQ(partitioner->FindPartition(paver::Partition::kVbMetaB, &fd), ZX_OK);
     ASSERT_EQ(partitioner->GetBlockSize(fd, &block_size), ZX_OK);
     ASSERT_EQ(block_size, kPageSize * kPagesPerBlock);
 

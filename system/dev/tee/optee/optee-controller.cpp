@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 #include <inttypes.h>
+#include <limits>
 #include <string.h>
+#include <utility>
 
 #include <ddk/binding.h>
 #include <ddk/debug.h>
@@ -11,7 +13,6 @@
 #include <ddk/io-buffer.h>
 #include <fbl/alloc_checker.h>
 #include <fbl/auto_lock.h>
-#include <fbl/limits.h>
 #include <fbl/unique_ptr.h>
 #include <tee-client-api/tee-client-types.h>
 
@@ -33,7 +34,7 @@ static bool IsOpteeApi(const tee_smc::TrustedOsCallUidResult& returned_uid) {
 static bool IsOpteeApiRevisionSupported(const tee_smc::TrustedOsCallRevisionResult& returned_rev) {
     // The cast is unfortunately necessary to mute a compiler warning about an unsigned expression
     // always being greater than 0.
-    ZX_DEBUG_ASSERT(returned_rev.minor <= fbl::numeric_limits<int32_t>::max());
+    ZX_DEBUG_ASSERT(returned_rev.minor <= std::numeric_limits<int32_t>::max());
     return returned_rev.major == kOpteeApiRevisionMajor &&
            static_cast<int32_t>(returned_rev.minor) >= static_cast<int32_t>(kOpteeApiRevisionMinor);
 }
@@ -138,8 +139,8 @@ zx_status_t OpteeController::InitializeSharedMemory() {
     // physical sub range to use.
     static constexpr uint32_t kSecureWorldMemoryMmioIndex = 0;
     mmio_buffer_t mmio;
-    status = pdev_map_mmio_buffer2(&pdev_proto_, kSecureWorldMemoryMmioIndex, ZX_CACHE_POLICY_CACHED,
-                                   &mmio);
+    status = pdev_map_mmio_buffer(&pdev_proto_, kSecureWorldMemoryMmioIndex,
+                                  ZX_CACHE_POLICY_CACHED, &mmio);
     if (status != ZX_OK) {
         zxlogf(ERROR, "optee: Unable to map secure world memory\n");
         return status;
@@ -148,11 +149,11 @@ zx_status_t OpteeController::InitializeSharedMemory() {
     status = SharedMemoryManager::Create(shared_mem_start,
                                          shared_mem_size,
                                          ddk::MmioBuffer(mmio),
-                                         fbl::move(bti),
+                                         std::move(bti),
                                          &shared_memory_manager_);
 
     if (status != ZX_OK) {
-        zxlogf(ERROR, "optee: Unable to initialaze SharedMemoryManager\n");
+        zxlogf(ERROR, "optee: Unable to initialize SharedMemoryManager\n");
         return status;
     }
 
@@ -289,7 +290,7 @@ void OpteeController::DdkRelease() {
 }
 
 zx_status_t OpteeController::GetOsInfo(fidl_txn_t* txn) const {
-    zircon_tee_OsInfo os_info;
+    fuchsia_hardware_tee_OsInfo os_info;
     ::memset(&os_info, 0, sizeof(os_info));
 
     os_info.uuid.time_low = kOpteeOsUuid.timeLow;
@@ -301,7 +302,7 @@ zx_status_t OpteeController::GetOsInfo(fidl_txn_t* txn) const {
 
     os_info.revision = os_revision_;
     os_info.is_global_platform_compliant = true;
-    return zircon_tee_DeviceGetOsInfo_reply(txn, &os_info);
+    return fuchsia_hardware_tee_DeviceGetOsInfo_reply(txn, &os_info);
 }
 
 void OpteeController::RemoveClient(OpteeClient* client) {

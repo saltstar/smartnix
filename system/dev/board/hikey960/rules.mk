@@ -13,6 +13,7 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/hikey960-devices.c \
     $(LOCAL_DIR)/hikey960-i2c.c \
     $(LOCAL_DIR)/hikey960-usb.c \
+    $(LOCAL_DIR)/hikey960-sysmem.c \
 
 MODULE_STATIC_LIBS := \
     system/dev/lib/hi3660 \
@@ -21,6 +22,15 @@ MODULE_STATIC_LIBS := \
     system/ulib/sync
 
 MODULE_LIBS := system/ulib/driver system/ulib/c system/ulib/zircon
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-gpioimpl \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-iommu \
+    system/banjo/ddk-protocol-platform-bus \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-usb-modeswitch \
 
 include make/module.mk
 
@@ -36,5 +46,9 @@ MODULE_SRCS += \
 MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/sync
 
 MODULE_LIBS := system/ulib/driver system/ulib/c system/ulib/zircon
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-platform-device \
 
 include make/module.mk

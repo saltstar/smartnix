@@ -7,11 +7,11 @@
 
 #include "el2_cpu_state_priv.h"
 
-static constexpr zx_gpaddr_t kGicvAddress = 0x800002000;
+static constexpr zx_gpaddr_t kGicvAddress = 0x800001000;
 static constexpr size_t kGicvSize = 0x2000;
 
 // static
-zx_status_t Guest::Create(fbl::unique_ptr<Guest>* out) {
+zx_status_t Guest::Create(ktl::unique_ptr<Guest>* out) {
     if (arm64_get_boot_el() < 2) {
         return ZX_ERR_NOT_SUPPORTED;
     }
@@ -23,7 +23,7 @@ zx_status_t Guest::Create(fbl::unique_ptr<Guest>* out) {
     }
 
     fbl::AllocChecker ac;
-    fbl::unique_ptr<Guest> guest(new (&ac) Guest(vmid));
+    ktl::unique_ptr<Guest> guest(new (&ac) Guest(vmid));
     if (!ac.check()) {
         free_vmid(vmid);
         return ZX_ERR_NO_MEMORY;
@@ -55,7 +55,7 @@ zx_status_t Guest::Create(fbl::unique_ptr<Guest>* out) {
         return status;
     }
 
-    *out = fbl::move(guest);
+    *out = ktl::move(guest);
     return ZX_OK;
 }
 
@@ -94,7 +94,7 @@ zx_status_t Guest::SetTrap(uint32_t kind, zx_gpaddr_t addr, size_t len,
     if (status != ZX_OK) {
         return status;
     }
-    return traps_.InsertTrap(kind, addr, len, fbl::move(port), key);
+    return traps_.InsertTrap(kind, addr, len, ktl::move(port), key);
 }
 
 zx_status_t Guest::AllocVpid(uint8_t* vpid) {

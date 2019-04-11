@@ -8,10 +8,10 @@
 #include <ddk/driver.h>
 #include <ddk/protocol/ethernet.h>
 #include <ddk/protocol/usb.h>
-#include <ddk/protocol/usb-composite.h>
-#include <ddk/usb/usb.h>
+#include <ddk/protocol/usb/composite.h>
+#include <usb/usb.h>
 #include <usb/usb-request.h>
-#include <zircon/hw/usb-cdc.h>
+#include <zircon/hw/usb/cdc.h>
 #include <lib/sync/completion.h>
 
 #include <inttypes.h>
@@ -46,8 +46,7 @@ typedef struct {
     usb_protocol_t usb;
 
     mtx_t ethmac_mutex;
-    ethmac_ifc_t* ethmac_ifc;
-    void* ethmac_cookie;
+    ethmac_ifc_t ethmac_ifc;
 
     // Device attributes
     uint8_t mac_addr[ETH_MAC_SIZE];
@@ -68,14 +67,23 @@ typedef struct {
     mtx_t tx_mutex;
     ecm_endpoint_t tx_endpoint;
     list_node_t tx_txn_bufs;        // list of usb_request_t
-    list_node_t tx_pending_infos;   // list of ethmac_netbuf_t
+    list_node_t tx_pending_infos;   // list of txn_info_t
     bool unbound;                   // set to true when device is going away. Guarded by tx_mutex
     uint64_t tx_endpoint_delay;     // wait time between 2 transmit requests
+
+    size_t parent_req_size;
 
     // Receive context
     ecm_endpoint_t rx_endpoint;
     uint64_t rx_endpoint_delay;    // wait time between 2 recv requests
 } ecm_ctx_t;
+
+typedef struct txn_info {
+    ethmac_netbuf_t netbuf;
+    list_node_t node;
+} txn_info_t;
+
+static void usb_write_complete(void* cookie, usb_request_t* request);
 
 static void ecm_unbind(void* cookie) {
     zxlogf(TRACE, "%s: unbinding\n", module_name);
@@ -83,11 +91,11 @@ static void ecm_unbind(void* cookie) {
 
     mtx_lock(&ctx->tx_mutex);
     ctx->unbound = true;
-    if (ctx->ethmac_ifc) {
-        ethmac_netbuf_t* netbuf;
-        while ((netbuf = list_remove_head_type(&ctx->tx_pending_infos, ethmac_netbuf_t, node)) !=
+    if (ctx->ethmac_ifc.ops) {
+        txn_info_t* txn;
+        while ((txn = list_remove_head_type(&ctx->tx_pending_infos, txn_info_t, node)) !=
                NULL) {
-            ctx->ethmac_ifc->complete_tx(ctx->ethmac_cookie, netbuf, ZX_ERR_PEER_CLOSED);
+            ethmac_ifc_complete_tx(&ctx->ethmac_ifc, &txn->netbuf, ZX_ERR_PEER_CLOSED);
         }
     }
     mtx_unlock(&ctx->tx_mutex);
@@ -101,7 +109,7 @@ static void ecm_free(ecm_ctx_t* ctx) {
         thrd_join(ctx->int_thread, NULL);
     }
     usb_request_t* txn;
-    while ((txn = list_remove_head_type(&ctx->tx_txn_bufs, usb_request_t, node)) != NULL) {
+    while ((txn = usb_req_list_remove_head(&ctx->tx_txn_bufs, ctx->parent_req_size)) != NULL) {
         usb_request_release(txn);
     }
     if (ctx->int_txn_buf) {
@@ -132,16 +140,16 @@ static void ecm_update_online_status(ecm_ctx_t* ctx, bool is_online) {
     if (is_online) {
         zxlogf(INFO, "%s: connected to network\n", module_name);
         ctx->online = true;
-        if (ctx->ethmac_ifc) {
-            ctx->ethmac_ifc->status(ctx->ethmac_cookie, ETHMAC_STATUS_ONLINE);
+        if (ctx->ethmac_ifc.ops) {
+            ethmac_ifc_status(&ctx->ethmac_ifc, ETHMAC_STATUS_ONLINE);
         } else {
             zxlogf(ERROR, "%s: not connected to ethermac interface\n", module_name);
         }
     } else {
         zxlogf(INFO, "%s: no connection to network\n", module_name);
         ctx->online = false;
-        if (ctx->ethmac_ifc) {
-            ctx->ethmac_ifc->status(ctx->ethmac_cookie, 0);
+        if (ctx->ethmac_ifc.ops) {
+            ethmac_ifc_status(&ctx->ethmac_ifc, 0);
         }
     }
 
@@ -149,67 +157,73 @@ done:
     mtx_unlock(&ctx->ethmac_mutex);
 }
 
-static zx_status_t ethmac_query(void* ctx, uint32_t options, ethmac_info_t* info) {
+static zx_status_t ecm_ethmac_query(void* ctx, uint32_t options, ethmac_info_t* info) {
     ecm_ctx_t* eth = ctx;
 
     zxlogf(TRACE, "%s: %s called\n", module_name, __FUNCTION__);
 
     // No options are supported
     if (options) {
-        zxlogf(ERROR, "%s: unexpected options (0x%"PRIx32") to ethmac_query\n", module_name, options);
+        zxlogf(ERROR, "%s: unexpected options (0x%"PRIx32") to ecm_ethmac_query\n", module_name,
+               options);
         return ZX_ERR_INVALID_ARGS;
     }
 
     memset(info, 0, sizeof(*info));
     info->mtu = eth->mtu;
     memcpy(info->mac, eth->mac_addr, sizeof(eth->mac_addr));
+    info->netbuf_size = sizeof(txn_info_t);
 
     return ZX_OK;
 }
 
-static void ethmac_stop(void* cookie) {
+static void ecm_ethmac_stop(void* cookie) {
     zxlogf(TRACE, "%s: %s called\n", module_name, __FUNCTION__);
     ecm_ctx_t* ctx = cookie;
     mtx_lock(&ctx->ethmac_mutex);
-    ctx->ethmac_ifc = NULL;
+    ctx->ethmac_ifc.ops = NULL;
     mtx_unlock(&ctx->ethmac_mutex);
 }
 
-static zx_status_t ethmac_start(void* ctx_cookie, ethmac_ifc_t* ifc, void* ethmac_cookie) {
+static zx_status_t ecm_ethmac_start(void* ctx_cookie, const ethmac_ifc_t* ifc) {
     zxlogf(TRACE, "%s: %s called\n", module_name, __FUNCTION__);
     ecm_ctx_t* ctx = ctx_cookie;
     zx_status_t status = ZX_OK;
 
     mtx_lock(&ctx->ethmac_mutex);
-    if (ctx->ethmac_ifc) {
+    if (ctx->ethmac_ifc.ops) {
         status = ZX_ERR_ALREADY_BOUND;
     } else {
-        ctx->ethmac_ifc = ifc;
-        ctx->ethmac_cookie = ethmac_cookie;
-        ctx->ethmac_ifc->status(ethmac_cookie, ctx->online ? ETHMAC_STATUS_ONLINE : 0);
+        ctx->ethmac_ifc = *ifc;
+        ethmac_ifc_status(&ctx->ethmac_ifc, ctx->online ? ETHMAC_STATUS_ONLINE : 0);
     }
     mtx_unlock(&ctx->ethmac_mutex);
 
     return status;
 }
 
-static zx_status_t queue_request(ecm_ctx_t* ctx, uint8_t* data, size_t length, usb_request_t* req) {
+static zx_status_t queue_request(ecm_ctx_t* ctx, const uint8_t* data, size_t length,
+                                 usb_request_t* req) {
     req->header.length = length;
     ssize_t bytes_copied = usb_request_copy_to(req, data, length, 0);
     if (bytes_copied < 0) {
         zxlogf(ERROR, "%s: failed to copy data into send txn (error %zd)\n", module_name, bytes_copied);
         return ZX_ERR_IO;
     }
-    usb_request_queue(&ctx->usb, req);
+    usb_request_complete_t complete = {
+        .callback = usb_write_complete,
+        .ctx = ctx,
+    };
+    usb_request_queue(&ctx->usb, req, &complete);
     return ZX_OK;
 }
 
 static zx_status_t send_locked(ecm_ctx_t* ctx, ethmac_netbuf_t* netbuf) {
-    uint8_t* byte_data = netbuf->data;
-    size_t length = netbuf->len;
+    const uint8_t* byte_data = netbuf->data_buffer;
+    size_t length = netbuf->data_size;
 
     // Make sure that we can get all of the tx buffers we need to use
-    usb_request_t* tx_req = list_remove_head_type(&ctx->tx_txn_bufs, usb_request_t, node);
+    usb_request_t* tx_req = usb_req_list_remove_head(&ctx->tx_txn_bufs, ctx->parent_req_size);
     if (tx_req == NULL) {
         return ZX_ERR_SHOULD_WAIT;
     }
@@ -217,14 +231,16 @@ static zx_status_t send_locked(ecm_ctx_t* ctx, ethmac_netbuf_t* netbuf) {
     zx_nanosleep(zx_deadline_after(ZX_USEC(ctx->tx_endpoint_delay)));
     zx_status_t status;
     if ((status = queue_request(ctx, byte_data, length, tx_req)) != ZX_OK) {
-        list_add_tail(&ctx->tx_txn_bufs, &tx_req->node);
+        zx_status_t add_status = usb_req_list_add_tail(&ctx->tx_txn_bufs, tx_req,
+                                                            ctx->parent_req_size);
+        ZX_DEBUG_ASSERT(add_status == ZX_OK);
         return status;
     }
 
     return ZX_OK;
 }
 
-static void usb_write_complete(usb_request_t* request, void* cookie) {
+static void usb_write_complete(void* cookie, usb_request_t* request) {
     ecm_ctx_t* ctx = cookie;
 
     if (request->response.status == ZX_ERR_IO_NOT_PRESENT) {
@@ -235,7 +251,8 @@ static void usb_write_complete(usb_request_t* request, void* cookie) {
     mtx_lock(&ctx->tx_mutex);
 
     // Return transmission buffer to pool
-    list_add_tail(&ctx->tx_txn_bufs, &request->node);
+    zx_status_t status = usb_req_list_add_tail(&ctx->tx_txn_bufs, request, ctx->parent_req_size);
+    ZX_DEBUG_ASSERT(status == ZX_OK);
 
     if (request->response.status == ZX_ERR_IO_REFUSED) {
         zxlogf(TRACE, "%s: resetting transmit endpoint\n", module_name);
@@ -253,11 +270,11 @@ static void usb_write_complete(usb_request_t* request, void* cookie) {
     }
 
     bool additional_tx_queued = false;
-    ethmac_netbuf_t* netbuf;
+    txn_info_t* txn;
     zx_status_t send_status = ZX_OK;
     if (!list_is_empty(&ctx->tx_pending_infos)) {
-        netbuf = list_peek_head_type(&ctx->tx_pending_infos, ethmac_netbuf_t, node);
-        if ((send_status = send_locked(ctx, netbuf)) != ZX_ERR_SHOULD_WAIT) {
+        txn = list_peek_head_type(&ctx->tx_pending_infos, txn_info_t, node);
+        if ((send_status = send_locked(ctx, &txn->netbuf)) != ZX_ERR_SHOULD_WAIT) {
             list_remove_head(&ctx->tx_pending_infos);
             additional_tx_queued = true;
         }
@@ -266,8 +283,8 @@ static void usb_write_complete(usb_request_t* request, void* cookie) {
     mtx_unlock(&ctx->tx_mutex);
 
     mtx_lock(&ctx->ethmac_mutex);
-    if (additional_tx_queued && ctx->ethmac_ifc) {
-        ctx->ethmac_ifc->complete_tx(ctx->ethmac_cookie, netbuf, send_status);
+    if (additional_tx_queued && ctx->ethmac_ifc.ops) {
+        ethmac_ifc_complete_tx(&ctx->ethmac_ifc, &txn->netbuf, send_status);
     }
     mtx_unlock(&ctx->ethmac_mutex);
 
@@ -289,13 +306,13 @@ static void usb_recv(ecm_ctx_t* ctx, usb_request_t* request) {
     }
 
     mtx_lock(&ctx->ethmac_mutex);
-    if (ctx->ethmac_ifc) {
-        ctx->ethmac_ifc->recv(ctx->ethmac_cookie, read_data, len, 0);
+    if (ctx->ethmac_ifc.ops) {
+        ethmac_ifc_recv(&ctx->ethmac_ifc, read_data, len, 0);
     }
     mtx_unlock(&ctx->ethmac_mutex);
 }
 
-static void usb_read_complete(usb_request_t* request, void* cookie) {
+static void usb_read_complete(void* cookie, usb_request_t* request) {
     ecm_ctx_t* ctx = cookie;
 
     if (request->response.status != ZX_OK) {
@@ -324,12 +341,16 @@ static void usb_read_complete(usb_request_t* request, void* cookie) {
     }
 
     zx_nanosleep(zx_deadline_after(ZX_USEC(ctx->rx_endpoint_delay)));
-    usb_request_queue(&ctx->usb, request);
+    usb_request_complete_t complete = {
+        .callback = usb_read_complete,
+        .ctx = ctx,
+    };
+    usb_request_queue(&ctx->usb, request, &complete);
 }
 
-static zx_status_t ethmac_queue_tx(void* cookie, uint32_t options, ethmac_netbuf_t* netbuf) {
+static zx_status_t ecm_ethmac_queue_tx(void* cookie, uint32_t options, ethmac_netbuf_t* netbuf) {
     ecm_ctx_t* ctx = cookie;
-    size_t length = netbuf->len;
+    size_t length = netbuf->data_size;
     zx_status_t status;
 
     if (length > ctx->mtu || length == 0) {
@@ -346,7 +367,8 @@ static zx_status_t ethmac_queue_tx(void* cookie, uint32_t options, ethmac_netbuf
         status = send_locked(ctx, netbuf);
         if (status == ZX_ERR_SHOULD_WAIT) {
             // No buffers available, queue it up
-            list_add_tail(&ctx->tx_pending_infos, &netbuf->node);
+            txn_info_t* txn = containerof(netbuf, txn_info_t, netbuf);
+            list_add_tail(&ctx->tx_pending_infos, &txn->node);
         }
     }
 
@@ -354,19 +376,20 @@ static zx_status_t ethmac_queue_tx(void* cookie, uint32_t options, ethmac_netbuf
     return status;
 }
 
-static zx_status_t ethmac_set_param(void *cookie, uint32_t param, int32_t value, void* data) {
+static zx_status_t ecm_ethmac_set_param(void *cookie, uint32_t param, int32_t value,
+                                        const void* data, size_t data_size) {
     return ZX_ERR_NOT_SUPPORTED;
 }
 
 static ethmac_protocol_ops_t ethmac_ops = {
-    .query = ethmac_query,
-    .stop = ethmac_stop,
-    .start = ethmac_start,
-    .queue_tx = ethmac_queue_tx,
-    .set_param = ethmac_set_param,
+    .query = ecm_ethmac_query,
+    .stop = ecm_ethmac_stop,
+    .start = ecm_ethmac_start,
+    .queue_tx = ecm_ethmac_queue_tx,
+    .set_param = ecm_ethmac_set_param,
 };
 
-static void ecm_interrupt_complete(usb_request_t* request, void* cookie) {
+static void ecm_interrupt_complete(void* cookie, usb_request_t* request) {
     ecm_ctx_t* ctx = cookie;
     sync_completion_signal(&ctx->completion);
 }
@@ -416,9 +439,13 @@ static int ecm_int_handler_thread(void* cookie) {
     ecm_ctx_t* ctx = cookie;
     usb_request_t* txn = ctx->int_txn_buf;
 
+    usb_request_complete_t complete = {
+        .callback = ecm_interrupt_complete,
+        .ctx = ctx,
+    };
     while (true) {
         sync_completion_reset(&ctx->completion);
-        usb_request_queue(&ctx->usb, txn);
+        usb_request_queue(&ctx->usb, txn, &complete);
         sync_completion_wait(&ctx->completion, ZX_TIME_INFINITE);
         if (txn->response.status == ZX_OK) {
             ecm_handle_interrupt(ctx, txn);
@@ -543,6 +570,8 @@ static zx_status_t ecm_bind(void* ctx, zx_device_t* device) {
     mtx_init(&ecm_ctx->ethmac_mutex, mtx_plain);
     mtx_init(&ecm_ctx->tx_mutex, mtx_plain);
 
+    ecm_ctx->parent_req_size = usb_get_request_size(&ecm_ctx->usb);
+
     usb_desc_iter_t iter;
     result = usb_desc_iter_init(&usb, &iter);
     if (result != ZX_OK) {
@@ -662,17 +691,15 @@ static zx_status_t ecm_bind(void* ctx, zx_device_t* device) {
 
     // Allocate interrupt transaction buffer
     usb_request_t* int_buf;
+    uint64_t req_size = ecm_ctx->parent_req_size + sizeof(usb_req_internal_t);
     zx_status_t alloc_result = usb_request_alloc(&int_buf,
                                              ecm_ctx->int_endpoint.max_packet_size,
-                                             ecm_ctx->int_endpoint.addr,
-                                             sizeof(usb_request_t));
+                                             ecm_ctx->int_endpoint.addr, req_size);
     if (alloc_result != ZX_OK) {
         result = alloc_result;
         goto fail;
     }
 
-    int_buf->complete_cb = ecm_interrupt_complete;
-    int_buf->cookie = ecm_ctx;
     ecm_ctx->int_txn_buf = int_buf;
 
     // Allocate tx transaction buffers
@@ -687,8 +714,7 @@ static zx_status_t ecm_bind(void* ctx, zx_device_t* device) {
     while (tx_buf_remain >= tx_buf_sz) {
         usb_request_t* tx_buf;
         zx_status_t alloc_result = usb_request_alloc(&tx_buf, tx_buf_sz,
-                                                 ecm_ctx->tx_endpoint.addr,
-                                                 sizeof(usb_request_t));
+                                                     ecm_ctx->tx_endpoint.addr, req_size);
         if (alloc_result != ZX_OK) {
             result = alloc_result;
             goto fail;
@@ -698,9 +724,10 @@ static zx_status_t ecm_bind(void* ctx, zx_device_t* device) {
         // transmission when the endpoint max packet size is a factor of the total transmission size
         tx_buf->header.send_zlp = true;
 
-        tx_buf->complete_cb = usb_write_complete;
-        tx_buf->cookie = ecm_ctx;
-        list_add_head(&ecm_ctx->tx_txn_bufs, &tx_buf->node);
+        zx_status_t add_result = usb_req_list_add_head(&ecm_ctx->tx_txn_bufs, tx_buf,
+                                                       ecm_ctx->parent_req_size);
+        ZX_DEBUG_ASSERT(add_result == ZX_OK);
+
         tx_buf_remain -= tx_buf_sz;
     }
 
@@ -712,20 +739,23 @@ static zx_status_t ecm_bind(void* ctx, zx_device_t* device) {
         goto fail;
     }
 #endif
+
+    usb_request_complete_t complete = {
+        .callback = usb_read_complete,
+        .ctx = ecm_ctx,
+    };
     size_t rx_buf_remain = MAX_RX_BUF_SZ;
     while (rx_buf_remain >= rx_buf_sz) {
         usb_request_t* rx_buf;
         zx_status_t alloc_result = usb_request_alloc(&rx_buf, rx_buf_sz,
                                                  ecm_ctx->rx_endpoint.addr,
-                                                 sizeof(usb_request_t));
+                                                 req_size);
         if (alloc_result != ZX_OK) {
             result = alloc_result;
             goto fail;
         }
 
-        rx_buf->complete_cb = usb_read_complete;
-        rx_buf->cookie = ecm_ctx;
-        usb_request_queue(&ecm_ctx->usb, rx_buf);
+        usb_request_queue(&ecm_ctx->usb, rx_buf, &complete);
         rx_buf_remain -= rx_buf_sz;
     }
 
@@ -743,7 +773,7 @@ static zx_status_t ecm_bind(void* ctx, zx_device_t* device) {
         .name = "usb-cdc-ecm",
         .ctx = ecm_ctx,
         .ops = &ecm_device_proto,
-        .proto_id = ZX_PROTOCOL_ETHERNET_IMPL,
+        .proto_id = ZX_PROTOCOL_ETHMAC,
         .proto_ops = &ethmac_ops,
     };
     result = device_add(ecm_ctx->usb_device, &args, &ecm_ctx->zxdev);

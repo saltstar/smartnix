@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,6 +9,11 @@
 
 #include <zircon/syscalls.h>
 #include <lib/zx/time.h>
+
+#include <utility>
+
+// Lines of text for each result are prefixed with this.
+constexpr const char* kTestOutputPrefix = "  - ";
 
 constexpr unsigned kWarmUpIterations = 10;
 // N.B. This value can't be so large that the buffer fills in oneshot mode.
@@ -44,8 +52,9 @@ void RunAndMeasure(const char* test_name, const char* spec_name,
     setup();
     float warm_up_time = Measure(kWarmUpIterations, closure);
     teardown();
-    printf("  - warm-up: %u iterations in %.3f us, %.3f us per iteration\n",
-           kWarmUpIterations, warm_up_time, warm_up_time / kWarmUpIterations);
+    printf("%swarm-up: %u iterations in %.3f us, %.3f us per iteration\n",
+           kTestOutputPrefix, kWarmUpIterations,
+           warm_up_time, warm_up_time / kWarmUpIterations);
 
     float run_times[kNumTestRuns];
     for (unsigned i = 0; i < kNumTestRuns; ++i) {
@@ -66,18 +75,18 @@ void RunAndMeasure(const char* test_name, const char* spec_name,
     }
     float average = cumulative / kNumTestRuns;
 
-    printf("  - run: %u test runs, %u iterations per run\n",
-           kNumTestRuns, iterations);
-    printf("  - total (usec): min: %.3f, max: %.3f, ave: %.3f\n",
-           min, max, average);
-    printf("  - per-iteration (usec): min: %.3f\n",
+    printf("%srun: %u test runs, %u iterations per run\n",
+           kTestOutputPrefix, kNumTestRuns, iterations);
+    printf("%stotal (usec): min: %.3f, max: %.3f, ave: %.3f\n",
+           kTestOutputPrefix, min, max, average);
+    printf("%sper-iteration (usec): min: %.3f\n",
            // The static cast is to avoid a "may change value" warning.
-           min / static_cast<float>(iterations));
+           kTestOutputPrefix, min / static_cast<float>(iterations));
 }
 
 template <typename T>
 void RunAndMeasure(const char* test_name, const char* spec_name,
                    const T& closure, thunk setup, thunk teardown) {
     RunAndMeasure(test_name, spec_name, kDefaultRunIterations, closure,
-                  fbl::move(setup), fbl::move(teardown));
+                  std::move(setup), std::move(teardown));
 }

@@ -9,7 +9,6 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := driver
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/bind.c \
     $(LOCAL_DIR)/dwc3.cpp \
     $(LOCAL_DIR)/dwc3-commands.cpp \
     $(LOCAL_DIR)/dwc3-endpoints.cpp \
@@ -31,5 +30,12 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/zircon \
     system/ulib/c \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-dci \
+    system/banjo/ddk-protocol-usb-modeswitch \
+    system/banjo/ddk-protocol-usb-request \
 
 include make/module.mk

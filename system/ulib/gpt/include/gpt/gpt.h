@@ -1,118 +1,123 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <unistd.h>
+#include <fbl/unique_fd.h>
+#include <fbl/unique_ptr.h>
+#include <gpt/c/gpt.h>
 
-#include <zircon/compiler.h>
-#include <zircon/device/block.h>
-#include <zircon/hw/gpt.h>
+namespace gpt {
 
-typedef gpt_entry_t gpt_partition_t;
+constexpr uint32_t kPartitionCount = 128;
+constexpr uint64_t kGuidStrLength = 37;
 
-__BEGIN_CDECLS
+constexpr uint32_t kGptDiffType = 0x01;
+constexpr uint32_t kGptDiffGuid = 0x02;
+constexpr uint32_t kGptDiffFirst = 0x04;
+constexpr uint32_t kGptDiffLast = 0x08;
+constexpr uint32_t kGptDiffFlags = 0x10;
+constexpr uint32_t kGptDiffName = 0x20;
 
-#define PARTITIONS_COUNT 128
-#define GPT_GUID_STRLEN 37
+class GptDevice {
+public:
+    static zx_status_t Create(int fd, uint32_t blocksize, uint64_t blocks,
+                              fbl::unique_ptr<GptDevice>* out_dev);
 
-// Helpers for translating the |name| field of "gpt_partition_t".
-// Assumes UTF-16LE.
-// Assumes all code points are less than or equal to U+007F, and
-// discards any upper bits, forcing all inputs to be in this
-// range.
-//
-// |len| refers to the length of the input string, in chars.
-void cstring_to_utf16(uint16_t* dst, const char* src, size_t len);
-// |len| refers to the length of the input string, in 16-bit pairs.
-char* utf16_to_cstring(char* dst, const uint16_t* src, size_t len);
+    // returns true if the partition table on the device is valid
+    bool Valid() const { return valid_; }
 
-typedef struct gpt_device {
+    // Returns the range of usable blocks within the GPT, from [block_start, block_end] (inclusive)
+    zx_status_t Range(uint64_t* block_start, uint64_t* block_end) const;
+
+    // Writes changes to partition table to the device. If the device does not contain valid
+    // GPT, a gpt header gets created. Sync doesn't nudge block device driver to rescan the
+    // partitions. So it is the caller's responsibility to rescan partitions for the changes
+    // if needed.
+    zx_status_t Sync();
+
+    // perform all checks and computations on the in-memory representation, but DOES
+    // NOT write it out to disk. To perform checks AND write to disk, use Sync
+    zx_status_t Finalize();
+
+    // Adds a partition to in-memory instance of GptDevice. The changes stay visible
+    // only to this instace. Needs a Sync to write the changes to the device.
+    zx_status_t AddPartition(const char* name, const uint8_t* type, const uint8_t* guid,
+                             uint64_t offset, uint64_t blocks, uint64_t flags);
+
+    // Writes zeroed blocks at an arbitrary offset (in blocks) within the device.
+    //
+    // Can be used alongside gpt_partition_add to ensure a newly created partition
+    // will not read stale superblock data.
+    zx_status_t ClearPartition(uint64_t offset, uint64_t blocks);
+
+    // Removes a partition from in-memory instance of GptDevice. The changes stay visible
+    // only to this instace. Needs a Sync to write the changes to the device.
+    zx_status_t RemovePartition(const uint8_t* guid);
+
+    // Removes all partitions from in-memory instance of GptDevice. The changes stay visible
+    // only to this instace. Needs a Sync to write the changes to the device.
+    zx_status_t RemoveAllPartitions();
+
+    // given a gpt device, get the GUID for the disk
+    void GetHeaderGuid(uint8_t (*disk_guid_out)[GPT_GUID_LEN]) const;
+
+    // return true if partition# idx has been locally modified
+    zx_status_t GetDiffs(uint32_t idx, uint32_t* diffs) const;
+
+    // returns a pointer to partition at index pindex
+    gpt_partition_t* GetPartition(uint32_t pindex) const {
+        ZX_ASSERT(pindex < kPartitionCount);
+        return partitions_[pindex];
+    }
+
+    // print out the GPT
+    void PrintTable() const;
+    zx_status_t BlockRrPart() {
+        return static_cast<zx_status_t>(ioctl_block_rr_part(fd_.get()));
+    }
+
+    // Return device's block size
+    uint64_t BlockSize() const { return blocksize_; }
+
+    // Return total number of blocks in the device
+    uint64_t TotalBlockCount() const { return blocks_; }
+
+private:
+    GptDevice() { valid_ = false; };
+
+    zx_status_t FinalizeAndSync(bool persist);
+
+    // read the partition table from the device.
+    zx_status_t Init(int fd, uint32_t blocksize, uint64_t blocks);
+
     // true if the partition table on the device is valid
-    bool valid;
+    bool valid_;
 
     // pointer to a list of partitions
-    gpt_partition_t* partitions[PARTITIONS_COUNT];
-} gpt_device_t;
+    gpt_partition_t* partitions_[kPartitionCount] = {};
 
-// determines whether guid is system guid
-bool gpt_is_sys_guid(uint8_t* guid, ssize_t len);
+    // device to use
+    fbl::unique_fd fd_;
 
-// determines whether guid is data guid
-bool gpt_is_data_guid(uint8_t* guid, ssize_t len);
+    // block size in bytes
+    uint64_t blocksize_ = 0;
 
-// determines whether guid is install guid
-bool gpt_is_install_guid(uint8_t* guid, ssize_t len);
+    // number of blocks
+    uint64_t blocks_ = 0;
 
-// determines whether guid is efi guid
-bool gpt_is_efi_guid(uint8_t* guid, ssize_t len);
+    // true if valid mbr exists on disk
+    bool mbr_ = false;
 
-// read the partition table from the device.
-int gpt_device_init(int fd, uint64_t blocksize, uint64_t blocks, gpt_device_t** out_dev);
+    // header buffer, should be primary copy
+    gpt_header_t header_ = {};
 
-// releases the device
-void gpt_device_release(gpt_device_t* dev);
+    // partition table buffer
+    gpt_partition_t ptable_[kPartitionCount] = {};
 
-// Returns the range of usable blocks within the GPT, from [block_start, block_end] (inclusive)
-int gpt_device_range(gpt_device_t* dev, uint64_t* block_start, uint64_t* block_end);
+    // copy of buffer from when last init'd or sync'd.
+    gpt_partition_t ptable_backup_[kPartitionCount] = {};
+};
 
-// writes the partition table to the device. it is the caller's responsibility to
-// rescan partitions for the block device if needed
-int gpt_device_sync(gpt_device_t* dev);
-
-// perform all checks and computations on the in-memory representation, but DOES
-// NOT write it out to disk. To perform checks AND write to disk, use
-// gpt_device_sync
-int gpt_device_finalize(gpt_device_t* dev);
-
-// adds a partition
-int gpt_partition_add(gpt_device_t* dev, const char* name, const uint8_t* type,
-                      const uint8_t* guid, uint64_t offset, uint64_t blocks,
-                      uint64_t flags);
-
-// Writes zeroed blocks at an arbitrary offset (in blocks) within the device.
-//
-// Can be used alongside gpt_partition_add to ensure a newly created partition
-// will not read stale superblock data.
-int gpt_partition_clear(gpt_device_t* dev, uint64_t offset, uint64_t blocks);
-
-// removes a partition
-int gpt_partition_remove(gpt_device_t* dev, const uint8_t* guid);
-
-// removes all partitions
-int gpt_partition_remove_all(gpt_device_t* dev);
-
-// converts GUID to a string
-void uint8_to_guid_string(char* dst, const uint8_t* src);
-
-// given a gpt device, get the GUID for the disk
-void gpt_device_get_header_guid(gpt_device_t* dev,
-                                uint8_t (*disk_guid_out)[GPT_GUID_LEN]);
-
-// return true if partition# idx has been locally modified
-int gpt_get_diffs(gpt_device_t* dev, int idx, unsigned* diffs);
-
-// print out the GPT
-void print_table(gpt_device_t* device);
-
-// Sort an array of gpt_partition_t pointers in-place based on the values of
-// gpt_partition_t->first.
-void gpt_sort_partitions(gpt_partition_t** partitions, size_t count);
-
-// Attempt to read a GPT from the file descriptor. dev_out will be NULL if
-// the read fails or read succeeds and GPT is invalid.
-int gpt_device_read_gpt(int fd, gpt_device_t** dev_out);
-
-void gpt_set_debug_output_enabled(bool enabled);
-
-// Return the human-readable version of the type GUID.
-const char* gpt_guid_to_type(const char* guid);
-
-#define GPT_DIFF_TYPE    (0x01u)
-#define GPT_DIFF_GUID    (0x02u)
-#define GPT_DIFF_FIRST   (0x04u)
-#define GPT_DIFF_LAST    (0x08u)
-#define GPT_DIFF_FLAGS   (0x10u)
-#define GPT_DIFF_NAME    (0x20u)
-
-__END_CDECLS
+} // namespace gpt

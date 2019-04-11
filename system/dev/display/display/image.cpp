@@ -4,16 +4,19 @@
 
 #include <ddk/debug.h>
 
+#include <atomic>
+#include <utility>
+
 #include "controller.h"
 #include "image.h"
 
 namespace display {
 
 Image::Image(Controller* controller, const image_t& image_config, zx::vmo handle)
-        : info_(image_config), controller_(controller), vmo_(fbl::move(handle)) { }
+        : info_(image_config), controller_(controller), vmo_(std::move(handle)) { }
 
 Image::~Image() {
-    ZX_DEBUG_ASSERT(!fbl::atomic_load(&in_use_));
+    ZX_DEBUG_ASSERT(!std::atomic_load(&in_use_));
     ZX_DEBUG_ASSERT(!list_in_list(&node.link));
 
     controller_->ReleaseImage(this);
@@ -21,8 +24,8 @@ Image::~Image() {
 
 void Image::PrepareFences(fbl::RefPtr<FenceReference>&& wait,
                           fbl::RefPtr<FenceReference>&& signal) {
-    wait_fence_ = fbl::move(wait);
-    signal_fence_ = fbl::move(signal);
+    wait_fence_ = std::move(wait);
+    signal_fence_ = std::move(signal);
 
     if (wait_fence_) {
         zx_status_t status = wait_fence_->StartReadyWait();
@@ -49,10 +52,10 @@ void Image::StartPresent() {
 
 void Image::EarlyRetire() {
     if (wait_fence_) {
-        wait_fence_->SetImmediateRelease(fbl::move(signal_fence_));
+        wait_fence_->SetImmediateRelease(std::move(signal_fence_));
         wait_fence_ = nullptr;
     }
-    fbl::atomic_store(&in_use_, false);
+    std::atomic_store(&in_use_, false);
 }
 
 void Image::StartRetire() {
@@ -64,10 +67,10 @@ void Image::StartRetire() {
             signal_fence_->Signal();
             signal_fence_ = nullptr;
         }
-        fbl::atomic_store(&in_use_, false);
+        std::atomic_store(&in_use_, false);
     } else {
         retiring_ = true;
-        armed_signal_fence_ = fbl::move(signal_fence_);
+        armed_signal_fence_ = std::move(signal_fence_);
     }
 }
 
@@ -81,7 +84,7 @@ void Image::OnRetire() {
         // that the image can be reused as soon as the event is signaled. We don't have
         // to worry about the armed signal fence being overwritten on reuse since it is
         // on set in StartRetire, which is called under the same lock as OnRetire.
-        fbl::atomic_store(&in_use_, false);
+        std::atomic_store(&in_use_, false);
 
         if (armed_signal_fence_) {
             armed_signal_fence_->Signal();
@@ -94,11 +97,11 @@ void Image::OnRetire() {
 void Image::DiscardAcquire() {
     ZX_DEBUG_ASSERT(wait_fence_ == nullptr);
 
-    fbl::atomic_store(&in_use_, false);
+    std::atomic_store(&in_use_, false);
 }
 
 bool Image::Acquire() {
-    return !fbl::atomic_exchange(&in_use_, true);
+    return !std::atomic_exchange(&in_use_, true);
 }
 
 void Image::ResetFences() {

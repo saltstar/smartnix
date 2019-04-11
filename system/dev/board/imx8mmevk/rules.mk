@@ -11,6 +11,7 @@ MODULE_TYPE := driver
 MODULE_SRCS += \
     $(LOCAL_DIR)/binding.c \
     $(LOCAL_DIR)/imx8mmevk.cpp \
+    $(LOCAL_DIR)/imx8mmevk-sysmem.cpp \
     $(LOCAL_DIR)/imx8mmevk-gpio.cpp \
 
 MODULE_STATIC_LIBS := \
@@ -25,5 +26,12 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/c \
     system/ulib/zircon \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-gpioimpl \
+    system/banjo/ddk-protocol-iommu \
+    system/banjo/ddk-protocol-platform-bus \
+    system/banjo/ddk-protocol-platform-device \
 
 include make/module.mk

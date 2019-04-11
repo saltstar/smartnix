@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -7,6 +10,9 @@
 #include <fbl/recycler.h>
 #include <fbl/type_support.h>
 #include <zircon/compiler.h>
+
+#include <type_traits>
+#include <utility>
 
 namespace fbl {
 
@@ -102,7 +108,7 @@ public:
     // T as an implicit upcast regardless of whether or not T has a virtual
     // destructor.
     template <typename U,
-              typename = typename enable_if<is_convertible_pointer<U*, T*>::value>::type>
+              typename = typename std::enable_if<is_convertible_pointer<U*, T*>::value>::type>
     unique_ptr(unique_ptr<U>&& o) : ptr_(o.release()) {
         static_assert(is_same<T, const U>::value ||
                 (is_class<T>::value == is_class<U>::value &&
@@ -222,7 +228,7 @@ struct unique_type<T[]> {
 template <typename T, typename... Args>
 typename internal::unique_type<T>::single
 make_unique(Args&&... args) {
-    return unique_ptr<T>(new T(fbl::forward<Args>(args)...));
+    return unique_ptr<T>(new T(std::forward<Args>(args)...));
 }
 
 template <typename T, typename... Args>
@@ -235,7 +241,7 @@ make_unique(size_t size) {
 template <typename T, typename... Args>
 typename internal::unique_type<T>::single
 make_unique_checked(AllocChecker* ac, Args&&... args) {
-    return unique_ptr<T>(new (ac) T(fbl::forward<Args>(args)...));
+    return unique_ptr<T>(new (ac) T(std::forward<Args>(args)...));
 }
 
 }  // namespace fbl

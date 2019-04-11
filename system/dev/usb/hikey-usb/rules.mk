@@ -9,7 +9,6 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := driver
 
 MODULE_SRCS := \
-    $(LOCAL_DIR)/bind.c \
     $(LOCAL_DIR)/hikey-usb.cpp \
 
 MODULE_STATIC_LIBS := \
@@ -23,5 +22,10 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/zircon \
     system/ulib/c \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-usb-modeswitch \
 
 include make/module.mk

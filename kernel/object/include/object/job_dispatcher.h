@@ -5,7 +5,7 @@
 
 #include <object/dispatcher.h>
 #include <object/excp_port.h>
-#include <object/policy_manager.h>
+#include <object/job_policy.h>
 #include <object/process_dispatcher.h>
 
 #include <zircon/types.h>
@@ -95,10 +95,27 @@ public:
     // transitions to |DEAD|.
     bool Kill();
 
-    // Set policy. |mode| is is either ZX_JOB_POL_RELATIVE or ZX_JOB_POL_ABSOLUTE and
+    // Set basic policy. |mode| is is either ZX_JOB_POL_RELATIVE or ZX_JOB_POL_ABSOLUTE and
     // in_policy is an array of |count| elements.
-    zx_status_t SetPolicy(uint32_t mode, const zx_policy_basic* in_policy, size_t policy_count);
-    pol_cookie_t GetPolicy();
+    //
+    // It is an error to set policy on a non-empty job, i.e. a job with one or more sub-jobs or
+    // processes.
+    zx_status_t SetBasicPolicy(uint32_t mode,
+                               const zx_policy_basic* in_policy,
+                               size_t policy_count);
+
+    // Set timer slack policy.
+    //
+    // |policy.min_slack| must be >= 0.
+    //
+    // |policy.default_mode| must be one of ZX_TIMER_SLACK_CENTER, ZX_TIMER_SLACK_EARLY,
+    // ZX_TIMER_SLACK_LATE.
+    //
+    // It is an error to set policy on a non-empty job, i.e. a job with one or more sub-jobs or
+    // processes.
+    zx_status_t SetTimerSlackPolicy(const zx_policy_timer_slack& policy);
+
+    JobPolicy GetPolicy() const;
 
     // Calls the provided |zx_status_t func(JobDispatcher*)| on every
     // JobDispatcher in the system. Stops if |func| returns an error,
@@ -125,7 +142,7 @@ public:
     // exception handling support
     zx_status_t SetExceptionPort(fbl::RefPtr<ExceptionPort> eport);
     // Returns true if a port had been set.
-    bool ResetExceptionPort(bool debugger, bool quietly);
+    bool ResetExceptionPort(bool debugger);
     fbl::RefPtr<ExceptionPort> exception_port();
     fbl::RefPtr<ExceptionPort> debugger_exception_port();
 
@@ -141,7 +158,7 @@ private:
 
     using LiveRefsArray = fbl::Array<fbl::RefPtr<Dispatcher>>;
 
-    JobDispatcher(uint32_t flags, fbl::RefPtr<JobDispatcher> parent, pol_cookie_t policy);
+    JobDispatcher(uint32_t flags, fbl::RefPtr<JobDispatcher> parent, JobPolicy policy);
 
     bool AddChildJob(const fbl::RefPtr<JobDispatcher>& job);
     void RemoveChildJob(JobDispatcher* job);
@@ -155,6 +172,8 @@ private:
 
     template <typename T>
     uint32_t ChildCountLocked() const TA_REQ(get_lock());
+
+    bool CanSetPolicy() TA_REQ(get_lock());
 
     fbl::Canary<fbl::magic("JOBD")> canary_;
 
@@ -192,7 +211,7 @@ private:
     RawJobList jobs_ TA_GUARDED(get_lock());
     RawProcessList procs_ TA_GUARDED(get_lock());
 
-    pol_cookie_t policy_ TA_GUARDED(get_lock());
+    JobPolicy policy_ TA_GUARDED(get_lock());
 
     fbl::RefPtr<ExceptionPort> exception_port_ TA_GUARDED(get_lock());
     fbl::RefPtr<ExceptionPort> debugger_exception_port_ TA_GUARDED(get_lock());

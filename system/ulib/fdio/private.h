@@ -1,10 +1,14 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <zircon/types.h>
+#include <errno.h>
+#include <fuchsia/io/c/fidl.h>
 #include <lib/fdio/limits.h>
-#include <lib/fdio/remoteio.h>
 #include <lib/fdio/vfs.h>
+#include <lib/zxio/ops.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -13,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <threads.h>
+#include <zircon/types.h>
 
 typedef struct fdio fdio_t;
 typedef struct fdio_namespace fdio_ns_t;
@@ -29,13 +34,6 @@ typedef struct fdio_namespace fdio_ns_t;
 // The NULL protocol absorbs writes and is never readable.
 
 typedef struct fdio_ops {
-    ssize_t (*read)(fdio_t* io, void* data, size_t len);
-    ssize_t (*read_at)(fdio_t* io, void* data, size_t len, off_t offset);
-    ssize_t (*write)(fdio_t* io, const void* data, size_t len);
-    ssize_t (*write_at)(fdio_t* io, const void* data, size_t len, off_t offset);
-    off_t (*seek)(fdio_t* io, off_t offset, int whence);
-    zx_status_t (*misc)(fdio_t* io, uint32_t op, int64_t off, uint32_t maxreply,
-                        void* data, size_t len);
     zx_status_t (*close)(fdio_t* io);
     zx_status_t (*open)(fdio_t* io, const char* path, uint32_t flags,
                         uint32_t mode, fdio_t** out);
@@ -49,8 +47,8 @@ typedef struct fdio_ops {
     ssize_t (*posix_ioctl)(fdio_t* io, int req, va_list va);
     zx_status_t (*get_vmo)(fdio_t* io, int flags, zx_handle_t* out);
     zx_status_t (*get_token)(fdio_t* io, zx_handle_t* out);
-    zx_status_t (*get_attr)(fdio_t* io, vnattr_t* out);
-    zx_status_t (*set_attr)(fdio_t* io, const vnattr_t* attr);
+    zx_status_t (*get_attr)(fdio_t* io, fuchsia_io_NodeAttributes* out);
+    zx_status_t (*set_attr)(fdio_t* io, uint32_t flags, const fuchsia_io_NodeAttributes* attr);
     zx_status_t (*sync)(fdio_t* io);
     zx_status_t (*readdir)(fdio_t* io, void* ptr, size_t max, size_t* actual);
     zx_status_t (*rewind)(fdio_t* io);
@@ -90,7 +88,12 @@ typedef struct fdio {
     atomic_int_fast32_t refcount;
     int32_t dupcount;
     uint32_t ioflag;
+    zxio_storage_t storage;
 } fdio_t;
+
+static inline zxio_t* fdio_get_zxio(fdio_t* io) {
+    return &io->storage.io;
+}
 
 // Lifecycle notes:
 //
@@ -121,28 +124,48 @@ zx_status_t fdio_close(fdio_t* io);
 zx_status_t fdio_wait(fdio_t* io, uint32_t events, zx_time_t deadline,
                       uint32_t* out_pending);
 
-// Wraps a socket with an fdio_t using simple io.
-// Takes ownership of h.
-fdio_t* fdio_pipe_create(zx_handle_t h);
+// Creates an |fdio_t| from a remote directory connection.
+//
+// Takes ownership of |control|.
+fdio_t* fdio_dir_create(zx_handle_t control);
 
 // Creates a pipe backed by a socket.
 //
-// Uses zxio to implement the pipe. If |FDIO_USE_ZXIO_PIPE| is defined to 1,
-// then |fdio_pipe_create| uses this function to create a pipe backed by zxio.
-fdio_t* fdio_zxio_create_pipe(zx_handle_t socket);
+// Takes ownership of |socket|.
+fdio_t* fdio_pipe_create(zx_handle_t socket);
 
 // Wraps a socket with an fdio_t using socketpair io.
 fdio_t* fdio_socketpair_create(zx_handle_t h);
 
-// Wraps a vmo, offset, length with an fdio_t providing a readonly file.
-// Takens ownership of h.
-fdio_t* fdio_vmofile_create(zx_handle_t h, zx_handle_t vmo, zx_off_t off, zx_off_t len);
+// Creates an |fdio_t| for a VMO file.
+//
+// * |control| is an handle to the control channel for the VMO file.
+// * |vmo| is the VMO that contains the contents of the file.
+// * |offset| is the index of the first byte of the file in the VMO.
+// * |length| is the number of bytes in the file.
+// * |seek| is the initial seek offset within the file (i.e., relative to
+//   |offset| within the underlying VMO).
+//
+// Always consumes |h| and |vmo|.
+fdio_t* fdio_vmofile_create(zx_handle_t control, zx_handle_t vmo,
+                            zx_off_t offset, zx_off_t length, zx_off_t seek);
 
+// Creates an |fdio_t| from a Zircon socket object.
+//
 // Examines |socket| and determines whether to create a pipe, stream socket, or
 // datagram socket.
 //
 // Always consumes |socket|.
-zx_status_t fdio_acquire_socket(zx_handle_t socket, fdio_t** out_io);
+zx_status_t fdio_from_socket(zx_handle_t socket, fdio_t** out_io);
+
+// Creates an |fdio_t| from a Zircon channel object.
+//
+// The |channel| must implement the |fuchsia.io.Node| protocol. Uses the
+// |Describe| method from the |fuchsia.io.Node| protocol to determine whether to
+// create a remoteio or a vmofile.
+//
+// Always consumes |channel|.
+zx_status_t fdio_from_channel(zx_handle_t channel, fdio_t** out_io);
 
 // Wraps a socket with an fdio_t using socket io.
 fdio_t* fdio_socket_create_stream(zx_handle_t s, int flags);
@@ -165,8 +188,7 @@ fdio_t* fdio_waitable_create(zx_handle_t h, zx_signals_t signals_in,
 
 // unsupported / do-nothing hooks shared by implementations
 zx_status_t fdio_default_get_token(fdio_t* io, zx_handle_t* out);
-zx_status_t fdio_default_set_attr(fdio_t* io, const vnattr_t* attr);
-zx_status_t fdio_default_sync(fdio_t* io);
+zx_status_t fdio_default_set_attr(fdio_t* io, uint32_t flags, const fuchsia_io_NodeAttributes* attr);
 zx_status_t fdio_default_readdir(fdio_t* io, void* ptr, size_t max, size_t* actual);
 zx_status_t fdio_default_rewind(fdio_t* io);
 zx_status_t fdio_default_unlink(fdio_t* io, const char* path, size_t len);
@@ -177,8 +199,6 @@ zx_status_t fdio_default_link(fdio_t* io, const char* src, size_t srclen,
                               zx_handle_t dst_token, const char* dst, size_t dstlen);
 zx_status_t fdio_default_get_flags(fdio_t* io, uint32_t* out_flags);
 zx_status_t fdio_default_set_flags(fdio_t* io, uint32_t flags);
-ssize_t fdio_default_read(fdio_t* io, void* _data, size_t len);
-ssize_t fdio_default_read_at(fdio_t* io, void* _data, size_t len, off_t offset);
 ssize_t fdio_default_write(fdio_t* io, const void* _data, size_t len);
 ssize_t fdio_default_write_at(fdio_t* io, const void* _data, size_t len, off_t offset);
 ssize_t fdio_default_recvfrom(fdio_t* io, void* _data, size_t len, int flags,
@@ -189,10 +209,7 @@ ssize_t fdio_default_sendto(fdio_t* io, const void* _data, size_t len,
                             socklen_t addrlen);
 ssize_t fdio_default_recvmsg(fdio_t* io, struct msghdr* msg, int flags);
 ssize_t fdio_default_sendmsg(fdio_t* io, const struct msghdr* msg, int flags);
-off_t fdio_default_seek(fdio_t* io, off_t offset, int whence);
-zx_status_t fdio_default_get_attr(fdio_t* io, vnattr_t* out);
-zx_status_t fdio_default_misc(fdio_t* io, uint32_t op, int64_t off,
-                              uint32_t arg, void* data, size_t len);
+zx_status_t fdio_default_get_attr(fdio_t* io, fuchsia_io_NodeAttributes* out);
 zx_status_t fdio_default_close(fdio_t* io);
 zx_status_t fdio_default_open(fdio_t* io, const char* path, uint32_t flags,
                               uint32_t mode, fdio_t** out);
@@ -214,6 +231,9 @@ typedef struct {
     mode_t umask;
     fdio_t* root;
     fdio_t* cwd;
+    // fdtab contains either NULL, or a reference to fdio_reserved_io, or a
+    // valid fdio_t pointer. fdio_reserved_io must never be returned for
+    // operations.
     fdio_t* fdtab[FDIO_MAX_FD];
     fdio_ns_t* ns;
     char cwd_path[PATH_MAX];
@@ -230,7 +250,6 @@ extern fdio_state_t __fdio_global_state;
 #define fdio_root_init (__fdio_global_state.init)
 #define fdio_root_ns (__fdio_global_state.ns)
 
-
 // Enable low level debug chatter, which requires a kernel that
 // doesn't check the resource argument to zx_debuglog_create()
 //
@@ -243,11 +262,12 @@ extern fdio_state_t __fdio_global_state;
 void fdio_lldebug_printf(unsigned level, const char* fmt, ...);
 #define LOG(level, fmt...) fdio_lldebug_printf(level, fmt)
 #else
-#define LOG(level, fmt...) do {} while (0)
+#define LOG(level, fmt...) \
+    do {                   \
+    } while (0)
 #endif
 
 void fdio_set_debug_level(unsigned level);
-
 
 // Enable intrusive allocation debugging
 //
@@ -274,3 +294,18 @@ static inline void* fdio_alloc(size_t sz) {
     return ptr;
 }
 #endif
+
+// Returns an fd number greater than or equal to |starting_fd|, following the
+// same rules as fdio_bind_fd. If there are no free file descriptors, -1 is
+// returned and |errno| is set to EMFILE. The returned |fd| is bound to
+// fdio_reserved_io that has no ops table, and must not be consumed outside of
+// fdio, nor allowed to be used for operations.
+int fdio_reserve_fd(int starting_fd);
+
+// Assign the given |io| to the reserved |fd|. If |fd| is not reserved, then -1
+// is returned and errno is set to EINVAL.
+int fdio_assign_reserved(int fd, fdio_t* io);
+
+// Unassign the reservation at |fd|. If |fd| does not resolve to a reservation
+// then -1 is returned and errno is set to EINVAL, otherwise |fd| is returned.
+int fdio_release_reserved(int fd);

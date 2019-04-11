@@ -1,3 +1,6 @@
+# Copyright 2017 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 LOCAL_INC := $(LOCAL_DIR)/include/lib/memfs
@@ -41,6 +44,7 @@ MODULE_LIBS := \
 
 MODULE_FIDL_LIBS := \
     system/fidl/fuchsia-io \
+    system/fidl/fuchsia-mem \
 
 MODULE_PACKAGE := src
 
@@ -85,6 +89,7 @@ MODULE_LIBS := \
 
 MODULE_FIDL_LIBS := \
     system/fidl/fuchsia-io \
+    system/fidl/fuchsia-mem \
 
 MODULE_SO_NAME := $(MODULE_NAME)
 MODULE_EXPORT := so

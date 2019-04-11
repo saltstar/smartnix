@@ -4,12 +4,14 @@
 
 #pragma once
 
+#include <climits>
 #include <ddktl/mmio.h>
 #include <fbl/intrusive_double_list.h>
-#include <fbl/limits.h>
 #include <fbl/unique_ptr.h>
-#include <region-alloc/region-alloc.h>
 #include <lib/zx/bti.h>
+#include <limits>
+#include <region-alloc/region-alloc.h>
+#include <utility>
 
 namespace optee {
 
@@ -41,8 +43,6 @@ namespace optee {
 // will recycle the region back to the RegionAllocator, eliminating the need for us to explicitly
 // free it.
 //
-// TODO(rjascani): Add ability to create vmo object from a shared memory object that was created
-// from the client pool.
 
 class SharedMemory : public fbl::DoublyLinkedListable<fbl::unique_ptr<SharedMemory>> {
 public:
@@ -73,7 +73,7 @@ public:
         : vaddr_(vaddr),
           paddr_(paddr),
           region_allocator_(
-              RegionAllocator::RegionPool::Create(fbl::numeric_limits<size_t>::max())) {
+              RegionAllocator::RegionPool::Create(std::numeric_limits<size_t>::max())) {
         region_allocator_.AddRegion({.base = 0, .size = size});
     }
 
@@ -89,12 +89,12 @@ public:
 
         fbl::AllocChecker ac;
         auto shared_memory = fbl::make_unique_checked<SharedMemory>(
-            &ac, vaddr_, paddr_, fbl::move(region));
+            &ac, vaddr_, paddr_, std::move(region));
         if (!ac.check()) {
             return ZX_ERR_NO_MEMORY;
         }
 
-        *out_shared_memory = fbl::move(shared_memory);
+        *out_shared_memory = std::move(shared_memory);
         return ZX_OK;
     }
 

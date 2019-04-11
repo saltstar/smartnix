@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "banjo/names.h"
 
@@ -178,6 +181,8 @@ std::string NameHandleSubtype(types::HandleSubtype subtype) {
         return "timer";
     case types::HandleSubtype::kBti:
         return "bti";
+    case types::HandleSubtype::kProfile:
+        return "profile";
     }
 }
 
@@ -260,6 +265,8 @@ std::string NameHandleZXObjType(types::HandleSubtype subtype) {
         return "ZX_OBJ_TYPE_TIMER";
     case types::HandleSubtype::kBti:
         return "ZX_OBJ_TYPE_BTI";
+    case types::HandleSubtype::kProfile:
+        return "ZX_OBJ_TYPE_PROFILE";
     }
 }
 
@@ -343,12 +350,6 @@ std::string NameDiscoverable(const flat::Interface& interface) {
 
 std::string NameMethod(StringView interface_name, const flat::Interface::Method& method) {
     return std::string(interface_name) + NameIdentifier(method.name);
-}
-
-std::string NameOrdinal(StringView method_name) {
-    std::string ordinal_name(method_name);
-    ordinal_name += "Ordinal";
-    return ordinal_name;
 }
 
 std::string NameMessage(StringView method_name, types::MessageKind kind) {

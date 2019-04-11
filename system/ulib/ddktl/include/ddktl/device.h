@@ -1,11 +1,14 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddktl/device-internal.h>
+#include <type_traits>
 #include <zircon/assert.h>
-#include <fbl/type_support.h>
 
 // ddk::Device<D, ...>
 //
@@ -117,10 +120,16 @@ struct AnyProtocol {
     void* ctx;
 };
 
+// base_mixin is a tag that all mixins must inherit from.
+using base_mixin = internal::base_mixin;
+
+// base_protocol is a tag used by protocol implementations
+using base_protocol = internal::base_protocol;
+
 // DDK Device mixins
 
 template <typename D>
-class GetProtocolable : public internal::base_mixin {
+class GetProtocolable : public base_mixin {
   protected:
     explicit GetProtocolable(zx_protocol_device_t* proto) {
         internal::CheckGetProtocolable<D>();
@@ -134,7 +143,7 @@ class GetProtocolable : public internal::base_mixin {
 };
 
 template <typename D>
-class Openable : public internal::base_mixin {
+class Openable : public base_mixin {
   protected:
     explicit Openable(zx_protocol_device_t* proto) {
         internal::CheckOpenable<D>();
@@ -148,7 +157,7 @@ class Openable : public internal::base_mixin {
 };
 
 template <typename D>
-class OpenAtable : public internal::base_mixin {
+class OpenAtable : public base_mixin {
   protected:
     explicit OpenAtable(zx_protocol_device_t* proto) {
         internal::CheckOpenAtable<D>();
@@ -163,7 +172,7 @@ class OpenAtable : public internal::base_mixin {
 };
 
 template <typename D>
-class Closable : public internal::base_mixin {
+class Closable : public base_mixin {
   protected:
     explicit Closable(zx_protocol_device_t* proto) {
         internal::CheckClosable<D>();
@@ -177,7 +186,7 @@ class Closable : public internal::base_mixin {
 };
 
 template <typename D>
-class Unbindable : public internal::base_mixin {
+class Unbindable : public base_mixin {
   protected:
     explicit Unbindable(zx_protocol_device_t* proto) {
         internal::CheckUnbindable<D>();
@@ -191,7 +200,7 @@ class Unbindable : public internal::base_mixin {
 };
 
 template <typename D>
-class Readable : public internal::base_mixin {
+class Readable : public base_mixin {
   protected:
     explicit Readable(zx_protocol_device_t* proto) {
         internal::CheckReadable<D>();
@@ -205,7 +214,7 @@ class Readable : public internal::base_mixin {
 };
 
 template <typename D>
-class Writable : public internal::base_mixin {
+class Writable : public base_mixin {
   protected:
     explicit Writable(zx_protocol_device_t* proto) {
         internal::CheckWritable<D>();
@@ -220,7 +229,7 @@ class Writable : public internal::base_mixin {
 };
 
 template <typename D>
-class GetSizable : public internal::base_mixin {
+class GetSizable : public base_mixin {
   protected:
     explicit GetSizable(zx_protocol_device_t* proto) {
         internal::CheckGetSizable<D>();
@@ -234,7 +243,7 @@ class GetSizable : public internal::base_mixin {
 };
 
 template <typename D>
-class Ioctlable : public internal::base_mixin {
+class Ioctlable : public base_mixin {
   protected:
     explicit Ioctlable(zx_protocol_device_t* proto) {
         internal::CheckIoctlable<D>();
@@ -249,7 +258,7 @@ class Ioctlable : public internal::base_mixin {
 };
 
 template <typename D>
-class Messageable : public internal::base_mixin {
+class Messageable : public base_mixin {
   protected:
     explicit Messageable(zx_protocol_device_t* proto) {
         internal::CheckMessageable<D>();
@@ -263,7 +272,7 @@ class Messageable : public internal::base_mixin {
 };
 
 template <typename D>
-class Suspendable : public internal::base_mixin {
+class Suspendable : public base_mixin {
   protected:
     explicit Suspendable(zx_protocol_device_t* proto) {
         internal::CheckSuspendable<D>();
@@ -277,7 +286,7 @@ class Suspendable : public internal::base_mixin {
 };
 
 template <typename D>
-class Resumable : public internal::base_mixin {
+class Resumable : public base_mixin {
   protected:
     explicit Resumable(zx_protocol_device_t* proto) {
         internal::CheckResumable<D>();
@@ -291,7 +300,7 @@ class Resumable : public internal::base_mixin {
 };
 
 template <typename D>
-class Rxrpcable : public internal::base_mixin {
+class Rxrpcable : public base_mixin {
   protected:
     explicit Rxrpcable(zx_protocol_device_t* proto) {
         internal::CheckRxrpcable<D>();
@@ -314,7 +323,8 @@ class Device : public ::ddk::internal::base_device, public Mixins<D>... {
   public:
     zx_status_t DdkAdd(const char* name, uint32_t flags = 0, zx_device_prop_t* props = nullptr,
                        uint32_t prop_count = 0, uint32_t proto_id = 0,
-                       const char* proxy_args = nullptr) {
+                       const char* proxy_args = nullptr,
+                       zx_handle_t client_remote = ZX_HANDLE_INVALID) {
         if (zxdev_ != nullptr) {
             return ZX_ERR_BAD_STATE;
         }
@@ -331,6 +341,7 @@ class Device : public ::ddk::internal::base_device, public Mixins<D>... {
         args.prop_count = prop_count;
         args.proto_id = proto_id;
         args.proxy_args = proxy_args;
+        args.client_remote = client_remote;
         AddProtocol(&args);
 
         return device_add(parent_, &args, &zxdev_);
@@ -402,13 +413,10 @@ class Device : public ::ddk::internal::base_device, public Mixins<D>... {
         static_cast<D*>(ctx)->DdkRelease();
     }
 
-    template <typename T>
-    using is_protocol = fbl::is_base_of<internal::base_protocol, T>;
-
     // Add the protocol id and ops if D inherits from a base_protocol implementation.
     template <typename T = D>
     void AddProtocol(device_add_args_t* args,
-                     typename fbl::enable_if<is_protocol<T>::value, T>::type* dummy = 0) {
+                     typename std::enable_if<internal::is_base_protocol<T>::value, T>::type* dummy = 0) {
         auto dev = static_cast<D*>(this);
         ZX_ASSERT(dev->ddk_proto_id_ > 0);
         args->proto_id = dev->ddk_proto_id_;
@@ -418,7 +426,7 @@ class Device : public ::ddk::internal::base_device, public Mixins<D>... {
     // If D does not inherit from a base_protocol implementation, do nothing.
     template <typename T = D>
     void AddProtocol(device_add_args_t* args,
-                     typename fbl::enable_if<!is_protocol<T>::value, T>::type* dummy = 0) {}
+                     typename std::enable_if<!internal::is_base_protocol<T>::value, T>::type* dummy = 0) {}
 };
 
 // Convenience type for implementations that would like to override all

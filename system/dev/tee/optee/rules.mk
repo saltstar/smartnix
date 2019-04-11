@@ -16,7 +16,7 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/shared-memory.cpp \
     $(LOCAL_DIR)/util.cpp \
 
-MODULE_FIDL_LIBS := system/fidl/zircon-tee
+MODULE_FIDL_LIBS := system/fidl/fuchsia-hardware-tee
 
 MODULE_STATIC_LIBS := \
     system/ulib/ddk \
@@ -32,5 +32,8 @@ MODULE_LIBS := \
     system/ulib/zircon \
     system/ulib/c \
     system/ulib/driver \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-platform-device \
 
 include make/module.mk

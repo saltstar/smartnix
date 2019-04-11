@@ -16,7 +16,6 @@
 #include <lib/zx/vmar.h>
 
 #include <fbl/algorithm.h>
-#include <fbl/type_support.h>
 
 #include <zircon/process.h>
 #include <zircon/syscalls/debug.h>
@@ -318,7 +317,7 @@ static bool TestInvokingPolicyWithException(
     // using crashlogger gives a correct backtrace.
 
     // Resume the thread.
-    ASSERT_EQ(zx_task_resume(thread.get(), ZX_RESUME_EXCEPTION), ZX_OK);
+    ASSERT_EQ(zx_task_resume_from_exception(thread.get(), exc_port, 0), ZX_OK);
     // Check that the read-ready state of the channel changed compared with
     // the earlier check.
     EXPECT_EQ(zx_object_wait_one(ctrl, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE,

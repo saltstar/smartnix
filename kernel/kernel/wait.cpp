@@ -122,7 +122,7 @@ static void wait_queue_insert(wait_queue_t* wait, thread_t* t) {
 static void remove_queue_head(thread_t* t) {
     // are there any nodes in the queue for this priority?
     if (list_is_empty(&t->queue_node)) {
-        // no, remove ourself from the the queue list
+        // no, remove ourself from the queue list
         list_delete(&t->wait_queue_heads_node);
         list_clear_node(&t->queue_node);
     } else {
@@ -170,6 +170,11 @@ int wait_queue_blocked_priority(wait_queue_t* wait) {
     return t->effec_priority;
 }
 
+// returns a reference to the highest priority thread queued
+thread_t* wait_queue_peek(wait_queue_t* wait) {
+    return list_peek_head_type(&wait->heads, thread_t, wait_queue_heads_node);
+}
+
 static void wait_queue_timeout_handler(timer_t* timer, zx_time_t now,
                                        void* arg) {
     thread_t* thread = (thread_t*)arg;
@@ -188,8 +193,32 @@ static void wait_queue_timeout_handler(timer_t* timer, zx_time_t now,
     spin_unlock(&thread_lock);
 }
 
-static zx_status_t wait_queue_block_worker(wait_queue_t* wait, zx_time_t deadline,
-                                           uint signal_mask) TA_REQ(thread_lock) {
+/**
+ * @brief  Block until a wait queue is notified, ignoring existing signals
+ *         in |signal_mask|.
+ *
+ * This function puts the current thread at the end of a wait
+ * queue and then blocks until some other thread wakes the queue
+ * up again.
+ *
+ * @param  wait        The wait queue to enter
+ * @param  deadline    The time at which to abort the wait
+ * @param  slack       The amount of time it is acceptable to deviate from deadline
+ * @param  signal_mask Mask of existing signals to ignore
+ * @param  read_lock   True if blocking for a shared resource
+ *
+ * If the deadline is zero, this function returns immediately with
+ * ZX_ERR_TIMED_OUT.  If the deadline is ZX_TIME_INFINITE, this function
+ * waits indefinitely.  Otherwise, this function returns with
+ * ZX_ERR_TIMED_OUT when the deadline elapses.
+ *
+ * @return ZX_ERR_TIMED_OUT on timeout, else returns the return
+ * value specified when the queue was woken by wait_queue_wake_one().
+ */
+zx_status_t wait_queue_block_etc(wait_queue_t* wait,
+                                 const Deadline& deadline,
+                                 uint signal_mask,
+                                 ResourceOwnership reason) TA_REQ(thread_lock) {
     timer_t timer;
 
     thread_t* current_thread = get_current_thread();
@@ -203,7 +232,7 @@ static zx_status_t wait_queue_block_worker(wait_queue_t* wait, zx_time_t deadlin
         wait_queue_validate_queue(wait);
     }
 
-    if (deadline != ZX_TIME_INFINITE && deadline <= current_time()) {
+    if (deadline.when() != ZX_TIME_INFINITE && deadline.when() <= current_time()) {
         return ZX_ERR_TIMED_OUT;
     }
 
@@ -218,14 +247,14 @@ static zx_status_t wait_queue_block_worker(wait_queue_t* wait, zx_time_t deadlin
 
     wait_queue_insert(wait, current_thread);
     wait->count++;
-    current_thread->state = THREAD_BLOCKED;
+    current_thread->state = reason == ResourceOwnership::Normal ? THREAD_BLOCKED : THREAD_BLOCKED_READ_LOCK;
     current_thread->blocking_wait_queue = wait;
     current_thread->blocked_status = ZX_OK;
 
     // if the deadline is nonzero or noninfinite, set a callback to yank us out of the queue
-    if (deadline != ZX_TIME_INFINITE) {
+    if (deadline.when() != ZX_TIME_INFINITE) {
         timer_init(&timer);
-        timer_set_oneshot(&timer, deadline, wait_queue_timeout_handler, (void*)current_thread);
+        timer_set(&timer, deadline, wait_queue_timeout_handler, (void*)current_thread);
     }
 
     ktrace_ptr(TAG_KWAIT_BLOCK, wait, 0, 0);
@@ -235,7 +264,7 @@ static zx_status_t wait_queue_block_worker(wait_queue_t* wait, zx_time_t deadlin
     ktrace_ptr(TAG_KWAIT_UNBLOCK, wait, current_thread->blocked_status, 0);
 
     // we don't really know if the timer fired or not, so it's better safe to try to cancel it
-    if (deadline != ZX_TIME_INFINITE) {
+    if (deadline.when() != ZX_TIME_INFINITE) {
         timer_cancel(&timer);
     }
 
@@ -261,32 +290,7 @@ static zx_status_t wait_queue_block_worker(wait_queue_t* wait, zx_time_t deadlin
  * value specified when the queue was woken by wait_queue_wake_one().
  */
 zx_status_t wait_queue_block(wait_queue_t* wait, zx_time_t deadline) {
-    return wait_queue_block_worker(wait, deadline, 0);
-}
-
-/**
- * @brief  Block until a wait queue is notified, ignoring existing signals
- *         in |signal_mask|.
- *
- * This function puts the current thread at the end of a wait
- * queue and then blocks until some other thread wakes the queue
- * up again.
- *
- * @param  wait        The wait queue to enter
- * @param  deadline    The time at which to abort the wait
- * @param  signal_mask Mask of existing signals to ignore
- *
- * If the deadline is zero, this function returns immediately with
- * ZX_ERR_TIMED_OUT.  If the deadline is ZX_TIME_INFINITE, this function
- * waits indefinitely.  Otherwise, this function returns with
- * ZX_ERR_TIMED_OUT when the deadline occurs.
- *
- * @return ZX_ERR_TIMED_OUT on timeout, else returns the return
- * value specified when the queue was woken by wait_queue_wake_one().
- */
-zx_status_t wait_queue_block_with_mask(wait_queue_t* wait, zx_time_t deadline,
-                                       uint signal_mask) {
-    return wait_queue_block_worker(wait, deadline, signal_mask);
+    return wait_queue_block_etc(wait, Deadline::no_slack(deadline), 0, ResourceOwnership::Normal);
 }
 
 /**
@@ -318,7 +322,7 @@ int wait_queue_wake_one(wait_queue_t* wait, bool reschedule, zx_status_t wait_qu
     t = wait_queue_pop_head(wait);
     if (t) {
         wait->count--;
-        DEBUG_ASSERT(t->state == THREAD_BLOCKED);
+        DEBUG_ASSERT(t->state == THREAD_BLOCKED || t->state == THREAD_BLOCKED_READ_LOCK);
         t->blocked_status = wait_queue_error;
         t->blocking_wait_queue = NULL;
 
@@ -351,7 +355,7 @@ thread_t* wait_queue_dequeue_one(wait_queue_t* wait, zx_status_t wait_queue_erro
     t = wait_queue_pop_head(wait);
     if (t) {
         wait->count--;
-        DEBUG_ASSERT(t->state == THREAD_BLOCKED);
+        DEBUG_ASSERT(t->state == THREAD_BLOCKED || t->state == THREAD_BLOCKED_READ_LOCK);
         t->blocked_status = wait_queue_error;
         t->blocking_wait_queue = NULL;
     }
@@ -396,7 +400,7 @@ int wait_queue_wake_all(wait_queue_t* wait, bool reschedule, zx_status_t wait_qu
     while ((t = wait_queue_pop_head(wait))) {
         wait->count--;
 
-        DEBUG_ASSERT(t->state == THREAD_BLOCKED);
+        DEBUG_ASSERT(t->state == THREAD_BLOCKED || t->state == THREAD_BLOCKED_READ_LOCK);
         t->blocked_status = wait_queue_error;
         t->blocking_wait_queue = NULL;
 
@@ -464,7 +468,7 @@ zx_status_t wait_queue_unblock_thread(thread_t* t, zx_status_t wait_queue_error)
     DEBUG_ASSERT(arch_ints_disabled());
     DEBUG_ASSERT(spin_lock_held(&thread_lock));
 
-    if (t->state != THREAD_BLOCKED) {
+    if (t->state != THREAD_BLOCKED && t->state != THREAD_BLOCKED_READ_LOCK) {
         return ZX_ERR_BAD_STATE;
     }
 
@@ -493,7 +497,7 @@ void wait_queue_priority_changed(struct thread* t, int old_prio) {
     DEBUG_ASSERT(arch_ints_disabled());
     DEBUG_ASSERT(spin_lock_held(&thread_lock));
 
-    DEBUG_ASSERT(t->state == THREAD_BLOCKED);
+    DEBUG_ASSERT(t->state == THREAD_BLOCKED || t->state == THREAD_BLOCKED_READ_LOCK);
     DEBUG_ASSERT(t->blocking_wait_queue != NULL);
     DEBUG_ASSERT(t->blocking_wait_queue->magic == WAIT_QUEUE_MAGIC);
 

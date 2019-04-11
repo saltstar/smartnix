@@ -21,31 +21,32 @@
 
 namespace {
 
-// Wrapper for a nand_op_t.
+// Wrapper for a nand_operation_t.
 class Operation {
   public:
     explicit Operation(size_t op_size) {
         raw_buffer_.reset(new uint8_t[op_size]);
 
         memset(raw_buffer_.get(), 0, op_size);
-        nand_op_t* op = reinterpret_cast<nand_op_t*>(raw_buffer_.get());
-        op->completion_cb = OnCompletion;
-        op->cookie = this;
     }
     ~Operation() {}
 
-    nand_op_t* GetOperation() { return reinterpret_cast<nand_op_t*>(raw_buffer_.get()); }
+    nand_operation_t* GetOperation() {
+        return reinterpret_cast<nand_operation_t*>(raw_buffer_.get());
+    }
 
     // Waits for the operation to complete and returns the operation's status.
-    zx_status_t Wait() {
+    zx_status_t Submit(ddk::NandProtocolClient& proxy) {
+        proxy.Queue(GetOperation(), OnCompletion, this);
+
         zx_status_t status = sync_completion_wait(&event_, ZX_TIME_INFINITE);
         sync_completion_reset(&event_);
         return status != ZX_OK ? status : status_;
     }
 
   private:
-    static void OnCompletion(nand_op_t* op, zx_status_t status) {
-        Operation* operation = reinterpret_cast<Operation*>(op->cookie);
+    static void OnCompletion(void* cookie, zx_status_t status, nand_operation_t* op) {
+        Operation* operation = reinterpret_cast<Operation*>(cookie);
         operation->status_ = status;
         sync_completion_signal(&operation->event_);
     }
@@ -61,7 +62,7 @@ using DeviceType = ddk::Device<Broker, ddk::Unbindable, ddk::Messageable>;
 // Exposes a control device (nand-broker) for a nand protocol device.
 class Broker : public DeviceType {
   public:
-    explicit Broker(zx_device_t* parent) : DeviceType(parent) {}
+    explicit Broker(zx_device_t* parent) : DeviceType(parent), nand_(parent) {}
     ~Broker() {}
 
     zx_status_t Bind();
@@ -72,9 +73,7 @@ class Broker : public DeviceType {
     zx_status_t DdkMessage(fidl_msg_t* msg, fidl_txn_t* txn);
 
     // fidl interface.
-    zx_status_t GetInfo(zircon_nand_Info* info) {
-        return Query(info);
-    }
+    zx_status_t GetInfo(fuchsia_hardware_nand_Info* info) { return Query(info); }
     zx_status_t Read(const fuchsia_nand_BrokerRequest& request, uint32_t* corrected_bits) {
         return Queue(NAND_OP_READ, request, corrected_bits);
     }
@@ -86,17 +85,17 @@ class Broker : public DeviceType {
     }
 
   private:
-    zx_status_t Query(zircon_nand_Info* info);
-    zx_status_t Queue(uint32_t command, const fuchsia_nand_BrokerRequest& request,
-                      uint32_t* corrected_bits);
+      zx_status_t Query(fuchsia_hardware_nand_Info* info);
+      zx_status_t Queue(uint32_t command, const fuchsia_nand_BrokerRequest& request,
+                        uint32_t* corrected_bits);
 
-    nand_protocol_t nand_protocol_;
-    size_t op_size_ = 0;
+      ddk::NandProtocolClient nand_;
+      size_t op_size_ = 0;
 };
 
 zx_status_t GetInfo(void* ctx, fidl_txn_t* txn)  {
     Broker* device = reinterpret_cast<Broker*>(ctx);
-    zircon_nand_Info info;
+    fuchsia_hardware_nand_Info info;
     zx_status_t status = device->GetInfo(&info);
     return fuchsia_nand_BrokerGetInfo_reply(txn, status, &info);
 }
@@ -128,13 +127,13 @@ fuchsia_nand_Broker_ops_t fidl_ops = {
 };
 
 zx_status_t Broker::Bind() {
-    if (device_get_protocol(parent(), ZX_PROTOCOL_NAND, &nand_protocol_) != ZX_OK) {
+    if (!nand_.is_valid()) {
         zxlogf(ERROR, "nand-broker: device '%s' does not support nand protocol\n",
                device_get_name(parent()));
         return ZX_ERR_NOT_SUPPORTED;
     }
 
-    zircon_nand_Info info;
+    fuchsia_hardware_nand_Info info;
     Query(&info);
     if (!op_size_) {
         zxlogf(ERROR, "nand-broker: unable to query the nand driver\n");
@@ -150,16 +149,15 @@ zx_status_t Broker::DdkMessage(fidl_msg_t* msg, fidl_txn_t* txn) {
     return fuchsia_nand_Broker_dispatch(this, txn, msg, &fidl_ops);
 }
 
-zx_status_t Broker::Query(zircon_nand_Info* info) {
-    ddk::NandProtocolProxy proxy(&nand_protocol_);
-    proxy.Query(info, &op_size_);
+zx_status_t Broker::Query(fuchsia_hardware_nand_Info* info) {
+    nand_.Query(info, &op_size_);
     return ZX_OK;
 }
 
 zx_status_t Broker::Queue(uint32_t command, const fuchsia_nand_BrokerRequest& request,
                           uint32_t* corrected_bits) {
     Operation operation(op_size_);
-    nand_op_t* op = operation.GetOperation();
+    nand_operation_t* op = operation.GetOperation();
     op->rw.command = command;
 
     switch (command) {
@@ -180,10 +178,7 @@ zx_status_t Broker::Queue(uint32_t command, const fuchsia_nand_BrokerRequest& re
         ZX_DEBUG_ASSERT(false);
     }
 
-    ddk::NandProtocolProxy proxy(&nand_protocol_);
-    proxy.Queue(op);
-
-    zx_status_t status = operation.Wait();
+    zx_status_t status = operation.Submit(nand_);
 
     if (command == NAND_OP_READ) {
         *corrected_bits = op->rw.corrected_bit_flips;

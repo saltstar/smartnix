@@ -13,11 +13,12 @@
 #include <ddk/driver.h>
 #include <ddk/metadata.h>
 #include <ddk/metadata/nand.h>
-#include <ddk/protocol/bad-block.h>
+#include <ddk/protocol/badblock.h>
 
 #include <fbl/algorithm.h>
 #include <fbl/alloc_checker.h>
 #include <fbl/unique_ptr.h>
+#include <lib/operation/nand.h>
 #include <lib/sync/completion.h>
 #include <zircon/boot/image.h>
 #include <zircon/hw/gpt.h>
@@ -29,31 +30,30 @@ namespace nand {
 namespace {
 
 constexpr uint8_t fvm_guid[] = GUID_FVM_VALUE;
+constexpr uint8_t test_guid[] = GUID_TEST_VALUE;
 
-struct NandPartOpContext {
+struct PrivateStorage {
     uint32_t offset;
-    void (*completion_cb)(nand_op_t* op, zx_status_t status);
-    void* cookie;
 };
 
+using NandPartOp = nand::UnownedOperation<PrivateStorage>;
+
 // Shim for calling sub-partition's callback.
-void CompletionCallback(nand_op_t* op, zx_status_t status) {
-    auto* ctx = static_cast<NandPartOpContext*>(op->cookie);
+void CompletionCallback(void* cookie, zx_status_t status, nand_operation_t* nand_op) {
+    NandPartOp op(nand_op, *static_cast<size_t*>(cookie));
     // Re-translate the offsets.
-    switch (op->command) {
+    switch (op.operation()->command) {
     case NAND_OP_READ:
     case NAND_OP_WRITE:
-        op->rw.offset_nand -= ctx->offset;
+        op.operation()->rw.offset_nand -= op.private_storage()->offset;
         break;
     case NAND_OP_ERASE:
-        op->erase.first_block -= ctx->offset;
+        op.operation()->erase.first_block -= op.private_storage()->offset;
         break;
     default:
         ZX_ASSERT(false);
     }
-    op->completion_cb = ctx->completion_cb;
-    op->cookie = ctx->cookie;
-    op->completion_cb(op, status);
+    op.Complete(status);
 }
 
 } // namespace
@@ -68,8 +68,8 @@ zx_status_t NandPartDevice::Create(zx_device_t* parent) {
         return ZX_ERR_NOT_SUPPORTED;
     }
 
-    // Query parent to get its zircon_nand_Info and size for nand_op_t.
-    zircon_nand_Info nand_info;
+    // Query parent to get its fuchsia_hardware_nand_Info and size for nand_operation_t.
+    fuchsia_hardware_nand_Info nand_info;
     size_t parent_op_size;
     nand_proto.ops->query(nand_proto.ctx, &nand_info, &parent_op_size);
     // Make sure parent_op_size is aligned, so we can safely add our data at the end.
@@ -107,7 +107,7 @@ zx_status_t NandPartDevice::Create(zx_device_t* parent) {
     status = device_get_metadata(parent, DEVICE_METADATA_PARTITION_MAP, buffer, sizeof(buffer),
                                  &actual);
     if (status != ZX_OK) {
-        zxlogf(ERROR, "nandpart: parent device '%s' has no parititon map\n",
+        zxlogf(ERROR, "nandpart: parent device '%s' has no partition map\n",
                device_get_name(parent));
         return status;
     }
@@ -141,9 +141,11 @@ zx_status_t NandPartDevice::Create(zx_device_t* parent) {
         memcpy(&nand_info.partition_guid, &part->type_guid, sizeof(nand_info.partition_guid));
         // We only use FTL for the FVM partition.
         if (memcmp(part->type_guid, fvm_guid, sizeof(fvm_guid)) == 0) {
-            nand_info.nand_class = zircon_nand_Class_FTL;
+            nand_info.nand_class = fuchsia_hardware_nand_Class_FTL;
+        } else if (memcmp(part->type_guid, test_guid, sizeof(test_guid)) == 0) {
+            nand_info.nand_class = fuchsia_hardware_nand_Class_TEST;
         } else {
-            nand_info.nand_class = zircon_nand_Class_BBS;
+            nand_info.nand_class = fuchsia_hardware_nand_Class_BBS;
         }
 
         fbl::AllocChecker ac;
@@ -206,45 +208,39 @@ zx_status_t NandPartDevice::Bind(const char* name, uint32_t copy_count) {
     return ZX_OK;
 }
 
-void NandPartDevice::Query(zircon_nand_Info* info_out, size_t* nand_op_size_out) {
+void NandPartDevice::NandQuery(fuchsia_hardware_nand_Info* info_out, size_t* nand_op_size_out) {
     memcpy(info_out, &nand_info_, sizeof(*info_out));
     // Add size of extra context.
-    *nand_op_size_out = parent_op_size_ + sizeof(NandPartOpContext);
+    *nand_op_size_out = NandPartOp::OperationSize(parent_op_size_);
 }
 
-void NandPartDevice::Queue(nand_op_t* op) {
-    auto* ctx =
-        reinterpret_cast<NandPartOpContext*>(reinterpret_cast<uintptr_t>(op) + parent_op_size_);
-    uint32_t command = op->command;
+void NandPartDevice::NandQueue(nand_operation_t* nand_op, nand_queue_callback completion_cb,
+                               void* cookie) {
+    NandPartOp op(nand_op, completion_cb, cookie, parent_op_size_);
+    uint32_t command = op.operation()->command;
 
     // Make offset relative to full underlying device
     switch (command) {
     case NAND_OP_READ:
     case NAND_OP_WRITE:
-        ctx->offset = erase_block_start_ * nand_info_.pages_per_block;
-        op->rw.offset_nand += ctx->offset;
+        op.private_storage()->offset = erase_block_start_ * nand_info_.pages_per_block;
+        op.operation()->rw.offset_nand += op.private_storage()->offset;
         break;
     case NAND_OP_ERASE:
-        ctx->offset = erase_block_start_;
-        op->erase.first_block += erase_block_start_;
+        op.private_storage()->offset = erase_block_start_;
+        op.operation()->erase.first_block += erase_block_start_;
         break;
     default:
-        op->completion_cb(op, ZX_ERR_NOT_SUPPORTED);
+        op.Complete(ZX_ERR_NOT_SUPPORTED);
         return;
     }
 
-    ctx->completion_cb = op->completion_cb;
-    ctx->cookie = op->cookie;
-
-    op->completion_cb = CompletionCallback;
-    op->cookie = ctx;
-
     // Call parent's queue
-    nand_.Queue(op);
+    nand_.Queue(op.take(), CompletionCallback, &parent_op_size_);
 }
 
-zx_status_t NandPartDevice::GetFactoryBadBlockList(uint32_t* bad_blocks, uint32_t bad_block_len,
-                                                   uint32_t* num_bad_blocks) {
+zx_status_t NandPartDevice::NandGetFactoryBadBlockList(uint32_t* bad_blocks, size_t bad_block_len,
+                                                       size_t* num_bad_blocks) {
     // TODO implement this.
     *num_bad_blocks = 0;
     return ZX_ERR_NOT_SUPPORTED;
@@ -297,7 +293,7 @@ zx_status_t NandPartDevice::DdkGetProtocol(uint32_t proto_id, void* protocol) {
     proto->ctx = this;
     switch (proto_id) {
     case ZX_PROTOCOL_NAND:
-        proto->ops = &nand_proto_ops_;
+        proto->ops = &nand_protocol_ops_;
         break;
     case ZX_PROTOCOL_BAD_BLOCK:
         proto->ops = &bad_block_protocol_ops_;

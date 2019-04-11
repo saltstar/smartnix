@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -379,7 +382,7 @@ typedef union {
 typedef struct {
     uint32_t started;
     uint32_t paramTypes;
-    TEEC_Parameter params[4];
+    TEEC_Parameter params[TEEC_NUM_PARAMS_MAX];
     teec_operation_impl_t imp;
 } TEEC_Operation;
 

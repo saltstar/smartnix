@@ -1,9 +1,14 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/algorithm.h>
 #include <fbl/alloc_checker.h>
 #include <lib/fzl/owned-vmo-mapper.h>
 #include <lib/fzl/resizeable-vmo-mapper.h>
 #include <string.h>
+
+#include <utility>
 
 namespace fzl {
 
@@ -33,7 +38,7 @@ zx_status_t ResizeableVmoMapper::CreateAndMap(uint64_t size,
                                               fbl::RefPtr<VmarManager> vmar_manager,
                                               uint32_t cache_policy) {
     zx::vmo temp;
-    zx_status_t res = OwnedVmoMapper::CreateAndMap(size, name, map_options, fbl::move(vmar_manager),
+    zx_status_t res = OwnedVmoMapper::CreateAndMap(size, name, map_options, std::move(vmar_manager),
                                                    cache_policy);
     if (res == ZX_OK) {
         map_options_ = map_options;
@@ -46,8 +51,8 @@ zx_status_t ResizeableVmoMapper::Map(zx::vmo vmo,
                                      uint64_t size,
                                      zx_vm_option_t map_options,
                                      fbl::RefPtr<VmarManager> vmar_manager) {
-    zx_status_t res = OwnedVmoMapper::Map(fbl::move(vmo), size, map_options,
-                                          fbl::move(vmar_manager));
+    zx_status_t res = OwnedVmoMapper::Map(std::move(vmo), size, map_options,
+                                          std::move(vmar_manager));
     if (res == ZX_OK) {
         map_options_ = map_options;
     }

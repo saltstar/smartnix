@@ -416,6 +416,38 @@ template <typename RawBitmap> static bool SetOutOfOrder(void) {
     END_TEST;
 }
 
+template <typename RawBitmap> static bool MoveConstructorTest(void) {
+    BEGIN_TEST;
+
+    RawBitmap src;
+    EXPECT_EQ(src.Reset(128), ZX_OK);
+    EXPECT_EQ(src.size(), 128U, "get size");
+    EXPECT_EQ(src.SetOne(0x64), ZX_OK, "setting bit");
+    EXPECT_TRUE(src.GetOne(0x64), "getting bit");
+
+    RawBitmap target(std::move(src));
+    EXPECT_TRUE(target.GetOne(0x64), "getting bit");
+    EXPECT_EQ(src.Reset(0), ZX_OK, "we can still reset the moved-from object");
+
+    END_TEST;
+}
+
+template <typename RawBitmap> static bool MoveAssignmentTest(void) {
+    BEGIN_TEST;
+
+    RawBitmap src;
+    EXPECT_EQ(src.Reset(128), ZX_OK);
+    EXPECT_EQ(src.size(), 128U, "get size");
+    EXPECT_EQ(src.SetOne(0x64), ZX_OK, "setting bit");
+    EXPECT_TRUE(src.GetOne(0x64), "getting bit");
+
+    RawBitmap target = std::move(src);
+    EXPECT_TRUE(target.GetOne(0x64), "getting bit");
+    EXPECT_EQ(src.Reset(0), ZX_OK, "we can still reset the moved-from object");
+
+    END_TEST;
+}
+
 template <typename RawBitmap> static bool GrowAcrossPage(void) {
     BEGIN_TEST;
 
@@ -443,7 +475,7 @@ template <typename RawBitmap> static bool GrowAcrossPage(void) {
     EXPECT_EQ(bitmap.SetOne(16 * PAGE_SIZE - 1), ZX_OK);
     EXPECT_TRUE(bitmap.GetOne(16 * PAGE_SIZE - 1));
 
-    // But our orignal 'set bit' is still set
+    // But our original 'set bit' is still set
     EXPECT_TRUE(bitmap.GetOne(100), "Growing should not unset bits");
 
     // If we shrink and re-expand the bitmap, it should
@@ -535,6 +567,8 @@ template <typename RawBitmap> static bool GrowFailure(void) {
 BEGIN_TEST_CASE(raw_bitmap_tests)
 ALL_TESTS(RawBitmapGeneric<DefaultStorage>)
 ALL_TESTS(RawBitmapGeneric<VmoStorage>)
+RUN_TEST(MoveConstructorTest<RawBitmapGeneric<VmoStorage>>)
+RUN_TEST(MoveAssignmentTest<RawBitmapGeneric<VmoStorage>>)
 RUN_TEST(GrowAcrossPage<RawBitmapGeneric<VmoStorage>>)
 RUN_TEST(GrowShrink<RawBitmapGeneric<VmoStorage>>)
 RUN_TEST(GrowFailure<RawBitmapGeneric<DefaultStorage>>)

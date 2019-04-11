@@ -1,8 +1,9 @@
 
 #include "context_table_state.h"
 
-#include <zxcpp/new.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
+#include <ktl/move.h>
+#include <new>
 
 #include "device_context.h"
 #include "hw.h"
@@ -13,7 +14,7 @@ namespace intel_iommu {
 ContextTableState::ContextTableState(uint8_t bus, bool extended, bool upper,
                                      IommuImpl* parent, volatile ds::RootEntrySubentry* root_entry,
                                      IommuPage page)
-        : parent_(parent), root_entry_(root_entry), page_(fbl::move(page)),
+        : parent_(parent), root_entry_(root_entry), page_(ktl::move(page)),
           bus_(bus), extended_(extended), upper_(upper) {
 }
 
@@ -34,7 +35,7 @@ ContextTableState::~ContextTableState() {
 
 zx_status_t ContextTableState::Create(uint8_t bus, bool extended, bool upper,
                                       IommuImpl* parent, volatile ds::RootEntrySubentry* root_entry,
-                                      fbl::unique_ptr<ContextTableState>* table) {
+                                      ktl::unique_ptr<ContextTableState>* table) {
     ds::RootEntrySubentry entry;
     entry.ReadFrom(root_entry);
     DEBUG_ASSERT(!entry.present());
@@ -46,9 +47,9 @@ zx_status_t ContextTableState::Create(uint8_t bus, bool extended, bool upper,
     }
 
     fbl::AllocChecker ac;
-    fbl::unique_ptr<ContextTableState> tbl(new (&ac) ContextTableState(bus, extended, upper,
+    ktl::unique_ptr<ContextTableState> tbl(new (&ac) ContextTableState(bus, extended, upper,
                                                                        parent, root_entry,
-                                                                       fbl::move(page)));
+                                                                       ktl::move(page)));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
@@ -57,7 +58,7 @@ zx_status_t ContextTableState::Create(uint8_t bus, bool extended, bool upper,
     entry.set_context_table(tbl->page_.paddr() >> 12);
     entry.WriteTo(root_entry);
 
-    *table = fbl::move(tbl);
+    *table = ktl::move(tbl);
     return ZX_OK;
 }
 
@@ -65,7 +66,7 @@ zx_status_t ContextTableState::CreateDeviceContext(ds::Bdf bdf, uint32_t domain_
                                                    DeviceContext** context) {
     DEBUG_ASSERT(bus_ == bdf.bus());
 
-    fbl::unique_ptr<DeviceContext> dev;
+    ktl::unique_ptr<DeviceContext> dev;
     zx_status_t status;
     if (extended_) {
         DEBUG_ASSERT(upper_ == (bdf.dev() >= 16));
@@ -82,7 +83,7 @@ zx_status_t ContextTableState::CreateDeviceContext(ds::Bdf bdf, uint32_t domain_
     }
 
     *context = dev.get();
-    devices_.push_back(fbl::move(dev));
+    devices_.push_back(ktl::move(dev));
     return ZX_OK;
 }
 

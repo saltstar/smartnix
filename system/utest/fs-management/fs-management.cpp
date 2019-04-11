@@ -24,12 +24,13 @@
 #include <lib/fzl/fdio.h>
 #include <unittest/unittest.h>
 #include <zircon/device/block.h>
-#include <zircon/device/ramdisk.h>
 #include <zircon/device/vfs.h>
 #include <zircon/syscalls.h>
 
 #include <fs-management/mount.h>
 #include <fs-management/ramdisk.h>
+
+#include <utility>
 
 namespace {
 
@@ -58,7 +59,7 @@ bool CheckMountedFs(const char* path, const char* fs_name, size_t len) {
 
     fuchsia_io_FilesystemInfo info;
     zx_status_t status;
-    fzl::FdioCaller caller(fbl::move(fd));
+    fzl::FdioCaller caller(std::move(fd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminQueryFilesystem(caller.borrow_channel(), &status, &info),
               ZX_OK);
     ASSERT_EQ(status, ZX_OK);
@@ -71,10 +72,12 @@ bool CheckMountedFs(const char* path, const char* fs_name, size_t len) {
 
 bool MountUnmountShared(size_t block_size) {
     BEGIN_HELPER;
-    char ramdisk_path[PATH_MAX];
+
+    ramdisk_client_t* ramdisk = nullptr;
     const char* mount_path = "/tmp/mount_unmount";
 
-    ASSERT_EQ(create_ramdisk(block_size, 1 << 16, ramdisk_path), ZX_OK);
+    ASSERT_EQ(create_ramdisk(block_size, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -86,7 +89,7 @@ bool MountUnmountShared(size_t block_size) {
     ASSERT_TRUE(CheckMountedFs(mount_path, "minfs", strlen("minfs")));
     ASSERT_EQ(umount(mount_path), ZX_OK);
     ASSERT_TRUE(CheckMountedFs(mount_path, "memfs", strlen("memfs")));
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
     END_HELPER;
 }
@@ -104,11 +107,12 @@ bool MountUnmountLargeBlock() {
 }
 
 bool MountMkdirUnmount() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/mount_mkdir_unmount";
 
     BEGIN_TEST;
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     int fd = open(ramdisk_path, O_RDWR);
@@ -119,17 +123,18 @@ bool MountMkdirUnmount() {
     ASSERT_TRUE(CheckMountedFs(mount_path, "minfs", strlen("minfs")));
     ASSERT_EQ(umount(mount_path), ZX_OK);
     ASSERT_TRUE(CheckMountedFs(mount_path, "memfs", strlen("memfs")));
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
     END_TEST;
 }
 
 bool FmountFunmount() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/mount_unmount";
 
     BEGIN_TEST;
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -144,7 +149,7 @@ bool FmountFunmount() {
     ASSERT_TRUE(CheckMountedFs(mount_path, "minfs", strlen("minfs")));
     ASSERT_EQ(fumount(mountfd), ZX_OK);
     ASSERT_TRUE(CheckMountedFs(mount_path, "memfs", strlen("memfs")));
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(close(mountfd), 0, "Couldn't close ex-mount point");
     ASSERT_EQ(unlink(mount_path), 0);
     END_TEST;
@@ -157,8 +162,9 @@ bool FmountFunmount() {
 // filesystem to unmount itself and relinquish control of the block device.
 bool DoMountEvil(const char* parentfs_name, const char* mount_path) {
     BEGIN_HELPER;
-    char ramdisk_path[PATH_MAX];
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -229,7 +235,7 @@ bool DoMountEvil(const char* parentfs_name, const char* mount_path) {
     fbl::unique_fd badfd(open(mount_path, O_RDONLY | O_DIRECTORY));
     ASSERT_TRUE(badfd);
     zx_status_t status;
-    fzl::FdioCaller caller(fbl::move(badfd));
+    fzl::FdioCaller caller(std::move(badfd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminUnmount(caller.borrow_channel(), &status), ZX_OK);
     ASSERT_EQ(status, ZX_ERR_ACCESS_DENIED);
     ASSERT_EQ(close(caller.release().release()), 0);
@@ -239,7 +245,7 @@ bool DoMountEvil(const char* parentfs_name, const char* mount_path) {
     badfd.reset(open(mount_path, O_RDONLY | O_DIRECTORY));
     ASSERT_TRUE(badfd);
     zx_handle_t h;
-    caller.reset(fbl::move(badfd));
+    caller.reset(std::move(badfd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminUnmountNode(caller.borrow_channel(), &status, &h), ZX_OK);
     ASSERT_EQ(h, ZX_HANDLE_INVALID);
     ASSERT_EQ(status, ZX_ERR_ACCESS_DENIED);
@@ -250,7 +256,7 @@ bool DoMountEvil(const char* parentfs_name, const char* mount_path) {
     ASSERT_TRUE(CheckMountedFs(mount_path, parentfs_name, strlen(parentfs_name)));
     ASSERT_EQ(close(mountfd), 0);
     ASSERT_EQ(rmdir(mount_path), 0);
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     END_HELPER;
 }
 
@@ -262,10 +268,10 @@ bool MountEvilMemfs() {
 }
 
 bool MountEvilMinfs() {
-    char ramdisk_path[PATH_MAX];
-
     BEGIN_TEST;
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     const char* parent_path = "/tmp/parent";
@@ -284,18 +290,19 @@ bool MountEvilMinfs() {
 
     ASSERT_EQ(umount(parent_path), 0);
     ASSERT_EQ(rmdir(parent_path), 0);
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     END_TEST;
 }
 
 bool UmountTestEvil() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/umount_test_evil";
 
     BEGIN_TEST;
 
     // Create a ramdisk, mount minfs
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -310,7 +317,7 @@ bool UmountTestEvil() {
     fbl::unique_fd weak_root_fd(open(mount_path, O_RDONLY | O_DIRECTORY));
     ASSERT_TRUE(weak_root_fd);
     zx_status_t status;
-    fzl::FdioCaller caller(fbl::move(weak_root_fd));
+    fzl::FdioCaller caller(std::move(weak_root_fd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminUnmount(caller.borrow_channel(), &status), ZX_OK);
     ASSERT_EQ(status, ZX_ERR_ACCESS_DENIED);
     weak_root_fd.reset(caller.release().release());
@@ -320,7 +327,7 @@ bool UmountTestEvil() {
     ASSERT_EQ(mkdirat(weak_root_fd.get(), "subdir", 0666), 0);
     fbl::unique_fd weak_subdir_fd(openat(weak_root_fd.get(), "subdir", O_RDONLY | O_DIRECTORY));
     ASSERT_TRUE(weak_subdir_fd);
-    caller.reset(fbl::move(weak_subdir_fd));
+    caller.reset(std::move(weak_subdir_fd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminUnmount(caller.borrow_channel(), &status), ZX_OK);
     ASSERT_EQ(status, ZX_ERR_ACCESS_DENIED);
 
@@ -332,19 +339,20 @@ bool UmountTestEvil() {
     // that has "O_ADMIN" set.
     ASSERT_EQ(umount(mount_path), ZX_OK);
     ASSERT_TRUE(CheckMountedFs(mount_path, "memfs", strlen("memfs")));
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
     END_TEST;
 }
 
 bool DoubleMountRoot() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/double_mount_root";
 
     BEGIN_TEST;
 
     // Create a ramdisk, mount minfs
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -357,8 +365,9 @@ bool DoubleMountRoot() {
 
     // Create ANOTHER ramdisk, ready to be mounted...
     // Try mounting again on top Minfs' remote root.
-    char ramdisk_path2[PATH_MAX];
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path2), ZX_OK);
+    ramdisk_client_t* ramdisk2;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk2), ZX_OK);
+    const char* ramdisk_path2 = ramdisk_get_path(ramdisk2);
     ASSERT_EQ(mkfs(ramdisk_path2, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
 
@@ -383,18 +392,19 @@ bool DoubleMountRoot() {
 
     ASSERT_EQ(umount(mount_path), ZX_OK);
     ASSERT_TRUE(CheckMountedFs(mount_path, "memfs", strlen("memfs")));
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path2), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk2), 0);
     ASSERT_EQ(rmdir(mount_path), 0);
     END_TEST;
 }
 
 bool MountRemount() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/mount_remount";
 
     BEGIN_TEST;
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -408,17 +418,18 @@ bool MountRemount() {
             ZX_OK);
         ASSERT_EQ(umount(mount_path), ZX_OK);
     }
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
     END_TEST;
 }
 
 bool MountFsck() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/mount_fsck";
 
     BEGIN_TEST;
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -430,17 +441,18 @@ bool MountFsck() {
     // fsck shouldn't require any user input for a newly mkfs'd filesystem
     ASSERT_EQ(fsck(ramdisk_path, DISK_FORMAT_MINFS, &default_fsck_options, launch_stdio_sync),
               ZX_OK);
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
     END_TEST;
 }
 
 bool MountGetDevice() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/mount_get_device";
 
     BEGIN_TEST;
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -452,7 +464,7 @@ bool MountGetDevice() {
     char* device_path = static_cast<char*>(device_buffer);
     zx_status_t status;
     size_t path_len;
-    fzl::FdioCaller caller(fbl::move(mountfd));
+    fzl::FdioCaller caller(std::move(mountfd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminGetDevicePath(caller.borrow_channel(), &status,
                                                      device_path, sizeof(device_buffer),
                                                      &path_len),
@@ -467,7 +479,7 @@ bool MountGetDevice() {
 
     mountfd.reset(open(mount_path, O_RDONLY | O_ADMIN));
     ASSERT_TRUE(mountfd);
-    caller.reset(fbl::move(mountfd));
+    caller.reset(std::move(mountfd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminGetDevicePath(caller.borrow_channel(), &status,
                                                      device_path, sizeof(device_buffer),
                                                      &path_len),
@@ -478,7 +490,7 @@ bool MountGetDevice() {
 
     mountfd.reset(open(mount_path, O_RDONLY));
     ASSERT_TRUE(mountfd);
-    caller.reset(fbl::move(mountfd));
+    caller.reset(std::move(mountfd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminGetDevicePath(caller.borrow_channel(), &status,
                                                      device_path, sizeof(device_buffer),
                                                      &path_len),
@@ -490,14 +502,14 @@ bool MountGetDevice() {
 
     mountfd.reset(open(mount_path, O_RDONLY | O_ADMIN));
     ASSERT_TRUE(mountfd);
-    caller.reset(fbl::move(mountfd));
+    caller.reset(std::move(mountfd));
     ASSERT_EQ(fuchsia_io_DirectoryAdminGetDevicePath(caller.borrow_channel(), &status,
                                                      device_path, sizeof(device_buffer),
                                                      &path_len),
               ZX_OK);
     ASSERT_EQ(status, ZX_ERR_NOT_SUPPORTED);
 
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
     END_TEST;
 }
@@ -539,12 +551,13 @@ bool CreateTestFile(const char* ramdisk_path, const char* mount_path, const char
 
 // Tests that setting read-only on the mount options works as expected.
 bool MountReadonly() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/mount_readonly";
     const char file_name[] = "some_file";
 
     BEGIN_TEST;
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_TRUE(CreateTestFile(ramdisk_path, mount_path, file_name));
 
     int fd = open(ramdisk_path, O_RDWR);
@@ -575,7 +588,7 @@ bool MountReadonly() {
     ASSERT_EQ(close(root_fd), 0);
     ASSERT_EQ(umount(mount_path), ZX_OK);
 
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
 
     END_TEST;
@@ -583,28 +596,26 @@ bool MountReadonly() {
 
 // Test that when a block device claims to be read-only, the filesystem is mounted as read-only.
 bool MountBlockReadonly() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/mount_readonly";
     const char file_name[] = "some_file";
 
     BEGIN_TEST;
 
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_TRUE(CreateTestFile(ramdisk_path, mount_path, file_name));
 
-    int fd = open(ramdisk_path, O_RDWR);
-    ASSERT_GT(fd, 0);
-
     uint32_t flags = BLOCK_FLAG_READONLY;
-    ASSERT_EQ(0, ioctl_ramdisk_set_flags(fd, &flags));
+    ASSERT_EQ(ramdisk_set_flags(ramdisk, flags), ZX_OK);
 
     bool read_only = false;
-    ASSERT_TRUE(MountMinfs(fd, read_only, mount_path));
+    ASSERT_TRUE(MountMinfs(ramdisk_get_block_fd(ramdisk), read_only, mount_path));
 
     // We can't modify the file.
     int root_fd = open(mount_path, O_RDONLY | O_DIRECTORY);
     ASSERT_GE(root_fd, 0);
-    fd = openat(root_fd, file_name, O_CREAT | O_RDWR);
+    int fd = openat(root_fd, file_name, O_CREAT | O_RDWR);
     ASSERT_LT(fd, 0);
 
     // We can open it as read-only.
@@ -614,18 +625,19 @@ bool MountBlockReadonly() {
     ASSERT_EQ(close(root_fd), 0);
     ASSERT_EQ(umount(mount_path), ZX_OK);
 
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
 
     END_TEST;
 }
 
 bool StatfsTest() {
-    char ramdisk_path[PATH_MAX];
     const char* mount_path = "/tmp/mount_unmount";
 
     BEGIN_TEST;
-    ASSERT_EQ(create_ramdisk(512, 1 << 16, ramdisk_path), ZX_OK);
+    ramdisk_client_t* ramdisk = nullptr;
+    ASSERT_EQ(create_ramdisk(512, 1 << 16, &ramdisk), ZX_OK);
+    const char* ramdisk_path = ramdisk_get_path(ramdisk);
     ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options),
               ZX_OK);
     ASSERT_EQ(mkdir(mount_path, 0666), 0);
@@ -652,7 +664,7 @@ bool StatfsTest() {
     ASSERT_GT(stats.f_ffree, 0u);
 
     ASSERT_EQ(umount(mount_path), ZX_OK);
-    ASSERT_EQ(destroy_ramdisk(ramdisk_path), 0);
+    ASSERT_EQ(ramdisk_destroy(ramdisk), 0);
     ASSERT_EQ(unlink(mount_path), 0);
     END_TEST;
 }

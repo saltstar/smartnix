@@ -8,10 +8,24 @@ MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := driver
 
-MODULE_SRCS += $(LOCAL_DIR)/gpio-test.c
+MODULE_SRCS += $(LOCAL_DIR)/gpio-test.cpp
 
-MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/sync
+MODULE_STATIC_LIBS := \
+    system/ulib/ddk \
+    system/ulib/ddktl \
+    system/ulib/fbl \
+    system/ulib/sync \
+    system/ulib/zx \
+    system/ulib/zxcpp \
 
-MODULE_LIBS := system/ulib/driver system/ulib/c system/ulib/zircon
+MODULE_LIBS := \
+    system/ulib/driver \
+    system/ulib/zircon \
+    system/ulib/c \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-gpioimpl \
+    system/banjo/ddk-protocol-platform-device \
 
 include make/module.mk

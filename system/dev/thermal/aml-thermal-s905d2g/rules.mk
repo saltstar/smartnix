@@ -27,10 +27,16 @@ MODULE_STATIC_LIBS := \
     system/ulib/hwreg \
     system/dev/lib/amlogic \
 
-
 MODULE_LIBS := \
     system/ulib/c \
     system/ulib/driver \
     system/ulib/zircon \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-clk \
+    system/banjo/ddk-protocol-i2c \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-platform-device \
+    system/banjo/ddk-protocol-scpi \
 
 include make/module.mk

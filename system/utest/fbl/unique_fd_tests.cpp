@@ -5,8 +5,9 @@
 #include <fbl/unique_fd.h>
 
 #include <fbl/algorithm.h>
-#include <fbl/type_support.h>
 #include <unittest/unittest.h>
+
+#include <utility>
 
 namespace {
 
@@ -128,8 +129,8 @@ bool move_test() {
         EXPECT_TRUE(verify_pipes_open(in.get(), out.get()));
         EXPECT_TRUE(verify_pipes_closed(in2.get(), out2.get()));
 
-        in2 = fbl::move(in);
-        out2 = fbl::move(out);
+        in2 = std::move(in);
+        out2 = std::move(out);
 
         EXPECT_TRUE(verify_pipes_closed(in.get(), out.get()));
         EXPECT_TRUE(verify_pipes_open(in2.get(), out2.get()));
@@ -145,8 +146,8 @@ bool move_test() {
 
         EXPECT_TRUE(verify_pipes_open(in.get(), out.get()));
 
-        fbl::unique_fd in2 = fbl::move(in);
-        fbl::unique_fd out2 = fbl::move(out);
+        fbl::unique_fd in2 = std::move(in);
+        fbl::unique_fd out2 = std::move(out);
 
         EXPECT_TRUE(verify_pipes_closed(in.get(), out.get()));
         EXPECT_TRUE(verify_pipes_open(in2.get(), out2.get()));
@@ -190,6 +191,28 @@ bool reset_test() {
     END_TEST;
 }
 
+bool duplicate_test() {
+    BEGIN_TEST;
+    int pipes[2];
+    EXPECT_EQ(pipe(pipes), 0);
+
+    fbl::unique_fd in(pipes[1]);
+    fbl::unique_fd out(pipes[0]);
+    EXPECT_TRUE(verify_pipes_open(in.get(), out.get()));
+    {
+        fbl::unique_fd in2 = in.duplicate();
+        fbl::unique_fd out2 = out.duplicate();
+        EXPECT_TRUE(verify_pipes_open(in2.get(), out2.get()));
+
+        EXPECT_TRUE(verify_pipes_open(in2.get(), out.get()));
+        EXPECT_TRUE(verify_pipes_open(in.get(), out2.get()));
+        EXPECT_TRUE(verify_pipes_open(in.get(), out.get()));
+    }
+    EXPECT_TRUE(verify_pipes_open(in.get(), out.get()));
+
+    END_TEST;
+}
+
 } // namespace
 
 BEGIN_TEST_CASE(unique_fd_tests)
@@ -199,4 +222,5 @@ RUN_TEST(scoping_test)
 RUN_TEST(swap_test)
 RUN_TEST(move_test)
 RUN_TEST(reset_test)
+RUN_TEST(duplicate_test)
 END_TEST_CASE(unique_fd_tests)

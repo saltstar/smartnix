@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+extern int some_function(void);
+extern int some_variable;
 // RegionAllocator
 //
 // == Overview ==
@@ -239,7 +241,14 @@ __END_CDECLS
 #include <fbl/ref_counted.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/slab_allocator.h>
+
+#ifdef _KERNEL
+#include <ktl/unique_ptr.h>
+#else
 #include <fbl/unique_ptr.h>
+#endif
+
+#include <utility>
 
 // C++ API
 class RegionAllocator {
@@ -248,10 +257,16 @@ public:
     using RegionSlabTraits = fbl::ManualDeleteSlabAllocatorTraits<Region*, REGION_POOL_SLAB_SIZE>;
 
     class Region : public ralloc_region_t,
-                   public fbl::SlabAllocated<RegionSlabTraits>,
-                   public fbl::Recyclable<Region> {
+                   public fbl::SlabAllocated<RegionSlabTraits> {
+    private:
+        struct RegionDeleter;
+
     public:
-        using UPtr = fbl::unique_ptr<const Region>;
+#ifdef _KERNEL
+        using UPtr = ktl::unique_ptr<const Region, RegionDeleter>;
+#else
+        using UPtr = std::unique_ptr<const Region, RegionDeleter>;
+#endif
 
     private:
         using WAVLTreeNodeState   = fbl::WAVLTreeNodeState<Region*>;
@@ -277,6 +292,32 @@ public:
             }
         };
 
+        // When a user's unique_ptr<> reference to this region goes out of
+        // scope, Don't actually delete the region.  Instead, recycle it back
+        // into the set of available regions.  The memory for the bookkeeping
+        // will eventually be deleted when it merges with another available
+        // region, or when the allocator finally shuts down.
+        struct RegionDeleter {
+            void operator()(const Region* region) const noexcept {
+                // Note: The external std::unique_ptrs that we hand out to our
+                // users are deliberately limited to being const Region*s.  For
+                // our users, regions are read only constructs; they check them
+                // out from the allocator and can read the bookkeeping values,
+                // but not change them.
+                //
+                // When the region is finally returned to our pool via the
+                // deleter, the std::unique_ptr will hand it to the deleter
+                // class as a const pointer (it has no choice).  We need to cast
+                // that const away here.  When the region re-joins the pool, its
+                // bookkeeping information (which is logically owned by the
+                // pool) needs to be mutable in order to merge with other
+                // regions in the pool.
+                ZX_DEBUG_ASSERT(region->owner_ != nullptr);
+                Region* r = const_cast<Region*>(region);
+                r->owner_->ReleaseRegion(r);
+            }
+        };
+
         using WAVLTreeSortByBase = fbl::WAVLTree<uint64_t, Region*,
                                                   KeyTraitsSortByBase,
                                                   WAVLTreeNodeTraitsSortByBase>;
@@ -290,30 +331,18 @@ public:
         // So many friends!  I'm the most popular class in the build!!
         friend class  RegionAllocator;
         friend class  RegionPool;
-        friend class  fbl::unique_ptr<const Region>;
-        friend class  fbl::Recyclable<Region>;
         friend        KeyTraitsSortByBase;
         friend struct KeyTraitsSortBySize;
         friend struct WAVLTreeNodeTraitsSortByBase;
         friend struct WAVLTreeNodeTraitsSortBySize;
+        friend class  fbl::SlabAllocator<RegionSlabTraits>;
 
         // Regions can only be placement new'ed by the RegionPool slab
         // allocator.  They cannot be copied, assigned, or deleted.  Externally,
         // they should only be handled by their unique_ptr<>s.
         explicit Region(RegionAllocator* owner) : owner_(owner) { }
-        friend class  fbl::SlabAllocator<RegionSlabTraits>;
+        ~Region() = default;
         DISALLOW_COPY_ASSIGN_AND_MOVE(Region);
-
-        // When a user's unique_ptr<> reference to this region goes out of
-        // scope, we will be "recycled".  Don't actually delete the region.
-        // Instead, recycle it back into the set of available regions.  The
-        // memory for the bookkeeping will eventually be deleted when it merges
-        // with another available region, or when the allocator finally shuts
-        // down.
-        void fbl_recycle() {
-            ZX_DEBUG_ASSERT(owner_ != nullptr);
-            owner_->ReleaseRegion(this);
-        }
 
         RegionAllocator* owner_;
         WAVLTreeNodeState ns_tree_sort_by_base_;
@@ -347,7 +376,7 @@ public:
     explicit RegionAllocator(const RegionPool::RefPtr& region_pool)
         : region_pool_(region_pool) { }
     explicit RegionAllocator(RegionPool::RefPtr&& region_pool)
-        : region_pool_(fbl::move(region_pool)) { }
+        : region_pool_(std::move(region_pool)) { }
     RegionAllocator(const RegionAllocator& c) = delete;
     RegionAllocator& operator=(const RegionAllocator& c) = delete;
 
@@ -360,7 +389,7 @@ public:
     // assigned and currently has allocations from this pool.
     zx_status_t SetRegionPool(const RegionPool::RefPtr& region_pool) __TA_EXCLUDES(alloc_lock_);
     zx_status_t SetRegionPool(RegionPool::RefPtr&& region_pool) __TA_EXCLUDES(alloc_lock_) {
-        RegionPool::RefPtr ref(fbl::move(region_pool));
+        RegionPool::RefPtr ref(std::move(region_pool));
         return SetRegionPool(ref);
     }
 
@@ -484,14 +513,14 @@ public:
     // *** It is absolutely required that the user callback not call into any other
     // RegionAllocator public APIs, and should likely not acquire any locks of any
     // kind. This method cannot protect against deadlocks and lock inversions that
-    // are possible by acquriring the allocation lock before calling the user provided
+    // are possible by acquiring the allocation lock before calling the user provided
     // callback.
     template<typename WalkCallback>
     void WalkAllocatedRegions(WalkCallback&& cb) const
         __TA_EXCLUDES(alloc_lock_) {
         fbl::AutoLock alloc_lock(&alloc_lock_);
         for (const auto& region : allocated_regions_by_base_) {
-            if (!fbl::forward<WalkCallback>(cb)(&region)) {
+            if (!std::forward<WalkCallback>(cb)(&region)) {
                 break;
             }
         }
@@ -516,7 +545,7 @@ private:
      *
      * alloc_lock_ protects all of the bookkeeping members of the
      * RegionAllocator.  This includes the allocated index, the available
-     * indicies (by base and by size) and the region pool.
+     * indices (by base and by size) and the region pool.
      *
      * The alloc_lock_ may be held while calling into a RegionAllocator's
      * assigned RegionPool, but code from the RegionPool will never call into

@@ -1,18 +1,19 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <zircon/device/block.h>
+#include <atomic>
+#include <new>
+#include <utility>
+
 #include <ddk/protocol/block.h>
-#include <zircon/thread_annotations.h>
-#include <zircon/types.h>
-
-#ifdef __cplusplus
-
-#include <fbl/atomic.h>
+#include <ddktl/device.h>
+#include <ddktl/protocol/block.h>
 #include <fbl/intrusive_double_list.h>
 #include <fbl/intrusive_wavl_tree.h>
 #include <fbl/mutex.h>
@@ -20,8 +21,11 @@
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_ptr.h>
 #include <lib/fzl/fifo.h>
-#include <lib/zx/vmo.h>
 #include <lib/sync/completion.h>
+#include <lib/zx/vmo.h>
+#include <zircon/device/block.h>
+#include <zircon/thread_annotations.h>
+#include <zircon/types.h>
 
 #include "txn-group.h"
 
@@ -131,7 +135,7 @@ public:
         // Placement constructor, followed by explicit destructor in ~BlockMsg();
         new (&bop->extra) block_msg_extra_t();
         BlockMsg msg(bop);
-        *out = fbl::move(msg);
+        *out = std::move(msg);
         return ZX_OK;
     }
 
@@ -143,8 +147,9 @@ class BlockServer {
 public:
     // Creates a new BlockServer.
     static zx_status_t Create(
-        block_impl_protocol_t* bp, fzl::fifo<block_fifo_request_t,
-                              block_fifo_response_t>* fifo_out, BlockServer** out);
+        ddk::BlockProtocolClient* bp,
+        fzl::fifo<block_fifo_request_t, block_fifo_response_t>* fifo_out,
+        BlockServer** out);
 
     // Starts the BlockServer using the current thread
     zx_status_t Serve() TA_EXCL(server_lock_);
@@ -168,10 +173,13 @@ public:
     ~BlockServer();
 private:
     DISALLOW_COPY_ASSIGN_AND_MOVE(BlockServer);
-    BlockServer(block_impl_protocol_t* bp);
+    BlockServer(ddk::BlockProtocolClient* bp);
 
     // Helper for processing a single message read from the FIFO.
     void ProcessRequest(block_fifo_request_t* request);
+    zx_status_t ProcessReadWriteRequest(block_fifo_request_t* request) TA_EXCL(server_lock_);
+    zx_status_t ProcessCloseVmoRequest(block_fifo_request_t* request) TA_EXCL(server_lock_);
+    zx_status_t ProcessFlushRequest(block_fifo_request_t* request);
 
     // Helper for the server to react to a signal that a barrier
     // operation has completed. Unsets the local "waiting for barrier"
@@ -193,44 +201,18 @@ private:
 
     fzl::fifo<block_fifo_response_t, block_fifo_request_t> fifo_;
     block_info_t info_;
-    block_impl_protocol_t* bp_;
+    ddk::BlockProtocolClient* bp_;
     size_t block_op_size_;
 
     // BARRIER_AFTER is implemented by sticking "BARRIER_BEFORE" on the
     // next operation that arrives.
     bool deferred_barrier_before_ = false;
     BlockMsgQueue in_queue_;
-    fbl::atomic<size_t> pending_count_;
-    fbl::atomic<bool> barrier_in_progress_;
+    std::atomic<size_t> pending_count_;
+    std::atomic<bool> barrier_in_progress_;
     TransactionGroup groups_[MAX_TXN_GROUP_COUNT];
 
     fbl::Mutex server_lock_;
     fbl::WAVLTree<vmoid_t, fbl::RefPtr<IoBuffer>> tree_ TA_GUARDED(server_lock_);
     vmoid_t last_id_ TA_GUARDED(server_lock_);
 };
-
-#else
-
-typedef struct IoBuffer IoBuffer;
-typedef struct BlockServer BlockServer;
-
-#endif  // ifdef __cplusplus
-
-__BEGIN_CDECLS
-
-// Allocate a new blockserver + FIFO combo
-zx_status_t blockserver_create(block_impl_protocol_t* bp, zx_handle_t* fifo_out, BlockServer** out);
-
-// Shut down the blockserver. It will stop serving requests.
-void blockserver_shutdown(BlockServer* bs);
-
-// Free the memory allocated to the blockserver.
-void blockserver_free(BlockServer* bs);
-
-// Use the current thread to block on incoming FIFO requests.
-zx_status_t blockserver_serve(BlockServer* bs);
-
-// Attach an IO buffer to the Block Server
-zx_status_t blockserver_attach_vmo(BlockServer* bs, zx_handle_t vmo, vmoid_t* out);
-
-__END_CDECLS

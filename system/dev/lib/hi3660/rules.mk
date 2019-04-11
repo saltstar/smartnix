@@ -14,6 +14,7 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/hi3660-usb.c \
     $(LOCAL_DIR)/hi3660-i2c.c \
     $(LOCAL_DIR)/hi3660-dsi.c \
+    $(LOCAL_DIR)/hi3660-ufs.c \
 
 MODULE_STATIC_LIBS := \
     system/ulib/ddk \
@@ -24,5 +25,10 @@ MODULE_LIBS := \
     system/ulib/driver \
     system/ulib/c \
     system/ulib/zircon \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-gpioimpl \
+    system/banjo/ddk-protocol-platform-device \
 
 include make/module.mk

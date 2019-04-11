@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #define _POSIX_C_SOURCE 200809L
 #define _GNU_SOURCE
@@ -32,7 +35,7 @@
 #define ANSI_MAGENTA "\x1b[35m"
 #define ANSI_CYAN "\x1b[36m"
 #define ANSI_RESET "\x1b[0m"
-#define ANSI_LINESTART "\33[2K\r"
+#define ANSI_CLEARLINE "\33[2K\r"
 
 #define MAX_FVM_IMAGES 4
 
@@ -54,6 +57,7 @@ static size_t total_file_size;
 static bool file_info_printed;
 static int progress_reported;
 static int packets_sent;
+static char filename_in_flight[PATH_MAX];
 static struct timeval start_time, end_time;
 static bool is_redirected;
 static const char spinner[] = {'|', '/', '-', '\\'};
@@ -77,37 +81,25 @@ char* sockaddr_str(struct sockaddr_in6* addr) {
     return buf;
 }
 
-static void print_file_info(const char* name, size_t size) {
-    size_t prefix_len = strlen(NB_FILENAME_PREFIX);
-    const char* base_name;
-    if (!strncmp(name, NB_FILENAME_PREFIX, prefix_len)) {
-        base_name = &name[prefix_len];
-    } else {
-        base_name = name;
-    }
-
-    char path1[PATH_MAX]; // dirname(), basename() modify in situ.
-    char path2[PATH_MAX];
-    snprintf(path1, PATH_MAX, "%s", name);
-    snprintf(path2, PATH_MAX, "%s", name);
-
-    log("Transfer starts   [%5.1f MB]   %s/%s%s%s (%zu bytes)",
-        (float)size / 1024.0 / 1024.0,
-        dirname(path1), ANSI(GREEN), basename(path2), ANSI(RESET), size);
-}
-
 void initialize_status(const char* name, size_t size) {
     total_file_size = size;
     progress_reported = 0;
     packets_sent = 0;
-
-    if (!file_info_printed) {
-        print_file_info(name, size);
-        file_info_printed = true;
-    }
+    snprintf(filename_in_flight, sizeof(filename_in_flight),
+             "%s%s%s", ANSI(GREEN), name, ANSI(RESET));
 }
 
 void update_status(size_t bytes_so_far) {
+    char progress_str[PATH_MAX];
+    size_t offset = 0;
+
+#define UPDATE_LOG(args...)                                                     \
+    do {                                                                        \
+        if (offset < PATH_MAX) {                                                \
+            offset += snprintf(progress_str + offset, PATH_MAX - offset, args); \
+        }                                                                       \
+    } while (false)
+
     packets_sent++;
 
     bool is_last_piece = (bytes_so_far == total_file_size);
@@ -124,28 +116,45 @@ void update_status(size_t bytes_so_far) {
     } else {
         if (packets_sent > 1024 || is_last_piece) {
             packets_sent = 0;
-            float bw = 0;
             static int spin = 0;
+
+            size_t divider = (total_file_size > 0) ? total_file_size : 1;
+            UPDATE_LOG("[%c] %4.01f%% of ", spinner[(spin++) % 4],
+                       100.0 * (float)bytes_so_far / (float)divider);
+            if (total_file_size < 1024) {
+                UPDATE_LOG(" %3zu.0  B", total_file_size);
+            } else if (total_file_size < 1024 * 1024) {
+                UPDATE_LOG(" %5.1f KB", (float)total_file_size / 1024.0);
+            } else if (total_file_size < 1024 * 1024 * 1024) {
+                UPDATE_LOG(" %5.1f MB", (float)total_file_size / 1024.0 / 1024.0);
+            } else {
+                UPDATE_LOG(" %5.1f GB", (float)total_file_size / 1024.0 / 1024.0 / 1024.0);
+            }
 
             struct timeval now;
             gettimeofday(&now, NULL);
             int64_t sec = (int64_t)(now.tv_sec - start_time.tv_sec);
             int64_t usec = (int64_t)(now.tv_usec - start_time.tv_usec);
             int64_t elapsed_usec = sec * 1000000 + usec;
-            bw = (float)bytes_so_far * 1000000 / (1024.0 * 1024.0 * ((float)elapsed_usec));
-
-            fprintf(stderr, "%s", ANSI_LINESTART);
-            if (total_file_size > 0) {
-                fprintf(stderr, "\t%c %.01f%%", spinner[(spin++) % 4],
-                        100.0 * (float)bytes_so_far / (float)total_file_size);
+            float bytes_in_sec;
+            bytes_in_sec = (float)bytes_so_far * 1000000 / ((float)elapsed_usec);
+            if (bytes_in_sec < 1024) {
+                UPDATE_LOG("  %5.1f  B/s", bytes_in_sec);
+            } else if (bytes_in_sec < 1024 * 1024) {
+                UPDATE_LOG("  %5.1f KB/s", bytes_in_sec / 1024.0);
+            } else if (bytes_in_sec < 1024 * 1024 * 1024) {
+                UPDATE_LOG("  %5.1f MB/s", bytes_in_sec / 1024.0 / 1024.0);
             } else {
-                fprintf(stderr, "\t%c", spinner[(spin++) % 4]);
+                UPDATE_LOG("  %5.1f GB/s", bytes_in_sec / 1024.0 / 1024.0 / 1024.0);
             }
-            fprintf(stderr, "\t %.01fMB/s", bw);
+
             if (is_last_piece) {
-                fprintf(stderr, "\tTook %" PRId64 ".%" PRId64 " sec",
-                        elapsed_usec / 1000000, elapsed_usec % 1000000);
+                UPDATE_LOG(".");
+            } else {
+                UPDATE_LOG(" ");
             }
+            UPDATE_LOG("  %s", filename_in_flight);
+            fprintf(stderr, "%s%s", ANSI_CLEARLINE, progress_str);
         }
     }
 }
@@ -192,6 +201,7 @@ void usage(void) {
             "             (ignored with --tftp)\n"
             "  -n         only boot device with this nodename\n"
             "  -w <sz>    tftp window size (default=%d, ignored with --netboot)\n"
+            "  --boot <file>            use the supplied file as a kernel\n"
             "  --fvm <file>             use the supplied file as a sparse FVM image (up to 4 times)\n"
             "  --bootloader <file>      use the supplied file as a BOOTLOADER image\n"
             "  --efi <file>             use the supplied file as an EFI image\n"
@@ -199,7 +209,9 @@ void usage(void) {
             "  --zircona <file>         use the supplied file as a ZIRCON-A ZBI\n"
             "  --zirconb <file>         use the supplied file as a ZIRCON-B ZBI\n"
             "  --zirconr <file>         use the supplied file as a ZIRCON-R ZBI\n"
-            "  --authorized_keys <file> use the supplied file as an authorized_keys file\n"
+            "  --vbmetaa <file>         use the supplied file as a AVB vbmeta_a image\n"
+            "  --vbmetab <file>         use the supplied file as a AVB vbmeta_b image\n"
+            "  --authorized-keys <file> use the supplied file as an authorized_keys file\n"
             "  --netboot    use the netboot protocol\n"
             "  --tftp       use the tftp protocol (default)\n"
             "  --nocolor    disable ANSI color (false)\n",
@@ -291,6 +303,8 @@ int main(int argc, char** argv) {
     const char* zircona_image = NULL;
     const char* zirconb_image = NULL;
     const char* zirconr_image = NULL;
+    const char* vbmetaa_image = NULL;
+    const char* vbmetab_image = NULL;
     const char* authorized_keys = NULL;
     const char* fvm_images[MAX_FVM_IMAGES] = {NULL, NULL, NULL, NULL};
     const char* kernel_fn = NULL;
@@ -375,15 +389,40 @@ int main(int argc, char** argv) {
                 return -1;
             }
             zirconr_image = argv[1];
-        } else if (!strcmp(argv[1], "--authorized_keys")) {
+        } else if (!strcmp(argv[1], "--vbmetaa")) {
+            argc--;
+            argv++;
+            if (argc <= 1) {
+                fprintf(stderr, "'--vbmetaa' option requires an argument (vbmeta_a image)\n");
+                return -1;
+            }
+            vbmetaa_image = argv[1];
+        } else if (!strcmp(argv[1], "--vbmetab")) {
+            argc--;
+            argv++;
+            if (argc <= 1) {
+                fprintf(stderr, "'--vbmetab' option requires an argument (vbmeta_a image)\n");
+                return -1;
+            }
+            vbmetab_image = argv[1];
+        } else if (!strcmp(argv[1], "--authorized-keys")) {
             argc--;
             argv++;
             if (argc <= 1) {
                 fprintf(stderr,
-                        "'--authorized_keys' option requires an argument (authorized_keys)\n");
+                        "'--authorized-keys' option requires an argument (authorized_keys)\n");
                 return -1;
             }
             authorized_keys = argv[1];
+        } else if (!strcmp(argv[1], "--boot")) {
+            argc--;
+            argv++;
+            if (argc <= 1) {
+                fprintf(stderr,
+                        "'--boot' option requires an argument (a kernel image)\n");
+                return -1;
+            }
+            kernel_fn = argv[1];
         } else if (!strcmp(argv[1], "-1")) {
             once = 1;
         } else if (!strcmp(argv[1], "-b")) {
@@ -478,7 +517,7 @@ int main(int argc, char** argv) {
         argv++;
     }
     if (!kernel_fn && !bootloader_image && !efi_image && !kernc_image && !zircona_image &&
-        !zirconb_image && !zirconr_image && !fvm_images[0]) {
+        !zirconb_image && !zirconr_image && !vbmetaa_image && !vbmetab_image && !fvm_images[0]) {
         usage();
     }
     if (!nodename) {
@@ -547,7 +586,7 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        log("got beacon from %s", sockaddr_str(&ra));
+        log("Received request from %s", sockaddr_str(&ra));
 
         // ensure any payload is null-terminated
         buf[r] = 0;
@@ -577,12 +616,13 @@ int main(int argc, char** argv) {
         }
 
         if (strcmp(BOOTLOADER_VERSION, adv_version)) {
-            log("%sWARNING: Bootserver version '%s' != remote bootloader '%s'."
-                " Device will not be serviced. Please Upgrade%s",
+            log("%sWARNING: Bootserver version '%s' != remote Zedboot version '%s'."
+                " Device will not be serviced. Please upgrade Zedboot.%s",
                 ANSI(RED), BOOTLOADER_VERSION, adv_version, ANSI(RESET));
             continue;
         }
 
+        log("Transfer starts");
         if (cmdline[0]) {
             status = xfer(&ra, "(cmdline)", cmdline);
         } else {
@@ -616,6 +656,12 @@ int main(int argc, char** argv) {
         if (status == 0 && zirconr_image) {
             status = xfer(&ra, zirconr_image, NB_ZIRCONR_FILENAME);
         }
+        if (status == 0 && vbmetaa_image) {
+            status = xfer(&ra, vbmetaa_image, NB_VBMETAA_FILENAME);
+        }
+        if (status == 0 && vbmetab_image) {
+            status = xfer(&ra, vbmetab_image, NB_VBMETAB_FILENAME);
+        }
         if (status == 0 && authorized_keys) {
             status = xfer(&ra, authorized_keys, NB_SSHAUTH_FILENAME);
         }
@@ -623,11 +669,14 @@ int main(int argc, char** argv) {
             status = xfer(&ra, kernel_fn, NB_KERNEL_FILENAME);
         }
         if (status == 0) {
+            log("Transfer ends successfully.");
             if (kernel_fn) {
                 send_boot_command(&ra);
             } else {
                 send_reboot_command(&ra);
             }
+        } else {
+            log("Transfer ends incompletely.");
         }
         if (once) {
             close(s);

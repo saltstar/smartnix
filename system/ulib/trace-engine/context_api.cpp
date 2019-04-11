@@ -1,11 +1,14 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <string.h>
 
+#include <atomic>
 #include <zircon/compiler.h>
 #include <zircon/syscalls.h>
 
 #include <fbl/algorithm.h>
-#include <fbl/atomic.h>
 #include <fbl/intrusive_hash_table.h>
 #include <fbl/unique_ptr.h>
 #include <lib/zx/process.h>
@@ -18,9 +21,16 @@
 namespace trace {
 namespace {
 
+// Zircon defines all koids with bit 63 set as being artificial.
+constexpr uint64_t kArtificialKoidFlag = 1ul << 63;
+
+zx_koid_t MakeArtificialKoid(trace_vthread_id_t id) {
+    return id | kArtificialKoidFlag;
+}
+
 // The cached koid of this process.
 // Initialized on first use.
-fbl::atomic<uint64_t> g_process_koid{ZX_KOID_INVALID};
+std::atomic<uint64_t> g_process_koid{ZX_KOID_INVALID};
 
 // This thread's koid.
 // Initialized on first use.
@@ -34,10 +44,10 @@ zx_koid_t GetKoid(zx_handle_t handle) {
 }
 
 zx_koid_t GetCurrentProcessKoid() {
-    zx_koid_t koid = g_process_koid.load(fbl::memory_order_relaxed);
+    zx_koid_t koid = g_process_koid.load(std::memory_order_relaxed);
     if (unlikely(koid == ZX_KOID_INVALID)) {
         koid = GetKoid(zx_process_self());
-        g_process_koid.store(koid, fbl::memory_order_relaxed); // idempotent
+        g_process_koid.store(koid, std::memory_order_relaxed); // idempotent
     }
     return koid;
 }
@@ -105,7 +115,10 @@ struct ThreadEntry : public fbl::SinglyLinkedListable<ThreadEntry*> {
 // duplicate registration of strings across threads.
 struct ContextCache {
     ContextCache() = default;
-    ~ContextCache() { string_table.clear(); }
+    ~ContextCache() {
+        string_table.clear();
+        thread_table.clear();
+    }
 
     // The generation number of the context which last modified this state.
     uint32_t generation{0u};
@@ -554,13 +567,13 @@ bool RegisterString(trace_context_t* context,
 } // namespace
 } // namespace trace
 
-bool trace_context_is_category_enabled(
+EXPORT bool trace_context_is_category_enabled(
     trace_context_t* context,
     const char* category_literal) {
     return trace::RegisterString(context, category_literal, true, nullptr);
 }
 
-void trace_context_register_string_copy(
+EXPORT_NO_DDK void trace_context_register_string_copy(
     trace_context_t* context,
     const char* string, size_t length,
     trace_string_ref_t* out_ref) {
@@ -581,7 +594,7 @@ void trace_context_register_string_copy(
     }
 }
 
-void trace_context_register_string_literal(
+EXPORT void trace_context_register_string_literal(
     trace_context_t* context,
     const char* string_literal,
     trace_string_ref_t* out_ref) {
@@ -589,14 +602,14 @@ void trace_context_register_string_literal(
     ZX_DEBUG_ASSERT(result);
 }
 
-bool trace_context_register_category_literal(
+EXPORT_NO_DDK bool trace_context_register_category_literal(
     trace_context_t* context,
     const char* category_literal,
     trace_string_ref_t* out_ref) {
     return trace::RegisterString(context, category_literal, true, out_ref);
 }
 
-void trace_context_register_current_thread(
+EXPORT void trace_context_register_current_thread(
     trace_context_t* context,
     trace_thread_ref_t* out_ref) {
     trace::ContextCache* cache = trace::GetCurrentContextCache(context->generation());
@@ -640,7 +653,7 @@ void trace_context_register_current_thread(
                                   out_ref);
 }
 
-void trace_context_register_thread(
+EXPORT_NO_DDK void trace_context_register_thread(
     trace_context_t* context,
     zx_koid_t process_koid, zx_koid_t thread_koid,
     trace_thread_ref_t* out_ref) {
@@ -659,17 +672,13 @@ void trace_context_register_thread(
     }
 }
 
-void trace_context_register_vthread(
+EXPORT void trace_context_register_vthread(
     trace_context_t* context,
     zx_koid_t process_koid,
     const char* vthread_literal,
     trace_vthread_id_t vthread_id,
     trace_thread_ref_t* out_ref) {
-    // This flag is used to avoid collisions with regular threads. This is not
-    // guaranteed to work but is sufficient until we have koid range that can
-    // never be used by regular threads.
-    constexpr zx_koid_t kVirtualThreadIdFlag = 0x100000000;
-    zx_koid_t vthread_koid = kVirtualThreadIdFlag | vthread_id;
+    zx_koid_t vthread_koid = trace::MakeArtificialKoid(vthread_id);
 
     trace::ThreadEntry* entry = trace::CacheThreadEntry(context->generation(), vthread_koid);
     if (likely(entry && !trace_is_unknown_thread_ref(&entry->thread_ref))) {
@@ -707,7 +716,7 @@ void trace_context_register_vthread(
     *out_ref = trace_make_inline_thread_ref(process_koid, vthread_koid);
 }
 
-void* trace_context_begin_write_blob_record(
+EXPORT void* trace_context_begin_write_blob_record(
     trace_context_t* context,
     trace_blob_type_t type,
     const trace_string_ref_t* name_ref,
@@ -740,7 +749,7 @@ void* trace_context_begin_write_blob_record(
     }
 }
 
-void trace_context_write_blob_record(
+EXPORT void trace_context_write_blob_record(
     trace_context_t* context,
     trace_blob_type_t type,
     const trace_string_ref_t* name_ref,
@@ -775,7 +784,7 @@ void trace_context_write_kernel_object_record(
     }
 }
 
-void trace_context_write_kernel_object_record_for_handle(
+EXPORT void trace_context_write_kernel_object_record_for_handle(
     trace_context_t* context,
     zx_handle_t handle,
     const trace_arg_t* args, size_t num_args) {
@@ -807,7 +816,7 @@ void trace_context_write_kernel_object_record_for_handle(
     }
 }
 
-void trace_context_write_process_info_record(
+EXPORT_NO_DDK void trace_context_write_process_info_record(
     trace_context_t* context,
     zx_koid_t process_koid,
     const trace_string_ref_t* process_name_ref) {
@@ -816,7 +825,7 @@ void trace_context_write_process_info_record(
                                              process_name_ref, nullptr, 0u);
 }
 
-void trace_context_write_thread_info_record(
+EXPORT_NO_DDK void trace_context_write_thread_info_record(
     trace_context_t* context,
     zx_koid_t process_koid,
     zx_koid_t thread_koid,
@@ -832,7 +841,7 @@ void trace_context_write_thread_info_record(
                                              thread_name_ref, &arg, 1u);
 }
 
-void trace_context_write_context_switch_record(
+EXPORT_NO_DDK void trace_context_write_context_switch_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     trace_cpu_number_t cpu_number,
@@ -866,7 +875,7 @@ void trace_context_write_context_switch_record(
     }
 }
 
-void trace_context_write_log_record(
+EXPORT_NO_DDK void trace_context_write_log_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -893,7 +902,7 @@ void trace_context_write_log_record(
     }
 }
 
-void trace_context_write_instant_event_record(
+EXPORT void trace_context_write_instant_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -911,7 +920,7 @@ void trace_context_write_instant_event_record(
     }
 }
 
-void trace_context_write_counter_event_record(
+EXPORT void trace_context_write_counter_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -929,7 +938,7 @@ void trace_context_write_counter_event_record(
     }
 }
 
-void trace_context_write_duration_event_record(
+EXPORT void trace_context_write_duration_event_record(
     trace_context_t* context,
     trace_ticks_t start_time,
     trace_ticks_t end_time,
@@ -937,17 +946,17 @@ void trace_context_write_duration_event_record(
     const trace_string_ref_t* category_ref,
     const trace_string_ref_t* name_ref,
     const trace_arg_t* args, size_t num_args) {
-    trace_context_write_duration_begin_event_record(
-        context, start_time,
+    const size_t content_size = trace::WordsToBytes(1);
+    trace::Payload payload = trace::WriteEventRecordBase(
+        context, trace::EventType::kDurationComplete, start_time,
         thread_ref, category_ref, name_ref,
-        args, num_args);
-    trace_context_write_duration_end_event_record(
-        context, end_time,
-        thread_ref, category_ref, name_ref,
-        nullptr, 0u);
+        args, num_args, content_size);
+    if (payload) {
+        payload.WriteUint64(end_time);
+    }
 }
 
-void trace_context_write_duration_begin_event_record(
+EXPORT void trace_context_write_duration_begin_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -960,7 +969,7 @@ void trace_context_write_duration_begin_event_record(
         args, num_args, 0u);
 }
 
-void trace_context_write_duration_end_event_record(
+EXPORT void trace_context_write_duration_end_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -973,7 +982,7 @@ void trace_context_write_duration_end_event_record(
         args, num_args, 0u);
 }
 
-void trace_context_write_async_begin_event_record(
+EXPORT void trace_context_write_async_begin_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -991,7 +1000,7 @@ void trace_context_write_async_begin_event_record(
     }
 }
 
-void trace_context_write_async_instant_event_record(
+EXPORT void trace_context_write_async_instant_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -1009,7 +1018,7 @@ void trace_context_write_async_instant_event_record(
     }
 }
 
-void trace_context_write_async_end_event_record(
+EXPORT void trace_context_write_async_end_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -1027,7 +1036,7 @@ void trace_context_write_async_end_event_record(
     }
 }
 
-void trace_context_write_flow_begin_event_record(
+EXPORT void trace_context_write_flow_begin_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -1045,7 +1054,7 @@ void trace_context_write_flow_begin_event_record(
     }
 }
 
-void trace_context_write_flow_step_event_record(
+EXPORT void trace_context_write_flow_step_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -1063,7 +1072,7 @@ void trace_context_write_flow_step_event_record(
     }
 }
 
-void trace_context_write_flow_end_event_record(
+EXPORT void trace_context_write_flow_end_event_record(
     trace_context_t* context,
     trace_ticks_t event_time,
     const trace_thread_ref_t* thread_ref,
@@ -1082,7 +1091,7 @@ void trace_context_write_flow_end_event_record(
 }
 
 // TODO(dje): Move data to header?
-void trace_context_write_initialization_record(
+EXPORT_NO_DDK void trace_context_write_initialization_record(
     trace_context_t* context,
     zx_ticks_t ticks_per_second) {
     const size_t record_size = sizeof(trace::RecordHeader) +
@@ -1095,7 +1104,7 @@ void trace_context_write_initialization_record(
     }
 }
 
-void trace_context_write_string_record(
+EXPORT_NO_DDK void trace_context_write_string_record(
     trace_context_t* context,
     trace_string_index_t index, const char* string, size_t length) {
     if (unlikely(!trace::WriteStringRecord(context, false, index,
@@ -1104,7 +1113,7 @@ void trace_context_write_string_record(
     }
 }
 
-void trace_context_write_thread_record(
+EXPORT_NO_DDK void trace_context_write_thread_record(
     trace_context_t* context,
     trace_thread_index_t index,
     zx_koid_t process_koid,
@@ -1115,11 +1124,11 @@ void trace_context_write_thread_record(
     }
 }
 
-void* trace_context_alloc_record(trace_context_t* context, size_t num_bytes) {
+EXPORT_NO_DDK void* trace_context_alloc_record(trace_context_t* context, size_t num_bytes) {
     return context->AllocRecord(num_bytes);
 }
 
-void trace_context_snapshot_buffer_header(
+EXPORT_NO_DDK void trace_context_snapshot_buffer_header(
     trace_prolonged_context_t* context,
     ::trace::internal::trace_buffer_header* header) {
     auto ctx = reinterpret_cast<trace_context_t*>(context);

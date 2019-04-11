@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSCALLS_OBJECT_H_
 #define ZIRCON_SYSCALLS_OBJECT_H_
@@ -158,18 +161,32 @@ typedef struct zx_info_socket {
     // The options passed to zx_socket_create().
     uint32_t options;
 
-    // The value of ZX_PROP_SOCKET_RX_BUF_MAX.
+    // The maximum size of the receive buffer of a socket, in bytes.
+    //
+    // The receive buffer may become full at a capacity less than the maximum
+    // due to overhead.
     size_t rx_buf_max;
 
-    // The value of ZX_PROP_SOCKET_RX_BUF_SIZE.
+    // The size of the receive buffer of a socket, in bytes.
     size_t rx_buf_size;
 
-    // The value of ZX_PROP_SOCKET_TX_BUF_MAX.
+    // The amount of data, in bytes, that is available for reading in a single
+    // zx_socket_read call.
+    //
+    // For stream sockets, this value will match |rx_buf_size|. For datagram
+    // sockets, this value will be the size of the next datagram in the receive
+    // buffer.
+    size_t rx_buf_available;
+
+    // The maximum size of the transmit buffer of a socket, in bytes.
+    //
+    // The transmit buffer may become full at a capacity less than the maximum
+    // due to overhead.
     //
     // Will be zero if the peer endpoint is closed.
     size_t tx_buf_max;
 
-    // The value of ZX_PROP_SOCKET_TX_BUF_SIZE.
+    // The size of the transmit buffer of a socket, in bytes.
     //
     // Will be zero if the peer endpoint is closed.
     size_t tx_buf_size;
@@ -406,16 +423,8 @@ typedef struct zx_info_resource {
 #define ZX_PROP_PROCESS_VDSO_BASE_ADDRESS   ((uint32_t) 6u)
 
 // Argument is a size_t.
-#define ZX_PROP_SOCKET_RX_BUF_MAX           8u
-#define ZX_PROP_SOCKET_RX_BUF_SIZE          9u
-#define ZX_PROP_SOCKET_TX_BUF_MAX           10u
-#define ZX_PROP_SOCKET_TX_BUF_SIZE          11u
 #define ZX_PROP_SOCKET_RX_THRESHOLD         12u
 #define ZX_PROP_SOCKET_TX_THRESHOLD         13u
-
-// Argument is a size_t, describing the number of packets a channel
-// endpoint can have pending in its tx direction.
-#define ZX_PROP_CHANNEL_TX_MSG_MAX          14u
 
 // Terminate this job if the system is low on memory.
 #define ZX_PROP_JOB_KILL_ON_OOM             15u
@@ -440,6 +449,7 @@ typedef struct zx_info_resource {
 #define ZX_THREAD_STATE_BLOCKED_WAIT_ONE    ((zx_thread_state_t) 0x0603u)
 #define ZX_THREAD_STATE_BLOCKED_WAIT_MANY   ((zx_thread_state_t) 0x0703u)
 #define ZX_THREAD_STATE_BLOCKED_INTERRUPT   ((zx_thread_state_t) 0x0803u)
+#define ZX_THREAD_STATE_BLOCKED_PAGER       ((zx_thread_state_t) 0x0903u)
 
 // Reduce possibly-more-precise state to a basic state.
 // Useful if, for example, you want to check for BLOCKED on anything.

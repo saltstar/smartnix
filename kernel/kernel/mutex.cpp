@@ -23,34 +23,28 @@
 #define LOCAL_TRACE 0
 
 /**
- * @brief  Initialize a mutex_t
- */
-void mutex_init(mutex_t* m) {
-    *m = (mutex_t)MUTEX_INITIAL_VALUE(*m);
-}
-
-/**
- * @brief  Destroy a mutex_t
+ * @brief  mutex_t destructor
  *
- * This function frees any resources that were allocated
- * in mutex_init().  The mutex_t object itself is not freed.
+ * This function performs sanity checks, calls the wait_queue_t destructor
+ * equivalent, and invalidated the state of the internal mutex storage (eg;
+ * invalidates the magic number).
  */
-void mutex_destroy(mutex_t* m) {
-    DEBUG_ASSERT(m->magic == MUTEX_MAGIC);
+mutex::~mutex() {
+    DEBUG_ASSERT(magic == MUTEX_MAGIC);
     DEBUG_ASSERT(!arch_blocking_disallowed());
 
 #if LK_DEBUGLEVEL > 0
-    if (unlikely(mutex_val(m) != 0)) {
-        thread_t* holder = mutex_holder(m);
+    if (unlikely(mutex_val(this) != 0)) {
+        thread_t* holder = mutex_holder(this);
         panic("mutex_destroy: thread %p (%s) tried to destroy locked mutex %p,"
               " locked by %p (%s)\n",
-              get_current_thread(), get_current_thread()->name, m,
+              get_current_thread(), get_current_thread()->name, this,
               holder, holder->name);
     }
 #endif
-    m->magic = 0;
-    m->val = 0;
-    wait_queue_destroy(&m->wait);
+    magic = 0;
+    val = 0;
+    wait_queue_destroy(&wait);
 }
 
 /**
@@ -183,16 +177,8 @@ static inline void mutex_release_internal(mutex_t* m, bool reschedule, bool thre
 
     ktrace_ptr(TAG_KWAIT_WAKE, &m->wait, 1, 0);
 
-    // boost the priority of the new thread we're waking
-    // if the wait queue is empty, it'll return -1 and we'll deboost the thread if
-    // it's not already holding a mutex
-    bool local_resched = false;
-    int blocked_priority = wait_queue_blocked_priority(&m->wait);
-    if (blocked_priority >= 0 || t->mutexes_held == 0) {
-        sched_inherit_priority(t, blocked_priority, &local_resched);
-    }
-
     // deboost ourself if this is the last mutex we held
+    bool local_resched = false;
     if (ct->inherited_priority >= 0 && ct->mutexes_held == 0) {
         sched_inherit_priority(ct, -1, &local_resched);
     }

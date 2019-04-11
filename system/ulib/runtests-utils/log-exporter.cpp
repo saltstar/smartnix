@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <runtests-utils/log-exporter.h>
 
@@ -10,6 +13,8 @@
 #include <lib/zx/channel.h>
 #include <zircon/status.h>
 
+#include <utility>
+
 namespace runtests {
 namespace {
 
@@ -21,7 +26,7 @@ fbl::String ToFblString(fidl_string_t string) {
 
 LogExporter::LogExporter(zx::channel channel, FILE* output_file)
     : loop_(&kAsyncLoopConfigNoAttachToThread),
-      channel_(fbl::move(channel)),
+      channel_(std::move(channel)),
       wait_(this, channel_.get(), ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED),
       output_file_(output_file) {
     wait_.Begin(loop_.dispatcher());
@@ -94,10 +99,12 @@ zx_status_t LogExporter::ReadAndDispatchMessage(fidl::MessageBuffer* buffer) {
         return ZX_ERR_INVALID_ARGS;
     }
     switch (message.ordinal()) {
+    case fuchsia_logger_LogListenerLogGenOrdinal:
     case fuchsia_logger_LogListenerLogOrdinal:
-        return Log(fbl::move(message));
+        return Log(std::move(message));
+    case fuchsia_logger_LogListenerLogManyGenOrdinal:
     case fuchsia_logger_LogListenerLogManyOrdinal:
-        return LogMany(fbl::move(message));
+        return LogMany(std::move(message));
     default:
         return ZX_ERR_NOT_SUPPORTED;
     }
@@ -244,7 +251,7 @@ void LogExporter::NotifyFileError(const char* error) {
     }
 }
 
-fbl::unique_ptr<LogExporter> LaunchLogExporter(const fbl::StringPiece syslog_path,
+std::unique_ptr<LogExporter> LaunchLogExporter(const fbl::StringPiece syslog_path,
                                                ExporterLaunchError* error) {
     *error = NO_ERROR;
     fbl::String syslog_path_str = fbl::String(syslog_path.data());
@@ -298,7 +305,7 @@ fbl::unique_ptr<LogExporter> LaunchLogExporter(const fbl::StringPiece syslog_pat
     }
 
     // Connect log exporter channel to object and start message loop on it.
-    auto log_exporter = fbl::make_unique<LogExporter>(fbl::move(listener_request),
+    auto log_exporter = std::make_unique<LogExporter>(std::move(listener_request),
                                                       syslog_file);
     log_exporter->set_error_handler([](zx_status_t status) {
         if (status != ZX_ERR_CANCELED) {

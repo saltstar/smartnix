@@ -36,8 +36,8 @@ const bool c = "foo";
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
-    ASSERT_STR_STR(errors[0].c_str(), "cannot convert \"foo\" (type string:3) to type bool");
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "\"foo\" cannot be interpreted as type bool");
 
     END_TEST;
 }
@@ -52,8 +52,8 @@ const bool c = 6;
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
-    ASSERT_STR_STR(errors[0].c_str(), "cannot convert 6 (type int64) to type bool");
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "6 cannot be interpreted as type bool");
 
     END_TEST;
 }
@@ -95,8 +95,8 @@ const int32 c = "foo";
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
-    ASSERT_STR_STR(errors[0].c_str(), "cannot convert \"foo\" (type string:3) to type int32");
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "\"foo\" cannot be interpreted as type int32");
 
     END_TEST;
 }
@@ -111,8 +111,139 @@ const int32 c = true;
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
-    ASSERT_STR_STR(errors[0].c_str(), "cannot convert true (type bool) to type int32");
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "true cannot be interpreted as type int32");
+
+    END_TEST;
+}
+
+bool GoodConstTesUint64() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const int64 a = 42;
+)FIDL");
+    ASSERT_TRUE(library.Compile());
+
+    END_TEST;
+}
+
+bool GoodConstTestUint64FromOtherUint32() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const uint32 a = 42;
+const uint64 b = a;
+)FIDL");
+    ASSERT_TRUE(library.Compile());
+
+    END_TEST;
+}
+
+bool BadConstTestUint64Negative() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const uint64 a = -42;
+)FIDL");
+    ASSERT_FALSE(library.Compile());
+    auto errors = library.errors();
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "-42 cannot be interpreted as type uint64");
+
+    END_TEST;
+}
+
+bool BadConstTestUint64Overflow() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const uint64 a = 18446744073709551616;
+)FIDL");
+    ASSERT_FALSE(library.Compile());
+    auto errors = library.errors();
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "18446744073709551616 cannot be interpreted as type uint64");
+
+    END_TEST;
+}
+
+bool GoodConstTestFloat32() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const float32 b = 1.61803;
+const float32 c = -36.46216;
+)FIDL");
+    ASSERT_TRUE(library.Compile());
+
+    END_TEST;
+}
+
+bool GoodConstTestFloat32HighLimit() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const float32 hi = 3.402823e38;
+)FIDL");
+    ASSERT_TRUE(library.Compile());
+
+    END_TEST;
+}
+
+bool GoodConstTestFloat32LowLimit() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const float32 lo = -3.40282e38;
+)FIDL");
+    ASSERT_TRUE(library.Compile());
+
+    END_TEST;
+}
+
+bool BadConstTestFloat32HighLimit() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const float32 hi = 3.41e38;
+)FIDL");
+    ASSERT_FALSE(library.Compile());
+    auto errors = library.errors();
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "3.41e38 cannot be interpreted as type float32");
+
+    END_TEST;
+}
+
+bool BadConstTestFloat32LowLimit() {
+    BEGIN_TEST;
+
+    TestLibrary library(R"FIDL(
+library example;
+
+const float32 b = -3.41e38;
+)FIDL");
+    ASSERT_FALSE(library.Compile());
+    auto errors = library.errors();
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "-3.41e38 cannot be interpreted as type float32");
 
     END_TEST;
 }
@@ -154,8 +285,8 @@ const string c = 4;
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
-    ASSERT_STR_STR(errors[0].c_str(), "cannot convert 4 (type int64) to type string");
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "4 cannot be interpreted as type string");
 
     END_TEST;
 }
@@ -170,8 +301,8 @@ const string c = true;
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
-    ASSERT_STR_STR(errors[0].c_str(), "cannot convert true (type bool) to type string");
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "true cannot be interpreted as type string");
 
     END_TEST;
 }
@@ -186,8 +317,9 @@ const string:4 c = "hello";
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
-    ASSERT_STR_STR(errors[0].c_str(), "cannot convert \"hello\" (type string:5) to type string:4");
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(),
+                   "\"hello\" (string:5) exceeds the size bound of type string:4");
 
     END_TEST;
 }
@@ -217,8 +349,8 @@ const foo c = "nope";
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
-    ASSERT_STR_STR(errors[0].c_str(), "cannot convert \"nope\" (type string:4) to type int32");
+    ASSERT_GE(errors.size(), 1);
+    ASSERT_STR_STR(errors[0].c_str(), "\"nope\" cannot be interpreted as type int32");
 
     END_TEST;
 }
@@ -233,7 +365,7 @@ const string? c = "";
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
+    ASSERT_GE(errors.size(), 1);
     ASSERT_STR_STR(errors[0].c_str(), "invalid constant type string?");
 
     END_TEST;
@@ -250,7 +382,7 @@ const MyEnum c = "";
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
+    ASSERT_GE(errors.size(), 1);
     ASSERT_STR_STR(errors[0].c_str(), "invalid constant type example/MyEnum");
 
     END_TEST;
@@ -266,7 +398,7 @@ const array<int32>:2 c = -1;
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
+    ASSERT_GE(errors.size(), 1);
     ASSERT_STR_STR(errors[0].c_str(), "invalid constant type array<int32>:2");
 
     END_TEST;
@@ -282,7 +414,7 @@ const vector<int32>:2 c = -1;
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
+    ASSERT_GE(errors.size(), 1);
     ASSERT_STR_STR(errors[0].c_str(), "invalid constant type vector<int32>:2");
 
     END_TEST;
@@ -298,7 +430,7 @@ const handle<thread> c = -1;
 )FIDL");
     ASSERT_FALSE(library.Compile());
     auto errors = library.errors();
-    ASSERT_EQ(errors.size(), 1);
+    ASSERT_GE(errors.size(), 1);
     ASSERT_STR_STR(errors[0].c_str(), "invalid constant type handle<thread>");
 
     END_TEST;
@@ -316,6 +448,17 @@ RUN_TEST(GoodConstTestInt32);
 RUN_TEST(GoodConstTestInt32FromOtherConst);
 RUN_TEST(BadConstTestInt32WithString);
 RUN_TEST(BadConstTestInt32WithBool);
+
+RUN_TEST(GoodConstTesUint64);
+RUN_TEST(GoodConstTestUint64FromOtherUint32);
+RUN_TEST(BadConstTestUint64Negative);
+RUN_TEST(BadConstTestUint64Overflow);
+
+RUN_TEST(GoodConstTestFloat32);
+RUN_TEST(GoodConstTestFloat32HighLimit);
+RUN_TEST(GoodConstTestFloat32LowLimit);
+RUN_TEST(BadConstTestFloat32HighLimit);
+RUN_TEST(BadConstTestFloat32LowLimit);
 
 RUN_TEST(GoodConstTestString);
 RUN_TEST(GoodConstTestStringFromOtherConst);

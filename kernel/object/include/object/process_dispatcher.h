@@ -3,12 +3,12 @@
 
 #include <kernel/event.h>
 #include <kernel/thread.h>
-#include <vm/vm_aspace.h>
 #include <object/dispatcher.h>
 #include <object/futex_context.h>
 #include <object/handle.h>
-#include <object/policy_manager.h>
+#include <object/job_policy.h>
 #include <object/thread_dispatcher.h>
+#include <vm/vm_aspace.h>
 
 #include <zircon/syscalls/object.h>
 #include <zircon/types.h>
@@ -190,6 +190,16 @@ public:
     void Exit(int64_t retcode) __NO_RETURN;
     void Kill();
 
+    // Suspends the process.
+    //
+    // Suspending a process causes all child threads to suspend as well as any new children
+    // that are added until the process is resumed. Suspend() is cumulative, so the process
+    // will only resume once Resume() has been called an equal number of times.
+    //
+    // Returns ZX_OK on success, or ZX_ERR_BAD_STATE if the process is dying or dead.
+    zx_status_t Suspend();
+    void Resume();
+
     // Syscall helpers
     zx_status_t GetInfo(zx_info_process_t* info);
     zx_status_t GetStats(zx_info_task_stats_t* stats);
@@ -205,7 +215,7 @@ public:
     // exception handling support
     zx_status_t SetExceptionPort(fbl::RefPtr<ExceptionPort> eport);
     // Returns true if a port had been set.
-    bool ResetExceptionPort(bool debugger, bool quietly);
+    bool ResetExceptionPort(bool debugger);
     fbl::RefPtr<ExceptionPort> exception_port();
     fbl::RefPtr<ExceptionPort> debugger_exception_port();
     // |eport| can either be the process's eport or that of any parent job.
@@ -237,14 +247,17 @@ public:
     // E.g., in sys_channel_create:
     //
     //     auto up = ProcessDispatcher::GetCurrent();
-    //     zx_status_t res = up->QueryPolicy(ZX_POL_NEW_CHANNEL);
+    //     zx_status_t res = up->QueryBasicPolicy(ZX_POL_NEW_CHANNEL);
     //     if (res != ZX_OK) {
     //         // Channel creation denied by the calling process's
     //         // parent job's policy.
     //         return res;
     //     }
     //     // Ok to create a channel.
-    zx_status_t QueryPolicy(uint32_t condition) const;
+    zx_status_t QueryBasicPolicy(uint32_t condition) const;
+
+    // Returns this job's timer slack policy.
+    TimerSlack GetTimerSlackPolicy() const;
 
     // return a cached copy of the vdso code address or compute a new one
     uintptr_t vdso_code_address() {
@@ -278,9 +291,12 @@ private:
 
     void OnProcessStartForJobDebugger(ThreadDispatcher *t);
 
-    // Thread lifecycle support
+    // Thread lifecycle support.
+    //
+    // |suspended| indicates whether the parent process is currently suspended or not. If true,
+    // the child thread must increment its own suspend count by one and transition to suspend.
     friend class ThreadDispatcher;
-    zx_status_t AddThread(ThreadDispatcher* t, bool initial_thread);
+    zx_status_t AddThread(ThreadDispatcher* t, bool initial_thread, bool* suspended);
     void RemoveThread(ThreadDispatcher* t);
 
     void SetStateLocked(State) TA_REQ(get_lock());
@@ -296,7 +312,9 @@ private:
     const fbl::RefPtr<JobDispatcher> job_;
 
     // Policy set by the Job during Create().
-    const pol_cookie_t policy_;
+    //
+    // It is critical that this field is immutable as it will be accessed without synchronization.
+    const JobPolicy policy_;
 
     // The process can belong to either of these lists independently.
     fbl::DoublyLinkedListNodeState<ProcessDispatcher*> dll_job_raw_;
@@ -319,6 +337,9 @@ private:
 
     // our state
     State state_ TA_GUARDED(get_lock()) = State::INITIAL;
+
+    // Suspend count; incremented on Suspend(), decremented on Resume().
+    int suspend_count_ TA_GUARDED(get_lock()) = 0;
 
     // True if FinishDeadTransition has been called.
     // This is used as a sanity check only.

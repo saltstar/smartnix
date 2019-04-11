@@ -1,4 +1,6 @@
-
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 #include "audio-stream-in.h"
 
 #include <ddk/binding.h>
@@ -7,11 +9,17 @@
 #include <ddk/platform-defs.h>
 #include <math.h>
 
+#include <optional>
+#include <utility>
+
 namespace audio {
 namespace astro {
 
-// Calculate ring buffer size for 1 second of 16-bit, 48kHz, stereo.
-constexpr size_t RB_SIZE = fbl::round_up<size_t, size_t>(48000 * 2 * 2u, ZX_PAGE_SIZE);
+// Expects 2 mics.
+constexpr size_t kNumberOfChannels = 2;
+// Calculate ring buffer size for 1 second of 16-bit, 48kHz.
+constexpr size_t kRingBufferSize = fbl::round_up<size_t, size_t>(48000 * 2 * kNumberOfChannels,
+                                                                 ZX_PAGE_SIZE);
 
 AstroAudioStreamIn::AstroAudioStreamIn(zx_device_t* parent)
     : SimpleAudioStream(parent, true /* is input */) {
@@ -61,7 +69,7 @@ zx_status_t AstroAudioStreamIn::InitPDev() {
         zxlogf(ERROR, "%s could not obtain bti - %d\n", __func__, status);
         return status;
     }
-    fbl::optional<ddk::MmioBuffer> mmio0, mmio1;
+    std::optional<ddk::MmioBuffer> mmio0, mmio1;
     status = pdev_->MapMmio(0, &mmio0);
     if (status != ZX_OK) {
         return status;
@@ -71,18 +79,20 @@ zx_status_t AstroAudioStreamIn::InitPDev() {
         return status;
     }
 
-    pdm_ = AmlPdmDevice::Create(fbl::move(*mmio0),
-                                fbl::move(*mmio1),
+    pdm_ = AmlPdmDevice::Create(*std::move(mmio0),
+                                *std::move(mmio1),
                                 HIFI_PLL, 7, 499, TODDR_B);
     if (pdm_ == nullptr) {
         zxlogf(ERROR, "%s failed to create pdm device\n", __func__);
         return ZX_ERR_NO_MEMORY;
     }
     //Initialize the ring buffer
-    InitBuffer(RB_SIZE);
+    InitBuffer(kRingBufferSize);
 
     pdm_->SetBuffer(pinned_ring_buffer_.region(0).phys_addr,
                     pinned_ring_buffer_.region(0).size);
+
+    pdm_->ConfigPdmIn((1 << kNumberOfChannels) - 1); // First kNumberOfChannels channels.
 
     pdm_->Sync();
 
@@ -165,7 +175,7 @@ zx_status_t AstroAudioStreamIn::InitPost() {
             return pdm->ProcessRingNotification();
         });
 
-    return notify_timer_->Activate(domain_, fbl::move(thandler));
+    return notify_timer_->Activate(domain_, std::move(thandler));
 }
 
 zx_status_t AstroAudioStreamIn::Stop() {
@@ -185,8 +195,8 @@ zx_status_t AstroAudioStreamIn::AddFormats() {
     // Astro only supports stereo, 16-bit, 48k audio in
     audio_stream_format_range_t range;
 
-    range.min_channels = 2;
-    range.max_channels = 2;
+    range.min_channels = kNumberOfChannels;
+    range.max_channels = kNumberOfChannels;
     range.sample_formats = AUDIO_SAMPLE_FORMAT_16BIT;
     range.min_frames_per_second = 48000;
     range.max_frames_per_second = 48000;

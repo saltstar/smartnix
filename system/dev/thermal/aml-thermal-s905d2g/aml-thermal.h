@@ -10,9 +10,11 @@
 #include "aml-voltage.h"
 #include <ddk/device.h>
 #include <ddktl/device.h>
-#include <fbl/atomic.h>
+#include <ddktl/protocol/empty-protocol.h>
 #include <fbl/unique_ptr.h>
 #include <threads.h>
+
+#include <utility>
 
 namespace thermal {
 
@@ -22,7 +24,7 @@ using DeviceType = ddk::Device<AmlThermal,
                                ddk::Ioctlable>;
 
 class AmlThermal : public DeviceType,
-                   public ddk::internal::base_protocol {
+                   public ddk::EmptyProtocol<ZX_PROTOCOL_THERMAL> {
 
 public:
     DISALLOW_COPY_AND_ASSIGN_ALLOW_MOVE(AmlThermal);
@@ -31,13 +33,12 @@ public:
                fbl::unique_ptr<thermal::AmlCpuFrequency> cpufreq_scaling,
                opp_info_t opp_info,
                thermal_device_info_t thermal_config)
-        : DeviceType(device), tsensor_(fbl::move(tsensor)),
-          voltage_regulator_(fbl::move(voltage_regulator)),
-          cpufreq_scaling_(fbl::move(cpufreq_scaling)),
-          opp_info_(fbl::move(opp_info)),
-          thermal_config_(fbl::move(thermal_config)) {
-        ddk_proto_id_ = ZX_PROTOCOL_THERMAL;
-    };
+        : DeviceType(device), tsensor_(std::move(tsensor)),
+          voltage_regulator_(std::move(voltage_regulator)),
+          cpufreq_scaling_(std::move(cpufreq_scaling)),
+          opp_info_(std::move(opp_info)),
+          thermal_config_(std::move(thermal_config)) {}
+
     static zx_status_t Create(zx_device_t* device);
 
     // Ddk Hooks

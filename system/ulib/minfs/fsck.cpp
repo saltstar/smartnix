@@ -9,14 +9,9 @@
 
 #include <minfs/format.h>
 #include <minfs/fsck.h>
-#include "minfs-private.h"
 
-// #define DEBUG_PRINTF
-#ifdef DEBUG_PRINTF
-#define xprintf(args...) fprintf(stderr, args)
-#else
-#define xprintf(args...)
-#endif
+#include "minfs-private.h"
+#include <utility>
 
 namespace minfs {
 
@@ -31,6 +26,7 @@ public:
     zx_status_t CheckForUnusedInodes() const;
     zx_status_t CheckLinkCounts() const;
     zx_status_t CheckAllocatedCounts() const;
+    zx_status_t CheckJournal() const;
 
     // "Set once"-style flag to identify if anything nonconforming
     // was found in the underlying filesystem -- even if it was fixed.
@@ -207,7 +203,7 @@ zx_status_t MinfsChecker::CheckDirectory(Inode* inode, ino_t ino,
         }
         if (de->ino == 0) {
             if (flags & CD_DUMP) {
-                xprintf("ino#%u: de[%u]: <empty> reclen=%u\n", ino, eno, rlen);
+                FS_TRACE_DEBUG("ino#%u: de[%u]: <empty> reclen=%u\n", ino, eno, rlen);
             }
         } else {
             // Re-read the dirent to acquire the full name
@@ -246,7 +242,7 @@ zx_status_t MinfsChecker::CheckDirectory(Inode* inode, ino_t ino,
             }
             //TODO: check for cycles (non-dot/dotdot dir ref already in checked bitmap)
             if (flags & CD_DUMP) {
-                xprintf("ino#%u: de[%u]: ino=%u type=%u '%.*s' %s\n", ino, eno, de->ino, de->type,
+                FS_TRACE_DEBUG("ino#%u: de[%u]: ino=%u type=%u '%.*s' %s\n", ino, eno, de->ino, de->type,
                         de->namelen, de->name, is_last ? "[last]" : "");
             }
 
@@ -296,11 +292,11 @@ const char* MinfsChecker::CheckDataBlock(blk_t bno) {
 }
 
 zx_status_t MinfsChecker::CheckFile(Inode* inode, ino_t ino) {
-    xprintf("Direct blocks: \n");
+    FS_TRACE_DEBUG("Direct blocks: \n");
     for (unsigned n = 0; n < kMinfsDirect; n++) {
-        xprintf(" %d,", inode->dnum[n]);
+        FS_TRACE_DEBUG(" %d,", inode->dnum[n]);
     }
-    xprintf(" ...\n");
+    FS_TRACE_DEBUG(" ...\n");
 
     uint32_t block_count = 0;
 
@@ -448,7 +444,7 @@ zx_status_t MinfsChecker::CheckInode(ino_t ino, ino_t parent, bool dot_or_dotdot
     }
 
     if (inode.magic == kMinfsMagicDir) {
-        xprintf("ino#%u: DIR blks=%u links=%u\n", ino, inode.block_count, inode.link_count);
+        FS_TRACE_DEBUG("ino#%u: DIR blks=%u links=%u\n", ino, inode.block_count, inode.link_count);
         if ((status = CheckFile(&inode, ino)) < 0) {
             return status;
         }
@@ -459,7 +455,7 @@ zx_status_t MinfsChecker::CheckInode(ino_t ino, ino_t parent, bool dot_or_dotdot
             return status;
         }
     } else {
-        xprintf("ino#%u: FILE blks=%u links=%u size=%u\n", ino, inode.block_count, inode.link_count,
+        FS_TRACE_DEBUG("ino#%u: FILE blks=%u links=%u size=%u\n", ino, inode.block_count, inode.link_count,
                 inode.size);
         if ((status = CheckFile(&inode, ino)) < 0) {
             return status;
@@ -585,6 +581,29 @@ zx_status_t MinfsChecker::CheckAllocatedCounts() const {
     return status;
 }
 
+zx_status_t MinfsChecker::CheckJournal() const {
+    char data[kMinfsBlockSize];
+    blk_t journal_block;
+#ifdef __Fuchsia__
+    journal_block = fs_->Info().journal_start_block;
+#else
+    journal_block = fs_->offsets_.JournalStartBlock();
+#endif
+
+    if (fs_->bc_->Readblk(journal_block, data) < 0) {
+        FS_TRACE_ERROR("minfs: could not read journal block\n");
+        return ZX_ERR_IO;
+    }
+
+    const JournalInfo* journal_info = reinterpret_cast<const JournalInfo*>(data);
+    if (journal_info->magic != kJournalMagic) {
+        FS_TRACE_ERROR("minfs: invalid journal magic\n");
+        return ZX_ERR_BAD_STATE;
+    }
+
+    return ZX_OK;
+}
+
 MinfsChecker::MinfsChecker()
     : conforming_(true), fs_(nullptr), alloc_inodes_(0), alloc_blocks_(0), links_() {};
 
@@ -605,11 +624,11 @@ zx_status_t MinfsChecker::Init(fbl::unique_ptr<Bcache> bc, const Superblock* inf
         return status;
     }
     fbl::unique_ptr<Minfs> fs;
-    if ((status = Minfs::Create(fbl::move(bc), info, &fs)) != ZX_OK) {
+    if ((status = Minfs::Create(std::move(bc), info, &fs)) != ZX_OK) {
         FS_TRACE_ERROR("MinfsChecker::Create Failed to Create Minfs: %d\n", status);
         return status;
     }
-    fs_ = fbl::move(fs);
+    fs_ = std::move(fs);
 
     return ZX_OK;
 }
@@ -630,7 +649,7 @@ zx_status_t Fsck(fbl::unique_ptr<Bcache> bc) {
     }
 
     MinfsChecker chk;
-    if ((status = chk.Init(fbl::move(bc), info)) != ZX_OK) {
+    if ((status = chk.Init(std::move(bc), info)) != ZX_OK) {
         FS_TRACE_ERROR("Fsck: Init failure: %d\n", status);
         return status;
     }
@@ -645,8 +664,7 @@ zx_status_t Fsck(fbl::unique_ptr<Bcache> bc) {
 
     zx_status_t r;
 
-    // Save an error if it occurs, but check for subsequent errors
-    // anyway.
+    // Save an error if it occurs, but check for subsequent errors anyway.
     r = chk.CheckUnlinkedInodes();
     status |= (status != ZX_OK) ? 0 : r;
     r = chk.CheckForUnusedBlocks();
@@ -656,6 +674,8 @@ zx_status_t Fsck(fbl::unique_ptr<Bcache> bc) {
     r = chk.CheckLinkCounts();
     status |= (status != ZX_OK) ? 0 : r;
     r = chk.CheckAllocatedCounts();
+    status |= (status != ZX_OK) ? 0 : r;
+    r = chk.CheckJournal();
     status |= (status != ZX_OK) ? 0 : r;
 
     //TODO: check allocated inodes that were abandoned

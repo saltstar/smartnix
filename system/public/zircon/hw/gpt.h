@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -142,4 +145,28 @@ typedef struct gpt_entry {
     0x86, 0x4c,                                    \
     0xe8, 0x11,                                    \
     0xa1, 0x5b, 0x48, 0x0f, 0xcf, 0x35, 0xf8, 0xe6 \
+}
+
+#define GUID_TEST_STRING "8B94D043-30BE-4871-9DFA-D69556E8C1F3"
+#define GUID_TEST_VALUE { \
+    0x43, 0xD0, 0x94, 0x8b,                        \
+    0xbe, 0x30,                                    \
+    0x71, 0x38,                                    \
+    0x9d, 0xfa, 0xd6, 0x95, 0x56, 0xe8, 0xc1, 0xf3 \
+}
+
+#define GUID_VBMETA_A_STRING "A13B4D9A-EC5F-11E8-97D8-6C3BE52705BF"
+#define GUID_VBMETA_A_VALUE { \
+    0x9a, 0x4d, 0x3b, 0xa1,                        \
+    0x5f, 0xec,                                    \
+    0xd8, 0x97,                                    \
+    0x6c, 0x3b, 0x6c, 0x3b, 0xe2, 0x27, 0x05, 0xbf \
+}
+
+#define GUID_VBMETA_B_STRING "A288ABF2-EC5F-11E8-97D8-6C3BE52705BF"
+#define GUID_VBMETA_B_VALUE { \
+    0xf2, 0xab, 0x88, 0xa2,                        \
+    0x5f, 0xec,                                    \
+    0xd8, 0x97,                                    \
+    0x6c, 0x3b, 0x6c, 0x3b, 0xe2, 0x27, 0x05, 0xbf \
 }

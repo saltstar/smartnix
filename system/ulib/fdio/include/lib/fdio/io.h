@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -16,8 +19,6 @@
 // and be used for all of stdio
 #define FDIO_FLAG_USE_FOR_STDIO 0x8000
 
-#define FDIO_NONBLOCKING 1
-
 // events for fdio_wait_fd()
 #define FDIO_EVT_READABLE POLLIN
 #define FDIO_EVT_WRITABLE POLLOUT
@@ -32,7 +33,7 @@ zx_status_t fdio_wait_fd(int fd, uint32_t events, uint32_t* pending, zx_time_t d
 
 // create a fd that works with wait APIs (epoll, select, etc.) from a handle
 // and expected signals (signals_in/signals_out correspond to POLLIN/POLLOUT
-// events respectively). the handle will be closed when the fd is closed, unless
+// events respectively). The handle will be closed when the fd is closed, unless
 // shared_handle is true.
 int fdio_handle_fd(zx_handle_t h, zx_signals_t signals_in, zx_signals_t signals_out, bool shared_handle);
 
@@ -57,10 +58,5 @@ zx_status_t fdio_get_vmo_clone(int fd, zx_handle_t* out_vmo);
 // VMO representation of the file (e.g., if fdio_get_vmo would need to copy
 // or clone data into a new VMO).
 zx_status_t fdio_get_vmo_exact(int fd, zx_handle_t* out_vmo);
-
-// create a fd that is backed by the given range of the vmo.
-// This function takes ownership of the vmo and will close the vmo when the fd
-// is closed.
-int fdio_vmo_fd(zx_handle_t vmo, uint64_t offset, uint64_t length);
 
 __END_CDECLS

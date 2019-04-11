@@ -7,17 +7,18 @@
 #include "aml-clk-blocks.h"
 #include <ddk/device.h>
 #include <ddk/io-buffer.h>
-#include <ddk/protocol/platform-device.h>
 #include <ddk/protocol/platform-device-lib.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddktl/device.h>
 #include <ddktl/mmio.h>
 #include <ddktl/protocol/clk.h>
 #include <fbl/array.h>
 #include <fbl/mutex.h>
-#include <fbl/optional.h>
 #include <hwreg/mmio.h>
 #include <zircon/device/clk.h>
 #include <zircon/thread_annotations.h>
+
+#include <optional>
 
 namespace amlogic_clock {
 
@@ -27,7 +28,7 @@ using DeviceType = ddk::Device<AmlClock,
                                ddk::Ioctlable>;
 
 class AmlClock : public DeviceType,
-                 public ddk::ClkProtocol<AmlClock> {
+                 public ddk::ClkProtocol<AmlClock, ddk::base_protocol> {
 
 public:
     DISALLOW_COPY_AND_ASSIGN_ALLOW_MOVE(AmlClock);
@@ -65,8 +66,8 @@ private:
     // Platform device protocol.
     pdev_protocol_t pdev_;
     // IO MMIO
-    fbl::optional<ddk::MmioBuffer> hiu_mmio_;
-    fbl::optional<ddk::MmioBuffer> msr_mmio_;
+    std::optional<ddk::MmioBuffer> hiu_mmio_;
+    std::optional<ddk::MmioBuffer> msr_mmio_;
     // Protects clock gate registers.
     fbl::Mutex lock_;
     // Clock gates.

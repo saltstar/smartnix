@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -7,7 +10,6 @@
 #include <cobalt-client/cpp/counter-internal.h>
 #include <cobalt-client/cpp/histogram-internal.h>
 #include <cobalt-client/cpp/types-internal.h>
-#include <fbl/atomic.h>
 #include <fbl/string_buffer.h>
 #include <lib/zx/channel.h>
 #include <lib/zx/time.h>
@@ -16,27 +18,6 @@
 
 namespace cobalt_client {
 namespace internal {
-
-// Interface for persisting collected data.
-class Logger {
-public:
-    Logger(const Logger&) = delete;
-    Logger(Logger&&) = delete;
-    Logger& operator=(const Logger&) = delete;
-    Logger& operator=(Logger&&) = delete;
-    virtual ~Logger() = default;
-
-    // Returns true if the histogram was persisted.
-    virtual bool Log(const RemoteMetricInfo& metric_info,
-                     const RemoteHistogram::EventBuffer& histogram) = 0;
-
-    // Returns true if the counter was persisted.
-    virtual bool Log(const RemoteMetricInfo& metric_info,
-                     const RemoteCounter::EventBuffer& counter) = 0;
-
-protected:
-    Logger() = default;
-};
 
 struct CobaltOptions {
     // Service path to LoggerFactory interface.
@@ -57,6 +38,10 @@ struct CobaltOptions {
     // Performs a connection to a service at a given path.
     fbl::Function<zx_status_t(const char* service_path, zx::channel service)> service_connect;
 
+    // The Id of the cobalt project to use. This is a registered project in Cobalt's metric
+    // registry. If this value is -1, then config reader must be set.
+    int64_t project_id = -1;
+
     // Which release stage to use for persisting metrics.
     ReleaseStage release_stage;
 };
@@ -64,6 +49,7 @@ struct CobaltOptions {
 class CobaltLogger : public Logger {
 public:
     CobaltLogger() = delete;
+    // instance from cobalt service;
     explicit CobaltLogger(CobaltOptions options);
     CobaltLogger(const CobaltLogger&) = delete;
     CobaltLogger(CobaltLogger&&) = delete;
@@ -72,12 +58,11 @@ public:
     ~CobaltLogger() override{};
 
     // Returns true if the histogram was persisted.
-    bool Log(const RemoteMetricInfo& metric_info,
-             const RemoteHistogram::EventBuffer& histogram) override;
+    bool Log(const RemoteMetricInfo& metric_info, const HistogramBucket* buckets,
+             size_t bucket_count) override;
 
     // Returns true if the counter was persisted.
-    bool Log(const RemoteMetricInfo& metric_info,
-             const RemoteCounter::EventBuffer& counter) override;
+    bool Log(const RemoteMetricInfo& metric_info, int64_t count) override;
 
     bool IsListeningForReply() const { return logger_factory_.is_valid(); }
 

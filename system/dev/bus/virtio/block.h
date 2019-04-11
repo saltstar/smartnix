@@ -1,18 +1,20 @@
 // Copyright 2016 The Fuchsia Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-#pragma once
+#ifndef ZIRCON_SYSTEM_DEV_BUS_VIRTIO_BLOCK_H_
+#define ZIRCON_SYSTEM_DEV_BUS_VIRTIO_BLOCK_H_
 
 #include "device.h"
 #include "ring.h"
 
+#include <atomic>
 #include <stdlib.h>
 #include <zircon/compiler.h>
 
 #include "backends/backend.h"
+#include <ddk/protocol/block.h>
 #include <virtio/block.h>
 #include <zircon/device/block.h>
-#include <ddk/protocol/block.h>
 
 #include <lib/sync/completion.h>
 
@@ -33,9 +35,10 @@ class Ring;
 class BlockDevice : public Device {
 public:
     BlockDevice(zx_device_t* device, zx::bti bti, fbl::unique_ptr<Backend> backend);
-    virtual ~BlockDevice();
 
     virtual zx_status_t Init() override;
+    virtual void Release() override;
+    virtual void Unbind() override;
 
     virtual void IrqRingUpdate() override;
     virtual void IrqConfigChange() override;
@@ -48,35 +51,40 @@ public:
 private:
     // DDK driver hooks
     static zx_off_t virtio_block_get_size(void* ctx);
-    static zx_status_t virtio_block_ioctl(void* ctx, uint32_t op, const void* in_buf, size_t in_len,
-                                          void* out_buf, size_t out_len, size_t* out_actual);
 
     static void virtio_block_query(void* ctx, block_info_t* bi, size_t* bopsz);
     static void virtio_block_queue(void* ctx, block_op_t* bop,
                                    block_impl_queue_callback completion_cb, void* cookie);
 
+    static void virtio_block_unbind(void* ctx);
+    static void virtio_block_release(void* ctx);
+
     void GetInfo(block_info_t* info);
 
-    zx_status_t QueueTxn(block_txn_t* txn, bool write, size_t bytes,
-                         uint64_t* pages, size_t pagecount, uint16_t* idx);
-    void QueueReadWriteTxn(block_txn_t* txn, bool write);
+    void SignalWorker(block_txn_t* txn);
+    void WorkerThread();
+    void FlushPendingTxns();
+    void CleanupPendingTxns();
+
+    zx_status_t QueueTxn(block_txn_t* txn, uint32_t type, size_t bytes, uint64_t* pages,
+                         size_t pagecount, uint16_t* idx);
 
     void txn_complete(block_txn_t* txn, zx_status_t status);
 
-    // the main virtio ring
+    // The main virtio ring.
     Ring vring_ = {this};
 
-    // lock to be used around Ring::AllocDescChain and FreeDesc
-    // TODO: move this into Ring class once it's certain that other
-    // users of the class are okay with it.
+    // Lock to be used around Ring::AllocDescChain and FreeDesc.
+    // TODO: Move this into Ring class once it's certain that other users of the class are okay with
+    // it.
     fbl::Mutex ring_lock_;
 
-    static const uint16_t ring_size = 128; // 128 matches legacy pci
+    static const uint16_t ring_size = 128; // 128 matches legacy pci.
 
-    // saved block device configuration out of the pci config BAR
+    // Saved block device configuration out of the pci config BAR.
     virtio_blk_config_t config_ = {};
 
-    // a queue of block request/responses
+    // A queue of block request/responses.
     static const size_t blk_req_count = 32;
 
     io_buffer_t blk_req_buf_;
@@ -96,17 +104,22 @@ private:
         return i;
     }
 
-    void free_blk_req(size_t i) {
-        blk_req_bitmap_ &= ~(1 << i);
-    }
+    void free_blk_req(size_t i) { blk_req_bitmap_ &= ~(1 << i); }
 
-    // pending iotxns and waiter state
+    // Pending txns and completion signal.
     fbl::Mutex txn_lock_;
-    list_node txn_list_ = LIST_INITIAL_VALUE(txn_list_);
-    bool txn_wait_ = false;
+    list_node pending_txn_list_ = LIST_INITIAL_VALUE(pending_txn_list_);
     sync_completion_t txn_signal_;
+
+    // Worker state.
+    thrd_t worker_thread_;
+    list_node worker_txn_list_ = LIST_INITIAL_VALUE(worker_txn_list_);
+    sync_completion_t worker_signal_;
+    std::atomic_bool worker_shutdown_ = false;
 
     block_impl_protocol_ops_t block_ops_ = {};
 };
 
 } // namespace virtio
+
+#endif // ZIRCON_SYSTEM_DEV_BUS_VIRTIO_BLOCK_H_

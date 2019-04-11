@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_ULIB_SYSLOG_FX_LOGGER_H_
 #define ZIRCON_SYSTEM_ULIB_SYSLOG_FX_LOGGER_H_
@@ -11,6 +14,8 @@
 #include <lib/zx/process.h>
 #include <lib/zx/socket.h>
 #include <lib/zx/thread.h>
+
+#include <atomic>
 
 namespace {
 
@@ -38,11 +43,11 @@ public:
         pid_ = GetCurrentProcessKoid();
         socket_.reset(config->log_service_channel);
         fd_to_close_.reset(config->console_fd);
-        logger_fd_.store(config->console_fd, fbl::memory_order_relaxed);
+        logger_fd_.store(config->console_fd, std::memory_order_relaxed);
         SetSeverity(config->min_severity);
         ZX_DEBUG_ASSERT(fd_to_close_ != socket_.is_valid());
         AddTags(config->tags, config->num_tags);
-        dropped_logs_.store(0, fbl::memory_order_relaxed);
+        dropped_logs_.store(0, std::memory_order_relaxed);
     }
 
     ~fx_logger() = default;
@@ -59,11 +64,11 @@ public:
     }
 
     void SetSeverity(fx_log_severity_t log_severity) {
-        severity_.store(log_severity, fbl::memory_order_relaxed);
+        severity_.store(log_severity, std::memory_order_relaxed);
     }
 
     fx_log_severity_t GetSeverity() {
-        return severity_.load(fbl::memory_order_relaxed);
+        return severity_.load(std::memory_order_relaxed);
     }
 
     void ActivateFallback(int fallback_fd);
@@ -81,9 +86,9 @@ private:
     zx_status_t AddTags(const char** tags, size_t ntags);
 
     zx_koid_t pid_;
-    fbl::atomic<fx_log_severity_t> severity_;
-    fbl::atomic<uint32_t> dropped_logs_;
-    fbl::atomic<int> logger_fd_;
+    std::atomic<fx_log_severity_t> severity_;
+    std::atomic<uint32_t> dropped_logs_;
+    std::atomic<int> logger_fd_;
     zx::socket socket_;
     fbl::Vector<fbl::String> tags_;
 

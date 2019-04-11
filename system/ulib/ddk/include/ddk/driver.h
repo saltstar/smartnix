@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -95,8 +98,14 @@ typedef struct device_add_args {
     // the proxy device in the new devhost
     const char* proxy_args;
 
-    // One or more of DEVICE_ADD_*
+    // Zero or more of DEVICE_ADD_*
     uint32_t flags;
+
+    // Optional channel passed to the |dev| that serves as an open connection for the client.
+    // If DEVICE_ADD_MUST_ISOLATE is set, the client will be connected to the proxy instead.
+    // If DEVICE_ADD_INVISIBLE is set, the client will not be connected until
+    // device_make_visible is called.
+    zx_handle_t client_remote;
 } device_add_args_t;
 
 struct zx_driver_rec {

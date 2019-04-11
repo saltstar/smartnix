@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2016 The Fuchsia Authors
+#
+# Use of this source code is governed by a MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT
+
 # This script reads the dynamic symbol table of a DSO (ELF file) via nm
 # and writes out a sequence of lines for each symbol in the DSO's ABI
 # that can be used as C macros.  The macro invocations it writes look like:
@@ -69,6 +75,8 @@ massage() {
     # and should not be consider part of the ABI.
     __bss_start|__bss_start__|__bss_end__|_bss_end__) continue ;;
     __data_start|__end__|_stack|_etext|_edata|_end) continue ;;
+    __start_xray_fn_idx|__stop_xray_fn_idx) continue ;;
+    __start_xray_instr_map|__stop_xray_instr_map) continue ;;
     esac
 
     case "$type" in

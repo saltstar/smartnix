@@ -3,13 +3,15 @@
 // found in the LICENSE file.
 
 #include "hid-fifo.h"
+#include "hid-parser.h"
 
 #include <ddk/binding.h>
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/protocol/hidbus.h>
-#include <zircon/input/c/fidl.h>
+#include <ddk/trace/event.h>
+#include <fuchsia/hardware/input/c/fidl.h>
 
 #include <zircon/assert.h>
 #include <zircon/listnode.h>
@@ -39,15 +41,8 @@
 // needs a hack as well.
 #define BOOT_MOUSE_HACK 1
 
-typedef uint8_t input_report_id_t;
-typedef uint16_t input_report_size_t;
-
-typedef struct hid_report_size {
-    uint8_t id;
-    input_report_size_t in_size;
-    input_report_size_t out_size;
-    input_report_size_t feat_size;
-} hid_report_size_t;
+#define HID_REPORT_TRACE_ID(instance_id, report_id) \
+    (((uint64_t) (report_id) << 32) | (instance_id))
 
 typedef struct hid_device {
     zx_device_t* zxdev;
@@ -71,6 +66,7 @@ typedef struct hid_device {
     hid_report_size_t sizes[HID_MAX_REPORT_IDS];
 
     struct list_node instance_list;
+    uint32_t next_instance_trace_id;
     mtx_t instance_lock;
 
     char name[ZX_DEVICE_NAME_MAX + 1];
@@ -83,6 +79,9 @@ typedef struct hid_instance {
     uint32_t flags;
 
     zx_hid_fifo_t fifo;
+    uint32_t trace_id;
+    uint32_t reports_written;
+    uint32_t reports_read;
 
     struct list_node node;
 } hid_instance_t;
@@ -93,8 +92,8 @@ static inline zx_status_t hid_op_query(hid_device_t* hid, uint32_t options, hid_
     return hid->hid.ops->query(hid->hid.ctx, options, info);
 }
 
-static inline zx_status_t hid_op_start(hid_device_t* hid, const hidbus_ifc_t* ifc) {
-    return hidbus_start(&hid->hid, ifc);
+static inline zx_status_t hid_op_start(hid_device_t* hid, void* ctx, hidbus_ifc_ops_t* ops) {
+    return hidbus_start(&hid->hid, ctx, ops);
 }
 
 static inline void hid_op_stop(hid_device_t* hid) {
@@ -132,18 +131,16 @@ static inline zx_status_t hid_op_set_protocol(hid_device_t* hid, uint8_t protoco
     return hidbus_set_protocol(&hid->hid, protocol);
 }
 
-
-static input_report_size_t hid_get_report_size_by_id(hid_device_t* hid,
-                                                     input_report_id_t id,
-                                                     zircon_input_ReportType type) {
+static input_report_size_t hid_get_report_size_by_id(hid_device_t* hid, input_report_id_t id,
+                                                     fuchsia_hardware_input_ReportType type) {
     for (size_t i = 0; i < hid->num_reports; i++) {
         if ((hid->sizes[i].id == id) || (hid->num_reports == 1)) {
             switch (type) {
-            case zircon_input_ReportType_INPUT:
+            case fuchsia_hardware_input_ReportType_INPUT:
                 return bits_to_bytes(hid->sizes[i].in_size);
-            case zircon_input_ReportType_OUTPUT:
+            case fuchsia_hardware_input_ReportType_OUTPUT:
                 return bits_to_bytes(hid->sizes[i].out_size);
-            case zircon_input_ReportType_FEATURE:
+            case fuchsia_hardware_input_ReportType_FEATURE:
                 return bits_to_bytes(hid->sizes[i].feat_size);
             }
         }
@@ -152,14 +149,14 @@ static input_report_size_t hid_get_report_size_by_id(hid_device_t* hid,
     return 0;
 }
 
-static zircon_input_BootProtocol get_boot_protocol(hid_device_t* hid) {
+static fuchsia_hardware_input_BootProtocol get_boot_protocol(hid_device_t* hid) {
     if (hid->info.device_class == HID_DEVICE_CLASS_KBD ||
         hid->info.device_class == HID_DEVICE_CLASS_KBD_POINTER) {
-        return zircon_input_BootProtocol_KBD;
+        return fuchsia_hardware_input_BootProtocol_KBD;
     } else if (hid->info.device_class == HID_DEVICE_CLASS_POINTER) {
-        return zircon_input_BootProtocol_MOUSE;
+        return fuchsia_hardware_input_BootProtocol_MOUSE;
     }
-    return zircon_input_BootProtocol_NONE;
+    return fuchsia_hardware_input_BootProtocol_NONE;
 }
 
 static input_report_size_t get_max_input_reportsize(hid_device_t* hid) {
@@ -174,6 +171,8 @@ static input_report_size_t get_max_input_reportsize(hid_device_t* hid) {
 
 static zx_status_t hid_read_instance(void* ctx, void* buf, size_t count, zx_off_t off,
                                      size_t* actual) {
+    TRACE_DURATION("input", "HID Read Instance");
+
     hid_instance_t* hid = ctx;
 
     if (hid->flags & HID_FLAGS_DEAD) {
@@ -191,7 +190,7 @@ static zx_status_t hid_read_instance(void* ctx, void* buf, size_t count, zx_off_
         return ZX_ERR_SHOULD_WAIT;
     }
 
-    xfer = hid_get_report_size_by_id(hid->base, rpt_id, zircon_input_ReportType_INPUT);
+    xfer = hid_get_report_size_by_id(hid->base, rpt_id, fuchsia_hardware_input_ReportType_INPUT);
     if (xfer == 0) {
         zxlogf(ERROR, "error reading hid device: unknown report id (%u)!\n", rpt_id);
         mtx_unlock(&hid->fifo.lock);
@@ -211,6 +210,10 @@ static zx_status_t hid_read_instance(void* ctx, void* buf, size_t count, zx_off_
     }
     mtx_unlock(&hid->fifo.lock);
     if (r > 0) {
+        TRACE_FLOW_END("input", "hid_instance_report",
+                       HID_REPORT_TRACE_ID(hid->trace_id,
+                                           hid->reports_read));
+        ++hid->reports_read;
         *actual = r;
         r = ZX_OK;
     } else if (r == 0) {
@@ -238,72 +241,75 @@ static void hid_release_instance(void* ctx) {
 
 static zx_status_t fidl_GetBootProtocol(void* ctx, fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
-    return zircon_input_DeviceGetBootProtocol_reply(txn, get_boot_protocol(hid->base));
+    return fuchsia_hardware_input_DeviceGetBootProtocol_reply(txn, get_boot_protocol(hid->base));
 }
 
 static zx_status_t fidl_GetReportDescSize(void* ctx, fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
-    return zircon_input_DeviceGetReportDescSize_reply(txn, hid->base->hid_report_desc_len);
+    return fuchsia_hardware_input_DeviceGetReportDescSize_reply(txn,
+                                                                hid->base->hid_report_desc_len);
 }
 
 static zx_status_t fidl_GetReportDesc(void* ctx, fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
-    return zircon_input_DeviceGetReportDesc_reply(txn, hid->base->hid_report_desc,
-                                                  hid->base->hid_report_desc_len);
+    return fuchsia_hardware_input_DeviceGetReportDesc_reply(txn, hid->base->hid_report_desc,
+                                                            hid->base->hid_report_desc_len);
 }
 
 static zx_status_t fidl_GetNumReports(void* ctx, fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
-    return zircon_input_DeviceGetNumReports_reply(txn, hid->base->num_reports);
+    return fuchsia_hardware_input_DeviceGetNumReports_reply(txn, hid->base->num_reports);
 }
 
 static zx_status_t fidl_GetReportIds(void* ctx, fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
-    uint8_t report[zircon_input_MAX_REPORT_IDS];
+    uint8_t report[fuchsia_hardware_input_MAX_REPORT_IDS];
     for (size_t i = 0; i < hid->base->num_reports; i++) {
         report[i] = hid->base->sizes[i].id;
     }
-    return zircon_input_DeviceGetReportIds_reply(txn, report, hid->base->num_reports);
+    return fuchsia_hardware_input_DeviceGetReportIds_reply(txn, report, hid->base->num_reports);
 }
 
-static zx_status_t fidl_GetReportSize(void* ctx, zircon_input_ReportType type, uint8_t id,
+static zx_status_t fidl_GetReportSize(void* ctx, fuchsia_hardware_input_ReportType type, uint8_t id,
                                       fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
     input_report_size_t size = hid_get_report_size_by_id(hid->base, id, type);
-    return zircon_input_DeviceGetReportSize_reply(txn, size == 0 ? ZX_ERR_NOT_FOUND : ZX_OK, size);
+    return fuchsia_hardware_input_DeviceGetReportSize_reply(
+        txn, size == 0 ? ZX_ERR_NOT_FOUND : ZX_OK, size);
 }
 
 static zx_status_t fidl_GetMaxInputReportSize(void* ctx, fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
-    return zircon_input_DeviceGetMaxInputReportSize_reply(txn, get_max_input_reportsize(hid->base));
+    return fuchsia_hardware_input_DeviceGetMaxInputReportSize_reply(
+        txn, get_max_input_reportsize(hid->base));
 }
 
-static zx_status_t fidl_GetReport(void* ctx, zircon_input_ReportType type, uint8_t id,
+static zx_status_t fidl_GetReport(void* ctx, fuchsia_hardware_input_ReportType type, uint8_t id,
                                   fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
     input_report_size_t needed = hid_get_report_size_by_id(hid->base, id, type);
     if (needed == 0) {
-        return zircon_input_DeviceGetReport_reply(txn, ZX_ERR_NOT_FOUND, NULL, 0);
+        return fuchsia_hardware_input_DeviceGetReport_reply(txn, ZX_ERR_NOT_FOUND, NULL, 0);
     }
 
     uint8_t report[needed];
     size_t actual = 0;
     zx_status_t status = hid_op_get_report(hid->base, type, id, report, needed, &actual);
-    return zircon_input_DeviceGetReport_reply(txn, status, report, actual);
+    return fuchsia_hardware_input_DeviceGetReport_reply(txn, status, report, actual);
 }
 
-static zx_status_t fidl_SetReport(void* ctx, zircon_input_ReportType type, uint8_t id,
+static zx_status_t fidl_SetReport(void* ctx, fuchsia_hardware_input_ReportType type, uint8_t id,
                                   const uint8_t* report, size_t report_len, fidl_txn_t* txn) {
     hid_instance_t* hid = ctx;
     input_report_size_t needed = hid_get_report_size_by_id(hid->base, id, type);
     if (needed < report_len) {
-        return zircon_input_DeviceSetReport_reply(txn, ZX_ERR_BUFFER_TOO_SMALL);
+        return fuchsia_hardware_input_DeviceSetReport_reply(txn, ZX_ERR_BUFFER_TOO_SMALL);
     }
     zx_status_t status = hid_op_set_report(hid->base, type, id, report, report_len);
-    return zircon_input_DeviceSetReport_reply(txn, status);
+    return fuchsia_hardware_input_DeviceSetReport_reply(txn, status);
 }
 
-static zircon_input_Device_ops_t fidl_ops = {
+static fuchsia_hardware_input_Device_ops_t fidl_ops = {
     .GetBootProtocol = fidl_GetBootProtocol,
     .GetReportDescSize = fidl_GetReportDescSize,
     .GetReportDesc = fidl_GetReportDesc,
@@ -321,7 +327,7 @@ static zx_status_t hid_message_instance(void* ctx, fidl_msg_t* msg, fidl_txn_t* 
         return ZX_ERR_PEER_CLOSED;
     }
 
-    return zircon_input_Device_dispatch(ctx, txn, msg, &fidl_ops);
+    return fuchsia_hardware_input_Device_dispatch(ctx, txn, msg, &fidl_ops);
 }
 
 zx_protocol_device_t hid_instance_proto = {
@@ -330,26 +336,6 @@ zx_protocol_device_t hid_instance_proto = {
     .close = hid_close_instance,
     .message = hid_message_instance,
     .release = hid_release_instance,
-};
-
-enum {
-    HID_ITEM_TYPE_MAIN = 0,
-    HID_ITEM_TYPE_GLOBAL = 1,
-    HID_ITEM_TYPE_LOCAL = 2,
-};
-
-enum {
-    HID_ITEM_MAIN_TAG_INPUT = 8,
-    HID_ITEM_MAIN_TAG_OUTPUT = 9,
-    HID_ITEM_MAIN_TAG_FEATURE = 11,
-};
-
-enum {
-    HID_ITEM_GLOBAL_TAG_REPORT_SIZE = 7,
-    HID_ITEM_GLOBAL_TAG_REPORT_ID = 8,
-    HID_ITEM_GLOBAL_TAG_REPORT_COUNT = 9,
-    HID_ITEM_GLOBAL_TAG_PUSH = 10,
-    HID_ITEM_GLOBAL_TAG_POP = 11,
 };
 
 static void hid_dump_hid_report_desc(hid_device_t* dev) {
@@ -367,188 +353,25 @@ static void hid_dump_hid_report_desc(hid_device_t* dev) {
     }
 }
 
-typedef struct hid_item {
-    uint8_t bSize;
-    uint8_t bType;
-    uint8_t bTag;
-    int64_t data;
-} hid_item_t;
-
-static const uint8_t* hid_parse_short_item(const uint8_t* buf, const uint8_t* end, hid_item_t* item) {
-    switch (*buf & 0x3) {
-    case 0:
-        item->bSize = 0;
-        break;
-    case 1:
-        item->bSize = 1;
-        break;
-    case 2:
-        item->bSize = 2;
-        break;
-    case 3:
-        item->bSize = 4;
-        break;
-    }
-    item->bType = (*buf >> 2) & 0x3;
-    item->bTag = (*buf >> 4) & 0x0f;
-    if (buf + item->bSize >= end) {
-        // Return a RESERVED item type, and point past the end of the buffer to
-        // prevent further parsing.
-        item->bType = 0x03;
-        return end;
-    }
-    buf++;
-
-    item->data = 0;
-    for (uint8_t i = 0; i < item->bSize; i++) {
-        item->data |= *buf << (8*i);
-        buf++;
-    }
-    return buf;
+void hid_reports_set_boot_mode(hid_reports_t *reports) {
+    reports->num_reports = 1;
+    reports->sizes[0].id = 0;
+    reports->sizes[0].in_size = 24;
+    reports->sizes[0].out_size = 0;
+    reports->sizes[0].feat_size = 0;
+    reports->has_rpt_id = false;
 }
 
-static int hid_fetch_or_alloc_report_ndx(input_report_id_t report_id, hid_device_t* dev) {
-    ZX_DEBUG_ASSERT(dev->num_reports <= countof(dev->sizes));
-    for (size_t i = 0; i < dev->num_reports; i++) {
-        if (dev->sizes[i].id == report_id)
-            return i;
-    }
+zx_status_t hid_process_hid_report_desc(hid_device_t* dev) {
+    hid_reports_t reports;
+    reports.num_reports = 0;
+    reports.sizes_len = HID_MAX_REPORT_IDS;
+    reports.sizes = dev->sizes;
+    reports.has_rpt_id = false;
 
-    if (dev->num_reports < countof(dev->sizes)) {
-        dev->sizes[dev->num_reports].id = report_id;
-        ZX_DEBUG_ASSERT(dev->sizes[dev->num_reports].in_size == 0);
-        ZX_DEBUG_ASSERT(dev->sizes[dev->num_reports].out_size == 0);
-        ZX_DEBUG_ASSERT(dev->sizes[dev->num_reports].feat_size == 0);
-        return dev->num_reports++;
-    } else {
-        return -1;
-    }
-
-}
-
-typedef struct hid_global_state {
-    uint32_t rpt_size;
-    uint32_t rpt_count;
-    input_report_id_t rpt_id;
-    list_node_t node;
-} hid_global_state_t;
-
-static zx_status_t hid_push_global_state(list_node_t* stack, hid_global_state_t* state) {
-    hid_global_state_t* entry = malloc(sizeof(*entry));
-    if (entry == NULL) {
-        return ZX_ERR_NO_MEMORY;
-    }
-    entry->rpt_size = state->rpt_size;
-    entry->rpt_count = state->rpt_count;
-    entry->rpt_id = state->rpt_id;
-    list_add_tail(stack, &entry->node);
-    return ZX_OK;
-}
-
-static zx_status_t hid_pop_global_state(list_node_t* stack, hid_global_state_t* state) {
-    hid_global_state_t* entry = list_remove_tail_type(stack, hid_global_state_t, node);
-    if (entry == NULL) {
-        return ZX_ERR_BAD_STATE;
-    }
-    state->rpt_size = entry->rpt_size;
-    state->rpt_count = entry->rpt_count;
-    state->rpt_id = entry->rpt_id;
-    free(entry);
-    return ZX_OK;
-}
-
-static void hid_clear_global_state(list_node_t* stack) {
-    hid_global_state_t* state, *tmp;
-    list_for_every_entry_safe(stack, state, tmp, hid_global_state_t, node) {
-        list_delete(&state->node);
-        free(state);
-    }
-}
-
-static zx_status_t hid_process_hid_report_desc(hid_device_t* dev) {
-    const uint8_t* buf = dev->hid_report_desc;
-    const uint8_t* end = buf + dev->hid_report_desc_len;
-    zx_status_t status = ZX_OK;
-    hid_item_t item;
-
-    bool has_rpt_id = false;
-    hid_global_state_t state;
-    memset(&state, 0, sizeof(state));
-    list_node_t global_stack;
-    list_initialize(&global_stack);
-    while (buf < end) {
-        buf = hid_parse_short_item(buf, end, &item);
-        switch (item.bType) {
-        case HID_ITEM_TYPE_MAIN: {
-            input_report_size_t inc = state.rpt_size * state.rpt_count;
-            int idx;
-            switch (item.bTag) {
-            case HID_ITEM_MAIN_TAG_INPUT:
-                idx = hid_fetch_or_alloc_report_ndx(state.rpt_id, dev);
-                if (idx < 0) {
-                    status = ZX_ERR_NOT_SUPPORTED;
-                    goto done;
-                }
-                dev->sizes[idx].in_size += inc;
-                break;
-            case HID_ITEM_MAIN_TAG_OUTPUT:
-                idx = hid_fetch_or_alloc_report_ndx(state.rpt_id, dev);
-                if (idx < 0) {
-                    status = ZX_ERR_NOT_SUPPORTED;
-                    goto done;
-                }
-                dev->sizes[idx].out_size += inc;
-                break;
-            case HID_ITEM_MAIN_TAG_FEATURE:
-                idx = hid_fetch_or_alloc_report_ndx(state.rpt_id, dev);
-                if (idx < 0) {
-                    status = ZX_ERR_NOT_SUPPORTED;
-                    goto done;
-                }
-                dev->sizes[idx].feat_size += inc;
-                break;
-            default:
-                break;
-            }
-            break;  // case HID_ITEM_TYPE_MAIN
-        }
-        case HID_ITEM_TYPE_GLOBAL: {
-            switch (item.bTag) {
-            case HID_ITEM_GLOBAL_TAG_REPORT_SIZE:
-                state.rpt_size = (uint32_t)item.data;
-                break;
-            case HID_ITEM_GLOBAL_TAG_REPORT_ID:
-                state.rpt_id = (input_report_id_t)item.data;
-                has_rpt_id = true;
-                break;
-            case HID_ITEM_GLOBAL_TAG_REPORT_COUNT:
-                state.rpt_count = (uint32_t)item.data;
-                break;
-            case HID_ITEM_GLOBAL_TAG_PUSH:
-                status = hid_push_global_state(&global_stack, &state);
-                if (status != ZX_OK) {
-                    goto done;
-                }
-                break;
-            case HID_ITEM_GLOBAL_TAG_POP:
-                status = hid_pop_global_state(&global_stack, &state);
-                if (status != ZX_OK) {
-                    goto done;
-                }
-                break;
-            default:
-                break;
-            }
-            break;  // case HID_ITEM_TYPE_GLOBAL
-        }
-        default:
-            break;
-        }
-    }
-done:
-    hid_clear_global_state(&global_stack);
-
+    zx_status_t status = hid_lib_parse_reports(dev->hid_report_desc, dev->hid_report_desc_len, &reports);
     if (status == ZX_OK) {
+
 #if BOOT_MOUSE_HACK
         // Ignore the HID report descriptor from the device, since we're putting
         // the device into boot protocol mode.
@@ -561,12 +384,7 @@ done:
                        "feat sz (%d->0)\n",
                        dev->name, dev->num_reports, dev->sizes[0].in_size,
                        dev->sizes[0].out_size, dev->sizes[0].feat_size);
-                dev->num_reports = 1;
-                dev->sizes[0].id = 0;
-                dev->sizes[0].in_size = 24;
-                dev->sizes[0].out_size = 0;
-                dev->sizes[0].feat_size = 0;
-                has_rpt_id = false;
+                hid_reports_set_boot_mode(&reports);
             } else {
                 zxlogf(INFO,
                     "hid: boot mouse hack skipped for \"%s\": does not support protocol.\n",
@@ -574,10 +392,13 @@ done:
             }
         }
 #endif
+
+        dev->num_reports = reports.num_reports;
+
         // If we saw a report ID, adjust the expected report sizes to reflect
         // the fact that we expect a report ID to be prepended to each report.
         ZX_DEBUG_ASSERT(dev->num_reports <= countof(dev->sizes));
-        if (has_rpt_id) {
+        if (reports.has_rpt_id) {
             for (size_t i = 0; i < dev->num_reports; ++i) {
                 if (dev->sizes[i].in_size)   dev->sizes[i].in_size   += 8;
                 if (dev->sizes[i].out_size)  dev->sizes[i].out_size  += 8;
@@ -661,6 +482,7 @@ static zx_status_t hid_open_device(void* ctx, zx_device_t** dev_out, uint32_t fl
 
     mtx_lock(&hid->instance_lock);
     list_add_tail(&hid->instance_list, &inst->node);
+    inst->trace_id = hid->next_instance_trace_id++;
     mtx_unlock(&hid->instance_lock);
 
     *dev_out = inst->zxdev;
@@ -689,6 +511,8 @@ zx_protocol_device_t hid_device_proto = {
 void hid_io_queue(void* cookie, const void* _buf, size_t len) {
     const uint8_t* buf = _buf;
     hid_device_t* hid = cookie;
+
+    TRACE_DURATION("input", "HID IO Queue");
 
     mtx_lock(&hid->instance_lock);
 
@@ -725,7 +549,8 @@ void hid_io_queue(void* cookie, const void* _buf, size_t len) {
         } else {
             // No reassembly is in progress.  Start by identifying this report's
             // size.
-            size_t rpt_sz = hid_get_report_size_by_id(hid, buf[0], zircon_input_ReportType_INPUT);
+            size_t rpt_sz =
+                hid_get_report_size_by_id(hid, buf[0], fuchsia_hardware_input_ReportType_INPUT);
 
             // If we don't recognize this report ID, we are in trouble.  Drop
             // the rest of this payload and hope that the next one gets us back
@@ -771,6 +596,11 @@ void hid_io_queue(void* cookie, const void* _buf, size_t len) {
                     instance->flags |= HID_FLAGS_WRITE_FAILED;
                 }
             } else {
+                TRACE_FLOW_BEGIN(
+                    "input", "hid_instance_report",
+                    HID_REPORT_TRACE_ID(instance->trace_id,
+                                        instance->reports_written));
+                ++instance->reports_written;
                 instance->flags &= ~HID_FLAGS_WRITE_FAILED;
                 if (was_empty) {
                     device_state_set(instance->zxdev, DEV_STATE_READABLE);
@@ -807,6 +637,7 @@ static zx_status_t hid_bind(void* ctx, zx_device_t* parent) {
 
     mtx_init(&hiddev->instance_lock, mtx_plain);
     list_initialize(&hiddev->instance_list);
+    hiddev->next_instance_trace_id = 1u;
 
     snprintf(hiddev->name, sizeof(hiddev->name), "hid-device-%03d", hiddev->info.dev_num);
     hiddev->name[ZX_DEVICE_NAME_MAX] = 0;
@@ -861,7 +692,7 @@ static zx_status_t hid_bind(void* ctx, zx_device_t* parent) {
     }
 
     // TODO: delay calling start until we've been opened by someone
-    status = hid_op_start(hiddev, &(hidbus_ifc_t){&hid_ifc_ops, hiddev});
+    status = hid_op_start(hiddev, hiddev, &hid_ifc_ops);
     if (status != ZX_OK) {
         zxlogf(ERROR, "hid: could not start hid device: %d\n", status);
         device_remove(hiddev->zxdev);

@@ -1,11 +1,14 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <ddk/device.h>
-#include <ddk/usb/usb.h>
+#include <usb/usb.h>
 #include <zircon/compiler.h>
 #include <zircon/hw/usb.h>
-#include <zircon/hw/usb-audio.h>
+#include <zircon/hw/usb/audio.h>
 
 #if __cplusplus
 #include <fbl/array.h>
@@ -15,11 +18,13 @@ __BEGIN_CDECLS
 
 zx_status_t usb_midi_sink_create(zx_device_t* device, usb_protocol_t* usb, int index,
                                  const usb_interface_descriptor_t* intf,
-                                 const usb_endpoint_descriptor_t* ep);
+                                 const usb_endpoint_descriptor_t* ep,
+                                 const size_t req_size);
 
 zx_status_t usb_midi_source_create(zx_device_t* device, usb_protocol_t* usb, int index,
                                    const usb_interface_descriptor_t* intf,
-                                   const usb_endpoint_descriptor_t* ep);
+                                   const usb_endpoint_descriptor_t* ep,
+                                   const size_t req_size);
 
 __END_CDECLS
 

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <ddk/io-buffer.h>
+#include <hw/arch_ops.h>
 #include <virtio/virtio_ring.h>
 #include <zircon/types.h>
 
@@ -18,6 +19,8 @@ public:
     Ring(Device* device);
     ~Ring();
 
+    // Initialize ring |index| with default (device-offered) size.
+    zx_status_t Init(uint16_t index);
     zx_status_t Init(uint16_t index, uint16_t count);
 
     void FreeDesc(uint16_t desc_index);
@@ -51,6 +54,9 @@ inline void Ring::IrqRingUpdate(T free_chain) {
     // find a new free chain of descriptors
     uint16_t cur_idx = ring_.used->idx;
     uint16_t i = ring_.last_used;
+    // Read memory barrier before processing a descriptor chain. If we see an updated used->idx
+    // we must see updated descriptor chains in the used ring.
+    hw_rmb();
     for (; i != cur_idx; ++i) {
         // TRACEF("looking at idx %u\n", i);
 

@@ -27,18 +27,18 @@ $(MODULE_BANJO_RSP): BANJO_NAME:=$(MODULE_BANJO_LIBRARY)
 $(MODULE_BANJO_RSP): BANJO_C_HEADER:=$(MODULE_BANJO_C_HEADER)
 $(MODULE_BANJO_RSP): BANJO_CPP_HEADER:=$(MODULE_BANJO_CPP_HEADER)
 $(MODULE_BANJO_RSP): BANJO_SRCS:=$(MODULE_BANJOSRCS)
-$(MODULE_BANJO_RSP): $(foreach dep,$(MODULE_BANJO_DEPS),$(call TOBUILDDIR,$(dep))/gen/banjo-files) $(MODULE_BANJOSRCS) make/fcompile.mk
+$(MODULE_BANJO_RSP): $(foreach dep,$(MODULE_BANJO_DEPS),$(call TOBUILDDIR,$(dep))/gen/banjo-files) $(MODULE_BANJOSRCS) make/bcompile.mk
 	@$(MKDIR)
 	$(NOECHO)echo --name $(BANJO_NAME) --ddk-header $(BANJO_C_HEADER) --ddktl-header $(BANJO_CPP_HEADER) $(foreach dep,$(BANJO_DEPS),--files $(shell cat $(call TOBUILDDIR,$(dep))/gen/banjo-files)) --files $(BANJO_SRCS) > $@
 
 # $@ only lists one of the multiple targets, so we use $< (first dep) to
 # compute the (related) destination directories to create
-%/gen/include/ddk/protocol/$(MODULE_BANJO_NAME).h %gen/include/ddktl/protocol/$(MODULE_BANJO_NAME).h %gen/include/ddktl/protocol/$(MODULE_BANJO_NAME)-internal.h: %/gen/banjo.rsp $(BANJO)
+%/gen/include/ddk/protocol/$(MODULE_BANJO_NAME).h %/gen/include/ddktl/protocol/$(MODULE_BANJO_NAME).h %/gen/include/ddktl/protocol/$(MODULE_BANJO_NAME)-internal.h: %/gen/banjo.rsp $(BANJO)
 	$(call BUILDECHO, generating banjo from $<)
 	@mkdir -p $(<D)/include/ddk/protocol $(<D)/include/ddktl/protocol
 	$(NOECHO)$(BANJO) @$<
 
-EXTRA_BUILDDEPS += make/fcompile.mk
+EXTRA_BUILDDEPS += make/bcompile.mk
 GENERATED += $(MODULE_BANJO_C_HEADER) $(MODULE_BANJO_CPP_HEADER) $(MODULE_BANJO_CPP_INTERNAL_HEADER)
 
 # clear some variables we set here

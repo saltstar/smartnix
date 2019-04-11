@@ -16,7 +16,7 @@ public:
 
     void Post();
 
-    zx_status_t Wait(zx_time_t deadline);
+    zx_status_t Wait(const Deadline& deadline);
 
 private:
     int64_t count_;

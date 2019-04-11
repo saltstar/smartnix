@@ -20,7 +20,7 @@ zx_status_t BlockingPortAllocator::Init() {
 
 PortPacket* BlockingPortAllocator::AllocBlocking() {
     ktrace_vcpu(TAG_VCPU_BLOCK, VCPU_PORT);
-    zx_status_t status = semaphore_.Wait(ZX_TIME_INFINITE);
+    zx_status_t status = semaphore_.Wait(Deadline::infinite());
     ktrace_vcpu(TAG_VCPU_UNBLOCK, VCPU_PORT);
     if (status != ZX_OK) {
         return nullptr;
@@ -39,7 +39,7 @@ void BlockingPortAllocator::Free(PortPacket* port_packet) {
 
 Trap::Trap(uint32_t kind, zx_gpaddr_t addr, size_t len, fbl::RefPtr<PortDispatcher> port,
                      uint64_t key)
-    : kind_(kind), addr_(addr), len_(len), port_(fbl::move(port)), key_(key) {
+    : kind_(kind), addr_(addr), len_(len), port_(ktl::move(port)), key_(key) {
     (void) key_;
 }
 
@@ -87,7 +87,7 @@ zx_status_t TrapMap::InsertTrap(uint32_t kind, zx_gpaddr_t addr, size_t len,
         return ZX_ERR_ALREADY_EXISTS;
     }
     fbl::AllocChecker ac;
-    fbl::unique_ptr<Trap> range(new (&ac) Trap(kind, addr, len, fbl::move(port), key));
+    ktl::unique_ptr<Trap> range(new (&ac) Trap(kind, addr, len, ktl::move(port), key));
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
@@ -96,8 +96,8 @@ zx_status_t TrapMap::InsertTrap(uint32_t kind, zx_gpaddr_t addr, size_t len,
         return status;
     }
     {
-        fbl::AutoLock lock(&mutex_);
-        traps->insert(fbl::move(range));
+        Guard<SpinLock, IrqSave> guard{&lock_};
+        traps->insert(ktl::move(range));
     }
     return ZX_OK;
 }
@@ -109,7 +109,7 @@ zx_status_t TrapMap::FindTrap(uint32_t kind, zx_gpaddr_t addr, Trap** trap) {
     }
     TrapTree::iterator iter;
     {
-        fbl::AutoLock lock(&mutex_);
+        Guard<SpinLock, IrqSave> guard{&lock_};
         iter = traps->upper_bound(addr);
     }
     --iter;

@@ -1,8 +1,13 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <fbl/function.h>
 #include <lib/async/receiver.h>
+
+#include <utility>
 
 namespace async {
 
@@ -68,7 +73,7 @@ public:
     explicit Receiver(Handler handler = nullptr);
     ~Receiver();
 
-    void set_handler(Handler handler) { handler_ = fbl::move(handler); }
+    void set_handler(Handler handler) { handler_ = std::move(handler); }
     bool has_handler() const { return !!handler_; }
 
 private:

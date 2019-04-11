@@ -6,6 +6,8 @@
 #include <limits.h>
 #include <stdint.h>
 
+#include <utility>
+
 namespace {
 
 enum class FsTestType {
@@ -23,6 +25,13 @@ enum class FsTestState {
     kRunning, // Initialized and ready to start testing.
     kComplete, // Indicates that the test has completed.
     kError, // Indicates that an error has occurred.
+};
+
+struct BlobfsUsage {
+    uint64_t used_bytes;
+    uint64_t total_bytes;
+    uint64_t used_nodes;
+    uint64_t total_nodes;
 };
 
 class BlobfsTest {
@@ -54,7 +63,7 @@ public:
     }
 
     int GetFd() const {
-        return open(ramdisk_path_, O_RDWR);
+        return open(device_path_, O_RDWR);
     }
 
     off_t GetDiskSize() const {
@@ -107,8 +116,10 @@ public:
     // Returns the current total transaction block count from the underlying ramdisk.
     bool GetRamdiskCount(uint64_t* blk_count) const;
 
-    // Checks info of mounted blobfs. Returns total number of bytes available as |total_bytes|.
-    bool CheckInfo(uint64_t* total_bytes = nullptr);
+    // Checks info of mounted blobfs.
+    //
+    // Returns total and used byte and node counts in |usage| if it is supplied.
+    bool CheckInfo(BlobfsUsage* usage = nullptr);
 
 private:
     // Mounts the blobfs partition.
@@ -118,7 +129,8 @@ private:
     FsTestState state_ = FsTestState::kInit;
     uint64_t blk_size_ = 512;
     uint64_t blk_count_ = 1 << 20;
-    char ramdisk_path_[PATH_MAX];
+    ramdisk_client_t* ramdisk_ = nullptr;
+    char device_path_[PATH_MAX];
     char fvm_path_[PATH_MAX];
     bool read_only_ = false;
     bool asleep_ = false;

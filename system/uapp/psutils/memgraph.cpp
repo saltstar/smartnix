@@ -1,9 +1,13 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // memgraph prints system-wide task and memory information as JSON.
 // See memgraph-schema.json for the schema.
 
 #include <getopt.h>
 #include <inttypes.h>
+#include <new>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -13,7 +17,6 @@
 #include <zircon/syscalls.h>
 #include <zircon/syscalls/exception.h>
 #include <zircon/syscalls/object.h>
-#include <zxcpp/new.h>
 #include <task-utils/walker.h>
 
 #include "resources.h"

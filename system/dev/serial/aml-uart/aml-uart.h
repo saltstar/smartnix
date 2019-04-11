@@ -4,13 +4,13 @@
 
 #include <threads.h>
 
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddk/protocol/platform-device-lib.h>
-#include <ddk/protocol/serial-impl.h>
+#include <ddk/protocol/serialimpl.h>
 #include <ddk/protocol/serial.h>
 #include <ddktl/device.h>
 #include <ddktl/mmio.h>
-#include <ddktl/protocol/serial-impl.h>
+#include <ddktl/protocol/serialimpl.h>
 
 #include <fbl/function.h>
 #include <fbl/mutex.h>
@@ -18,13 +18,15 @@
 #include <zircon/thread_annotations.h>
 #include <zircon/types.h>
 
+#include <utility>
+
 namespace serial {
 
 class AmlUart;
 using DeviceType = ddk::Device<AmlUart, ddk::Unbindable>;
 
 class AmlUart : public DeviceType,
-                public ddk::SerialImplProtocol<AmlUart> {
+                public ddk::SerialImplProtocol<AmlUart, ddk::base_protocol> {
 public:
     // Spawns device node.
     static zx_status_t Create(zx_device_t* parent);
@@ -53,7 +55,7 @@ private:
                      const serial_port_info_t& serial_port_info,
                      ddk::MmioBuffer mmio)
         : DeviceType(parent), pdev_(pdev), serial_port_info_(serial_port_info),
-          mmio_(fbl::move(mmio)) {}
+          mmio_(std::move(mmio)) {}
 
     // Reads the current state from the status register and calls notify_cb if it has changed.
     uint32_t ReadStateAndNotify();

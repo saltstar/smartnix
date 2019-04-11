@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,21 +9,21 @@
 #include <zircon/compiler.h>
 #include <zircon/types.h>
 #include <lib/fdio/io.h>
-#include <lib/fdio/remoteio.h>
 #include <lib/fdio/vfs.h>
 
 #ifdef __cplusplus
 
-#include <fs/managed-vfs.h>
-#include <fs/vfs.h>
-#include <fs/vnode.h>
-#include <fbl/atomic.h>
 #include <fbl/intrusive_double_list.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_ptr.h>
+#include <fs/managed-vfs.h>
 #include <fs/remote.h>
+#include <fs/vfs.h>
+#include <fs/vnode.h>
 #include <fs/watcher.h>
 #include <lib/zx/vmo.h>
+
+#include <atomic>
 
 namespace memfs {
 
@@ -57,16 +60,16 @@ protected:
     uint64_t modify_time_;
 
     uint64_t GetInoCounter() const {
-        return ino_ctr_.load(fbl::memory_order_relaxed);
+        return ino_ctr_.load(std::memory_order_relaxed);
     }
 
     uint64_t GetDeletedInoCounter() const {
-        return deleted_ino_ctr_.load(fbl::memory_order_relaxed);
+        return deleted_ino_ctr_.load(std::memory_order_relaxed);
     }
 
 private:
-    static fbl::atomic<uint64_t> ino_ctr_;
-    static fbl::atomic<uint64_t> deleted_ino_ctr_;
+    static std::atomic<uint64_t> ino_ctr_;
+    static std::atomic<uint64_t> deleted_ino_ctr_;
 };
 
 class VnodeFile final : public VnodeMemfs {
@@ -84,9 +87,8 @@ private:
                        size_t* out_actual) final;
     zx_status_t Truncate(size_t len) final;
     zx_status_t Getattr(vnattr_t* a) final;
-    zx_status_t GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                           zxrio_node_info_t* extra) final;
-    zx_status_t GetVmo(int flags, zx_handle_t* out) final;
+    zx_status_t GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info) final;
+    zx_status_t GetVmo(int flags, zx_handle_t* out_vmo, size_t* out_size) final;
 
     // Ensure the underlying vmo is filled with zero from:
     // [start, round_up(end, PAGE_SIZE)).
@@ -147,9 +149,8 @@ private:
                        bool dst_must_be_dir) final;
     zx_status_t Link(fbl::StringPiece name, fbl::RefPtr<fs::Vnode> target) final;
     zx_status_t Getattr(vnattr_t* a) final;
-    zx_status_t GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                           zxrio_node_info_t* extra) final;
-    zx_status_t GetVmo(int flags,  zx_handle_t* out) final;
+    zx_status_t GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info) final;
+    zx_status_t GetVmo(int flags, zx_handle_t* out_vmo, size_t* out_size) final;
 
     fs::RemoteContainer remoter_;
     fs::WatcherContainer watcher_;
@@ -163,11 +164,9 @@ public:
     virtual zx_status_t ValidateFlags(uint32_t flags) override;
 
 private:
-    zx_status_t Serve(fs::Vfs* vfs, zx::channel channel, uint32_t flags) final;
     zx_status_t Read(void* data, size_t len, size_t off, size_t* out_actual) final;
     zx_status_t Getattr(vnattr_t* a) final;
-    zx_status_t GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                           zxrio_node_info_t* extra) final;
+    zx_status_t GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info) final;
 
     zx_handle_t vmo_;
     zx_off_t offset_;

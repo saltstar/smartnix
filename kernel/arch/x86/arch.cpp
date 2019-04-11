@@ -10,7 +10,6 @@
 #include <arch/x86/mmu.h>
 #include <arch/x86/mmu_mem_types.h>
 #include <arch/x86/mp.h>
-#include <arch/x86/perf_mon.h>
 #include <arch/x86/proc_trace.h>
 #include <arch/x86/tsc.h>
 #include <assert.h>
@@ -30,9 +29,6 @@
 #include <zircon/types.h>
 
 #define LOCAL_TRACE 0
-
-/* save a pointer to the multiboot information coming in from whoever called us */
-void* _multiboot_info;
 
 /* save a pointer to the bootdata, if present */
 void* _zbi_base;
@@ -55,7 +51,6 @@ void arch_init(void) {
     gdt_setup();
     idt_setup_readonly();
 
-    x86_perfmon_init();
     x86_processor_trace_init();
 }
 

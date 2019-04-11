@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Note: Curently this module is a header only library.  This file exists only
 // to give the compiler something to build in order to create a library.  It can

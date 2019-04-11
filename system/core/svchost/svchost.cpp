@@ -1,12 +1,19 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "sysmem.h"
 
 #include <fbl/algorithm.h>
+#include <fuchsia/net/c/fidl.h>
 #include <lib/async-loop/cpp/loop.h>
-#include <lib/crashanalyzer/crashanalyzer.h>
 #include <lib/fdio/util.h>
 #include <lib/logger/provider.h>
 #include <lib/process-launcher/launcher.h>
+#include <lib/profile/profile.h>
 #include <lib/svc/outgoing.h>
 #include <lib/sysmem/sysmem.h>
+#include <lib/zx/job.h>
 #include <zircon/process.h>
 #include <zircon/processargs.h>
 #include <zircon/status.h>
@@ -21,6 +28,9 @@ typedef struct zx_service_provider_instance {
     // The |ctx| pointer returned by the provider's |init| function, if any.
     void* ctx;
 } zx_service_provider_instance_t;
+
+// start_crashsvc() is implemented in crashsvc.cpp.
+void start_crashsvc(zx::job root_job, zx_handle_t analyzer_svc);
 
 static zx_status_t provider_init(zx_service_provider_instance_t* instance) {
     if (instance->provider->ops->init) {
@@ -82,6 +92,7 @@ static zx_status_t provider_load(zx_service_provider_instance_t* instance,
 }
 
 static zx_handle_t appmgr_svc;
+static zx_handle_t root_job;
 
 // We should host the tracelink service ourselves instead of routing the request
 // to appmgr.
@@ -99,14 +110,14 @@ zx_status_t publish_tracelink(const fbl::RefPtr<fs::PseudoDir>& dir) {
 // environment. Instead, we should make the test environment hermetic and
 // remove the dependencies on these services.
 static constexpr const char* deprecated_services[] = {
-    // remove amber.Control when CP-50 is resolved
     "fuchsia.amber.Control",
     "fuchsia.cobalt.LoggerFactory",
     "fuchsia.devicesettings.DeviceSettingsManager",
     "fuchsia.logger.Log",
     "fuchsia.logger.LogSink",
-    "fuchsia.media.Audio",
-    "fuchsia.net.LegacySocketProvider",
+    // Interface to resolve shell commands.
+    "fuchsia.process.Resolver",
+    fuchsia_net_SocketProvider_Name,
     // Legacy interface for netstack, defined in //garnet
     "fuchsia.netstack.Netstack",
     // New interface for netstack (WIP), defined in //zircon
@@ -115,7 +126,7 @@ static constexpr const char* deprecated_services[] = {
     "fuchsia.sys.Environment",
     "fuchsia.sys.Launcher",
     "fuchsia.wlan.service.Wlan",
-    // TODO(IN-458): This entry is temporary, until IN-458 is resolved.
+    // TODO(PT-88): This entry is temporary, until PT-88 is resolved.
     "fuchsia.tracing.TraceController",
     nullptr,
     // DO NOT ADD MORE ENTRIES TO THIS LIST.
@@ -144,6 +155,7 @@ int main(int argc, char** argv) {
     svc::Outgoing outgoing(dispatcher);
 
     appmgr_svc = zx_take_startup_handle(PA_HND(PA_USER0, 0));
+    root_job = zx_take_startup_handle(PA_HND(PA_USER0, 1));
 
     zx_status_t status = outgoing.ServeFromStartupInfo();
     if (status != ZX_OK) {
@@ -152,12 +164,21 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    zx_handle_t profile_root_job_copy;
+    status = zx_handle_duplicate(root_job, ZX_RIGHT_SAME_RIGHTS, &profile_root_job_copy);
+    if (status != ZX_OK) {
+        fprintf(stderr, "svchost: failed to duplicate root job: %d (%s).\n", status,
+                zx_status_get_string(status));
+        return 1;
+    }
+
     zx_service_provider_instance_t service_providers[] = {
-        {.provider = crashanalyzer_get_service_provider(), .ctx = nullptr},
         {.provider = launcher_get_service_provider(), .ctx = nullptr},
         {.provider = sysmem_get_service_provider(), .ctx = nullptr},
+        {.provider = sysmem2_get_service_provider(), .ctx = nullptr},
+        {.provider = profile_get_service_provider(),
+         .ctx = reinterpret_cast<void*>(static_cast<uintptr_t>(profile_root_job_copy))},
     };
-
 
     for (size_t i = 0; i < fbl::count_of(service_providers); ++i) {
         status = provider_load(&service_providers[i], dispatcher, outgoing.public_dir());
@@ -169,7 +190,8 @@ int main(int argc, char** argv) {
     }
 
     // if full system is not required drop simple logger service.
-    zx_service_provider_instance_t logger_service{.provider = logger_get_service_provider(), .ctx = nullptr};
+    zx_service_provider_instance_t logger_service{.provider = logger_get_service_provider(),
+                                                  .ctx = nullptr};
     if(!require_system) {
       status = provider_load(&logger_service, dispatcher, outgoing.public_dir());
       if (status != ZX_OK) {
@@ -187,6 +209,9 @@ int main(int argc, char** argv) {
     }
 
     publish_deprecated_services(outgoing.public_dir());
+
+    start_crashsvc(zx::job(root_job),
+        require_system? appmgr_svc : ZX_HANDLE_INVALID);
 
     status = loop.Run();
 

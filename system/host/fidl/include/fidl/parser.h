@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_PARSER_H_
 #define ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_PARSER_H_
@@ -177,7 +180,7 @@ private:
     std::unique_ptr<raw::TrueLiteral> ParseTrueLiteral();
     std::unique_ptr<raw::FalseLiteral> ParseFalseLiteral();
     std::unique_ptr<raw::Literal> ParseLiteral();
-    std::unique_ptr<raw::Ordinal> ParseOrdinal();
+    std::unique_ptr<raw::Ordinal> MaybeParseOrdinal();
 
     std::unique_ptr<raw::Constant> ParseConstant();
 
@@ -188,11 +191,11 @@ private:
 
     std::unique_ptr<raw::Using> ParseUsing();
 
+    std::unique_ptr<raw::IdentifierType> ParseIdentifierType();
     std::unique_ptr<raw::ArrayType> ParseArrayType();
     std::unique_ptr<raw::VectorType> ParseVectorType();
     std::unique_ptr<raw::StringType> ParseStringType();
     std::unique_ptr<raw::HandleType> ParseHandleType();
-    std::unique_ptr<raw::PrimitiveType> ParsePrimitiveType();
     std::unique_ptr<raw::RequestHandleType> ParseRequestHandleType();
     std::unique_ptr<raw::Type> ParseType();
 
@@ -222,6 +225,10 @@ private:
     std::unique_ptr<raw::UnionMember> ParseUnionMember();
     std::unique_ptr<raw::UnionDeclaration>
     ParseUnionDeclaration(std::unique_ptr<raw::AttributeList> attributes, ASTScope&);
+
+    std::unique_ptr<raw::XUnionMember> ParseXUnionMember();
+    std::unique_ptr<raw::XUnionDeclaration>
+    ParseXUnionDeclaration(std::unique_ptr<raw::AttributeList> attributes, ASTScope&);
 
     std::unique_ptr<raw::File> ParseFile();
 

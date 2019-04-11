@@ -7,76 +7,42 @@
 
 static const struct arm_gic_hw_interface_ops* gic_ops = nullptr;
 
-/* Registers the ops of the GIC driver initialized with HW interface layer */
-void arm_gic_hw_interface_register(const struct arm_gic_hw_interface_ops* ops) {
-    DEBUG_ASSERT(ops != nullptr);
-    gic_ops = ops;
+zx_status_t gic_get_gicv(paddr_t* gicv_paddr) {
+    return gic_ops->get_gicv(gicv_paddr);
 }
 
-bool arm_gic_is_registered() {
-    return gic_ops == nullptr ? false : true;
+void gic_read_gich_state(IchState* state) {
+    gic_ops->read_gich_state(state);
 }
 
-uint32_t gic_read_gich_hcr() {
-    return gic_ops->read_gich_hcr();
-}
-
-void gic_write_gich_hcr(uint32_t val) {
-    return gic_ops->write_gich_hcr(val);
-}
-
-uint32_t gic_read_gich_vtr() {
-    return gic_ops->read_gich_vtr();
+void gic_write_gich_state(IchState* state, uint32_t hcr) {
+    gic_ops->write_gich_state(state, hcr);
 }
 
 uint32_t gic_default_gich_vmcr() {
     return gic_ops->default_gich_vmcr();
 }
 
-uint32_t gic_read_gich_vmcr() {
-    return gic_ops->read_gich_vmcr();
-}
-
-void gic_write_gich_vmcr(uint32_t val) {
-    return gic_ops->write_gich_vmcr(val);
-}
-
-uint64_t gic_read_gich_elrsr() {
-    return gic_ops->read_gich_elrsr();
-}
-
-uint32_t gic_read_gich_misr() {
-    return gic_ops->read_gich_misr();
-}
-
-uint64_t gic_read_gich_lr(uint32_t idx) {
-    return gic_ops->read_gich_lr(idx);
-}
-
-void gic_write_gich_lr(uint32_t idx, uint64_t val) {
-    return gic_ops->write_gich_lr(idx, val);
-}
-
-zx_status_t gic_get_gicv(paddr_t* gicv_paddr) {
-    return gic_ops->get_gicv(gicv_paddr);
-}
-
-uint64_t gic_get_lr_from_vector(uint32_t vector) {
-    return gic_ops->get_lr_from_vector(vector);
+uint64_t gic_get_lr_from_vector(bool hw, uint8_t prio, uint32_t vector) {
+    return gic_ops->get_lr_from_vector(hw, prio, vector);
 }
 
 uint32_t gic_get_vector_from_lr(uint64_t lr) {
     return gic_ops->get_vector_from_lr(lr);
 }
 
-uint32_t gic_get_num_lrs() {
+uint8_t gic_get_num_pres() {
+    return gic_ops->get_num_pres();
+}
+
+uint8_t gic_get_num_lrs() {
     return gic_ops->get_num_lrs();
 }
 
-void gic_write_gich_apr(uint32_t val) {
-    return gic_ops->write_gich_apr(val);
+void arm_gic_hw_interface_register(const struct arm_gic_hw_interface_ops* ops) {
+    gic_ops = ops;
 }
 
-uint32_t gic_read_gich_apr() {
-    return gic_ops->read_gich_apr();
+bool arm_gic_is_registered() {
+    return gic_ops != nullptr;
 }

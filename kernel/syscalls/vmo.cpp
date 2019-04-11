@@ -44,7 +44,7 @@ zx_status_t sys_vmo_create(uint64_t size, uint32_t options,
     }
 
     auto up = ProcessDispatcher::GetCurrent();
-    zx_status_t res = up->QueryPolicy(ZX_POL_NEW_VMO);
+    zx_status_t res = up->QueryBasicPolicy(ZX_POL_NEW_VMO);
     if (res != ZX_OK)
         return res;
 
@@ -57,12 +57,12 @@ zx_status_t sys_vmo_create(uint64_t size, uint32_t options,
     // create a Vm Object dispatcher
     fbl::RefPtr<Dispatcher> dispatcher;
     zx_rights_t rights;
-    zx_status_t result = VmObjectDispatcher::Create(fbl::move(vmo), &dispatcher, &rights);
+    zx_status_t result = VmObjectDispatcher::Create(ktl::move(vmo), &dispatcher, &rights);
     if (result != ZX_OK)
         return result;
 
     // create a handle and attach the dispatcher to it
-    return out->make(fbl::move(dispatcher), rights);
+    return out->make(ktl::move(dispatcher), rights);
 }
 
 // zx_status_t zx_vmo_read
@@ -253,7 +253,7 @@ zx_status_t sys_vmo_clone(zx_handle_t handle, uint32_t options,
     // create a Vm Object dispatcher
     fbl::RefPtr<Dispatcher> dispatcher;
     zx_rights_t default_rights;
-    zx_status_t result = VmObjectDispatcher::Create(fbl::move(clone_vmo), &dispatcher, &default_rights);
+    zx_status_t result = VmObjectDispatcher::Create(ktl::move(clone_vmo), &dispatcher, &default_rights);
     if (result != ZX_OK)
         return result;
 
@@ -269,13 +269,13 @@ zx_status_t sys_vmo_clone(zx_handle_t handle, uint32_t options,
     DEBUG_ASSERT((default_rights & rights) == rights);
 
     // create a handle and attach the dispatcher to it
-    return out_handle->make(fbl::move(dispatcher), rights);
+    return out_handle->make(ktl::move(dispatcher), rights);
 }
 
 // zx_status_t zx_vmo_replace_as_executable
 zx_status_t sys_vmo_replace_as_executable(
-    zx_handle_t vmo, zx_handle_t vmex, user_out_handle* out) {
-    LTRACEF("repexec %x %x\n", vmo, vmex);
+    zx_handle_t handle, zx_handle_t vmex, user_out_handle* out) {
+    LTRACEF("repexec %x %x\n", handle, vmex);
 
     zx_status_t vmex_status = ZX_OK;
     if (vmex != ZX_HANDLE_INVALID) {
@@ -288,12 +288,12 @@ zx_status_t sys_vmo_replace_as_executable(
     auto up = ProcessDispatcher::GetCurrent();
 
     Guard<fbl::Mutex> guard{up->handle_table_lock()};
-    auto source = up->GetHandleLocked(vmo);
+    auto source = up->GetHandleLocked(handle);
     if (!source)
         return ZX_ERR_BAD_HANDLE;
 
-    auto handle_cleanup = fbl::MakeAutoCall([up, vmo]() TA_NO_THREAD_SAFETY_ANALYSIS {
-        up->RemoveHandleLocked(vmo);
+    auto handle_cleanup = fbl::MakeAutoCall([up, handle]() TA_NO_THREAD_SAFETY_ANALYSIS {
+        up->RemoveHandleLocked(handle);
     });
 
     if (vmex_status != ZX_OK)

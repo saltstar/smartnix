@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -8,6 +11,8 @@
 #include <lib/zx/pmt.h>
 #include <lib/zx/vmo.h>
 #include <zircon/types.h>
+
+#include <utility>
 
 namespace fzl {
 
@@ -24,12 +29,12 @@ class PinnedVmo {
 
     // Move support
     PinnedVmo(PinnedVmo&& other) {
-        *this = fbl::move(other);
+        *this = std::move(other);
     }
 
     PinnedVmo& operator=(PinnedVmo&& other) {
-        pmt_ = fbl::move(other.pmt_);
-        regions_ = fbl::move(other.regions_);
+        pmt_ = std::move(other.pmt_);
+        regions_ = std::move(other.regions_);
         region_count_ = other.region_count_;
         other.region_count_ = 0;
         return *this;

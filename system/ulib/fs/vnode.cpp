@@ -1,8 +1,13 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fs/vnode.h>
 
 #ifdef __Fuchsia__
 #include <fs/connection.h>
+
+#include <utility>
 #endif
 
 namespace fs {
@@ -14,12 +19,11 @@ Vnode::~Vnode() = default;
 #ifdef __Fuchsia__
 zx_status_t Vnode::Serve(fs::Vfs* vfs, zx::channel channel, uint32_t flags) {
     return vfs->ServeConnection(fbl::make_unique<Connection>(
-        vfs, fbl::WrapRefPtr(this), fbl::move(channel), flags));
+        vfs, fbl::WrapRefPtr(this), std::move(channel), flags));
 }
 
-zx_status_t Vnode::GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                              zxrio_node_info_t* extra) {
-    *type = fuchsia_io_NodeInfoTag_service;
+zx_status_t Vnode::GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info) {
+    info->tag = fuchsia_io_NodeInfoTag_service;
     return ZX_OK;
 }
 
@@ -92,7 +96,7 @@ zx_status_t Vnode::Link(fbl::StringPiece name, fbl::RefPtr<Vnode> target) {
     return ZX_ERR_NOT_SUPPORTED;
 }
 
-zx_status_t Vnode::GetVmo(int flags, zx_handle_t* out) {
+zx_status_t Vnode::GetVmo(int flags, zx_handle_t* out_vmo, size_t* out_size) {
     return ZX_ERR_NOT_SUPPORTED;
 }
 

@@ -1,9 +1,12 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/protocol/intel-hda-codec.h>
+#include <ddk/protocol/intelhda/codec.h>
 #include <lib/zx/channel.h>
 #include <fbl/intrusive_wavl_tree.h>
 #include <fbl/mutex.h>
@@ -16,6 +19,8 @@
 #include <dispatcher-pool/dispatcher-execution-domain.h>
 #include <intel-hda/utils/codec-commands.h>
 #include <intel-hda/utils/intel-hda-proto.h>
+
+#include <utility>
 
 namespace audio {
 namespace intel_hda {
@@ -83,7 +88,7 @@ protected:
     zx_status_t PublishDeviceLocked() __TA_REQUIRES(obj_lock_);
     void SetSupportedFormatsLocked(fbl::Vector<audio_proto::FormatRange>&& formats)
         __TA_REQUIRES(obj_lock_) {
-        supported_formats_ = fbl::move(formats);
+        supported_formats_ = std::move(formats);
     }
     void SetFormatTidLocked(uint32_t set_format_tid) __TA_REQUIRES(obj_lock_) {
         set_format_tid_ = set_format_tid;

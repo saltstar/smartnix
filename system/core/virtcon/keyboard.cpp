@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fcntl.h>
 #include <poll.h>
@@ -5,13 +8,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <fuchsia/hardware/input/c/fidl.h>
 #include <hid/hid.h>
 #include <hid/usages.h>
 #include <lib/fzl/fdio.h>
-#include <zircon/input/c/fidl.h>
 #include <zircon/syscalls.h>
 
 #include <port/port.h>
+
+#include <utility>
 
 #include "keyboard.h"
 
@@ -46,16 +51,16 @@ static void set_caps_lock_led(int keyboard_fd, bool caps_lock) {
     const uint8_t report_body[1] = { static_cast<uint8_t>(caps_lock ? kUsbCapsLockBit : 0) };
 
     // Temporarily wrap keyboard_fd, we will release it after the call so we don't close it.
-    fzl::FdioCaller caller(fbl::move(fbl::unique_fd(keyboard_fd)));
+    fzl::FdioCaller caller{fbl::unique_fd(keyboard_fd)};
     zx_status_t call_status;
-    zx_status_t status = zircon_input_DeviceSetReport(caller.borrow_channel(),
-                                                      zircon_input_ReportType_OUTPUT, 0,
-                                                      report_body, sizeof(report_body),
-                                                      &call_status);
+    zx_status_t status = fuchsia_hardware_input_DeviceSetReport(
+        caller.borrow_channel(), fuchsia_hardware_input_ReportType_OUTPUT, 0, report_body,
+        sizeof(report_body), &call_status);
     caller.release().release();
     if (status != ZX_OK || call_status != ZX_OK) {
 #if !BUILD_FOR_TEST
-        printf("zircon.input.Device.SetReport() failed (returned %d, %d)\n", status, call_status);
+        printf("fuchsia.hardware.input.Device.SetReport() failed (returned %d, %d)\n", status,
+               call_status);
 #endif
     }
 }
@@ -126,21 +131,17 @@ static void vc_input_destroy(vc_input_t* vi) {
 static zx_status_t vc_timer_cb(port_handler_t* ph, zx_signals_t signals, uint32_t evt) {
     vc_input_t* vi = containerof(ph, vc_input_t, th);
 
-    // if interval is infinite, repeat was canceled
-    if (vi->repeat_interval != ZX_TIME_INFINITE) {
-        vc_input_process(vi, vi->previous_report_buf);
-        vc_input_process(vi, vi->report_buf);
+    vc_input_process(vi, vi->previous_report_buf);
+    vc_input_process(vi, vi->report_buf);
 
-        // increase repeat rate if we're not yet at the fastest rate
-        if ((vi->repeat_interval = vi->repeat_interval * 3 / 4) < HIGH_REPEAT_KEY_FREQ) {
-            vi->repeat_interval = HIGH_REPEAT_KEY_FREQ;
-        }
-
-        zx_timer_set(vi->timer, zx_deadline_after(vi->repeat_interval), 0);
+    // increase repeat rate if we're not yet at the fastest rate
+    if ((vi->repeat_interval = vi->repeat_interval * 3 / 4) < HIGH_REPEAT_KEY_FREQ) {
+        vi->repeat_interval = HIGH_REPEAT_KEY_FREQ;
     }
 
-    // return non-OK to avoid needlessly re-arming the repeating wait
-    return ZX_ERR_NEXT;
+    zx_timer_set(vi->timer, zx_deadline_after(vi->repeat_interval), 0);
+
+    return ZX_OK;
 }
 
 static zx_status_t vc_input_cb(port_fd_handler_t* fh, unsigned pollevt, uint32_t evt) {
@@ -166,7 +167,7 @@ static zx_status_t vc_input_cb(port_fd_handler_t* fh, unsigned pollevt, uint32_t
         vi->repeat_interval = LOW_REPEAT_KEY_FREQ;
         zx_timer_set(vi->timer, zx_deadline_after(vi->repeat_interval), 0);
     } else {
-        vi->repeat_interval = ZX_TIME_INFINITE;
+        zx_timer_cancel(vi->timer);
     }
     return ZX_OK;
 }
@@ -195,7 +196,7 @@ zx_status_t vc_input_create(vc_input_t** out, keypress_handler_t handler, int fd
 
 #if !BUILD_FOR_TEST
     zx_status_t r;
-    if ((r = zx_timer_create(0, ZX_CLOCK_MONOTONIC, &vi->timer)) < 0) {
+    if ((r = zx_timer_create(ZX_TIMER_SLACK_LATE, ZX_CLOCK_MONOTONIC, &vi->timer)) < 0) {
         free(vi);
         return r;
     }
@@ -217,7 +218,7 @@ zx_status_t vc_input_create(vc_input_t** out, keypress_handler_t handler, int fd
     vi->th.handle = vi->timer;
     vi->th.waitfor = ZX_TIMER_SIGNALED;
     vi->th.func = vc_timer_cb;
-    port_wait_repeating(&port, &vi->th);
+    port_wait(&port, &vi->th);
 #endif
 
     *out = vi;
@@ -227,13 +228,14 @@ zx_status_t vc_input_create(vc_input_t** out, keypress_handler_t handler, int fd
 #if !BUILD_FOR_TEST
 zx_status_t new_input_device(int fd, keypress_handler_t handler) {
     // test to see if this is a device we can read
-    uint32_t proto = zircon_input_BootProtocol_NONE;
+    uint32_t proto = fuchsia_hardware_input_BootProtocol_NONE;
 
     // Temporarily wrap fd, we will release it after the call so we don't close it.
-    fzl::FdioCaller caller(fbl::move(fbl::unique_fd(fd)));
-    zx_status_t status = zircon_input_DeviceGetBootProtocol(caller.borrow_channel(), &proto);
+    fzl::FdioCaller caller{fbl::unique_fd(fd)};
+    zx_status_t status =
+        fuchsia_hardware_input_DeviceGetBootProtocol(caller.borrow_channel(), &proto);
     caller.release().release();
-    if ((status != ZX_OK) || (proto != zircon_input_BootProtocol_KBD)) {
+    if ((status != ZX_OK) || (proto != fuchsia_hardware_input_BootProtocol_KBD)) {
         // skip devices that aren't keyboards
         close(fd);
         return ZX_ERR_NOT_SUPPORTED;

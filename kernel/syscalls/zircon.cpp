@@ -45,11 +45,15 @@ zx_status_t sys_nanosleep(zx_time_t deadline) {
         return ZX_OK;
     }
 
+    const auto up = ProcessDispatcher::GetCurrent();
+    const Deadline slackDeadline(deadline, up->GetTimerSlackPolicy());
+    const zx_time_t now = current_time();
+
     ThreadDispatcher::AutoBlocked by(ThreadDispatcher::Blocked::SLEEPING);
 
     // This syscall is declared as "blocking" in syscalls.abigen, so a higher
     // layer will automatically retry if we return ZX_ERR_INTERNAL_INTR_RETRY.
-    return thread_sleep_etc(deadline, /*interruptable=*/true);
+    return thread_sleep_etc(slackDeadline, /* interruptable */ true, now);
 }
 
 // This must be accessed atomically from any given thread.
@@ -123,7 +127,7 @@ zx_status_t sys_event_create(uint32_t options, user_out_handle* event_out) {
         return ZX_ERR_INVALID_ARGS;
 
     auto up = ProcessDispatcher::GetCurrent();
-    zx_status_t res = up->QueryPolicy(ZX_POL_NEW_EVENT);
+    zx_status_t res = up->QueryBasicPolicy(ZX_POL_NEW_EVENT);
     if (res != ZX_OK)
         return res;
 
@@ -132,7 +136,7 @@ zx_status_t sys_event_create(uint32_t options, user_out_handle* event_out) {
 
     zx_status_t result = EventDispatcher::Create(options, &dispatcher, &rights);
     if (result == ZX_OK)
-        result = event_out->make(fbl::move(dispatcher), rights);
+        result = event_out->make(ktl::move(dispatcher), rights);
     return result;
 }
 
@@ -144,7 +148,7 @@ zx_status_t sys_eventpair_create(uint32_t options,
         return ZX_ERR_NOT_SUPPORTED;
 
     auto up = ProcessDispatcher::GetCurrent();
-    zx_status_t res = up->QueryPolicy(ZX_POL_NEW_EVENTPAIR);
+    zx_status_t res = up->QueryBasicPolicy(ZX_POL_NEW_EVENTPAIR);
     if (res != ZX_OK)
         return res;
 
@@ -153,9 +157,9 @@ zx_status_t sys_eventpair_create(uint32_t options,
     zx_status_t result = EventPairDispatcher::Create(&epd0, &epd1, &rights);
 
     if (result == ZX_OK)
-        result = out0->make(fbl::move(epd0), rights);
+        result = out0->make(ktl::move(epd0), rights);
     if (result == ZX_OK)
-        result = out1->make(fbl::move(epd1), rights);
+        result = out1->make(ktl::move(epd1), rights);
 
     return result;
 }
@@ -187,7 +191,7 @@ zx_status_t sys_debuglog_create(zx_handle_t rsrc, uint32_t options,
     }
 
     // create a handle and attach the dispatcher to it
-    return out->make(fbl::move(dispatcher), rights);
+    return out->make(ktl::move(dispatcher), rights);
 }
 
 // zx_status_t zx_debuglog_write
@@ -241,16 +245,6 @@ zx_status_t sys_debuglog_read(zx_handle_t log_handle, uint32_t options,
     return static_cast<zx_status_t>(actual);
 }
 
-// zx_status_t zx_log_write
-zx_status_t sys_log_write(zx_handle_t log_handle, uint32_t len, user_in_ptr<const void> ptr, uint32_t options) {
-    return sys_debuglog_write(log_handle, options, ptr, len);
-}
-
-// zx_status_t zx_log_read
-zx_status_t sys_log_read(zx_handle_t log_handle, uint32_t len, user_out_ptr<void> ptr, uint32_t options) {
-    return sys_debuglog_read(log_handle, options, ptr, len);
-}
-
 // zx_status_t zx_cprng_draw_once
 zx_status_t sys_cprng_draw_once(user_out_ptr<void> buffer, size_t len) {
     if (len > kMaxCPRNGDraw)
@@ -270,8 +264,8 @@ zx_status_t sys_cprng_draw_once(user_out_ptr<void> buffer, size_t len) {
 }
 
 // zx_status_t zx_cprng_add_entropy
-zx_status_t sys_cprng_add_entropy(user_in_ptr<const void> buffer, size_t len) {
-    if (len > kMaxCPRNGSeed)
+zx_status_t sys_cprng_add_entropy(user_in_ptr<const void> buffer, size_t buffer_size) {
+    if (buffer_size > kMaxCPRNGSeed)
         return ZX_ERR_INVALID_ARGS;
 
     uint8_t kernel_buf[kMaxCPRNGSeed];
@@ -279,12 +273,12 @@ zx_status_t sys_cprng_add_entropy(user_in_ptr<const void> buffer, size_t len) {
     // returns.
     explicit_memory::ZeroDtor<uint8_t> zero_guard(kernel_buf, sizeof(kernel_buf));
 
-    if (buffer.copy_array_from_user(kernel_buf, len) != ZX_OK)
+    if (buffer.copy_array_from_user(kernel_buf, buffer_size) != ZX_OK)
         return ZX_ERR_INVALID_ARGS;
 
     auto prng = crypto::GlobalPRNG::GetInstance();
     ASSERT(prng->is_thread_safe());
-    prng->AddEntropy(kernel_buf, len);
+    prng->AddEntropy(kernel_buf, buffer_size);
 
     return ZX_OK;
 }

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -7,7 +10,7 @@ int tftp_xfer(struct sockaddr_in6* addr, const char* fn, const char* name);
 int netboot_xfer(struct sockaddr_in6* addr, const char* fn, const char* name);
 
 #define DEFAULT_TFTP_BLOCK_SZ 1428
-#define DEFAULT_TFTP_WIN_SZ 1024
+#define DEFAULT_TFTP_WIN_SZ 256
 #define DEFAULT_US_BETWEEN_PACKETS 20
 
 extern char* appname;

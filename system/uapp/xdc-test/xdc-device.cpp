@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fuchsia/usb/debug/c/fidl.h>
 #include <lib/fzl/fdio.h>
@@ -5,6 +8,8 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
+
+#include <utility>
 
 #include "xdc-init.h"
 
@@ -23,7 +28,7 @@ zx_status_t configure_xdc(uint32_t stream_id, fbl::unique_fd* out_fd) {
         if (fd < 0) {
             continue;
         }
-        fzl::FdioCaller caller(fbl::move(fbl::unique_fd(fd)));
+        fzl::FdioCaller caller{fbl::unique_fd(fd)};
         zx_status_t status;
         zx_status_t res = fuchsia_usb_debug_DeviceSetStream(caller.borrow_channel(),
                                                             stream_id, &status);
@@ -46,4 +51,3 @@ zx_status_t configure_xdc(uint32_t stream_id, fbl::unique_fd* out_fd) {
     fprintf(stderr, "No debug device found\n");
     return ZX_ERR_NOT_FOUND;
 }
-

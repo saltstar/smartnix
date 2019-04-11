@@ -1,3 +1,6 @@
+# Copyright 2017 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
@@ -6,7 +9,6 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := driver
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/binding.c \
     $(LOCAL_DIR)/midi.c \
     $(LOCAL_DIR)/usb-audio.cpp \
     $(LOCAL_DIR)/usb-audio-control-interface.cpp \
@@ -38,5 +40,10 @@ MODULE_STATIC_LIBS := \
     system/ulib/zx \
     system/ulib/zxcpp \
     third_party/ulib/uboringssl \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-composite \
+    system/banjo/ddk-protocol-usb-request \
 
 include make/module.mk

@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <assert.h>
 #include <fcntl.h>
@@ -40,7 +43,7 @@ static uint32_t default_palette[] = {
 #define SPECIAL_BACK_COLOR 0x4  // blue
 
 // Default height/width (in px) of console before any displays are
-// attached, since we need somewhere to put any data that is recieved.
+// attached, since we need somewhere to put any data that is received.
 #define DEFAULT_WIDTH 1024
 #define DEFAULT_HEIGHT 768
 #define SCROLLBACK_ROWS 1024 // TODO make configurable

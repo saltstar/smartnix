@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -12,6 +15,8 @@
 
 #include <dispatcher-pool/dispatcher-event-source.h>
 
+#include <atomic>
+
 namespace dispatcher {
 
 class ThreadPool;
@@ -20,7 +25,7 @@ class ThreadPool;
 //
 // In the dispatcher framework, ExecutionDomains represent a context which
 // specific types of EventSources become bound to during activation.  While many
-// EventSources may have interesting things happening on them simultaniously,
+// EventSources may have interesting things happening on them simultaneously,
 // the ExecutionDomain they are bound to guarantees that only one EventSource's
 // handler will be executed at any given point in time.
 //
@@ -33,7 +38,7 @@ class ThreadPool;
 // sources currently bound to the domain.  When deactivated from outside of the
 // context of a dispatch operation, callers use the Deactivate method and will
 // be synchronized with any currently in-flight dispatch operations.  IOW -
-// after Deactivate() returns, all dispatch operatons are guaranteed to be
+// after Deactivate() returns, all dispatch operations are guaranteed to be
 // finished and no new dispatch operations will be started.
 //
 // If an execution domain needs to be deactivated from the context of a dispatch
@@ -71,7 +76,7 @@ public:
     //       thingy->HandleChannel(ch);
     //     });
     //
-    //     my_channel_.Activate(..., fbl::move(phandler), ...);
+    //     my_channel_.Activate(..., std::move(phandler), ...);
     //
     //     my_state_++;  // This fails, we are not running in the domain.
     // }
@@ -150,7 +155,7 @@ private:
 
     fbl::Mutex sources_lock_;
     Token domain_token_;
-    fbl::atomic<uint32_t> deactivated_ __TA_GUARDED(sources_lock_);
+    std::atomic<uint32_t> deactivated_ __TA_GUARDED(sources_lock_);
     bool dispatch_in_progress_ __TA_GUARDED(sources_lock_) = false;
     bool dispatch_sync_in_progress_ __TA_GUARDED(sources_lock_) = false;
     fbl::RefPtr<ThreadPool> thread_pool_ __TA_GUARDED(sources_lock_);

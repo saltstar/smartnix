@@ -1,7 +1,7 @@
 
 #include <object/message_packet.h>
 
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 #include <lib/unittest/unittest.h>
 #include <lib/unittest/user_memory.h>
 #include <lib/user_copy/user_ptr.h>
@@ -14,24 +14,24 @@ using testing::UserMemory;
 static bool create() {
     BEGIN_TEST;
     constexpr size_t kSize = 62234;
-    fbl::unique_ptr<UserMemory> mem = UserMemory::Create(kSize);
+    ktl::unique_ptr<UserMemory> mem = UserMemory::Create(kSize);
     auto mem_in = make_user_in_ptr(mem->in());
     auto mem_out = make_user_out_ptr(mem->out());
 
     fbl::AllocChecker ac;
-    auto buf = fbl::unique_ptr<char[]>(new (&ac) char[kSize]);
+    auto buf = ktl::unique_ptr<char[]>(new (&ac) char[kSize]);
     ASSERT_TRUE(ac.check(), "");
     memset(buf.get(), 'A', kSize);
     ASSERT_EQ(ZX_OK, mem_out.copy_array_to_user(buf.get(), kSize), "");
 
     constexpr uint32_t kNumHandles = 64;
-    fbl::unique_ptr<MessagePacket> mp;
+    MessagePacketPtr mp;
     EXPECT_EQ(ZX_OK, MessagePacket::Create(mem_in, kSize, kNumHandles, &mp), "");
     ASSERT_EQ(kSize, mp->data_size(), "");
     EXPECT_EQ(kNumHandles, mp->num_handles(), "");
     EXPECT_NE(0U, mp->get_txid(), "");
 
-    auto result_buf = fbl::unique_ptr<char[]>(new (&ac) char[kSize]);
+    auto result_buf = ktl::unique_ptr<char[]>(new (&ac) char[kSize]);
     ASSERT_TRUE(ac.check(), "");
     ASSERT_EQ(ZX_OK, mp->CopyDataTo(mem_out), "");
     ASSERT_EQ(ZX_OK, mem_in.copy_array_from_user(result_buf.get(), kSize), "");
@@ -43,24 +43,24 @@ static bool create() {
 static bool create_void_star() {
     BEGIN_TEST;
     constexpr size_t kSize = 4;
-    fbl::unique_ptr<UserMemory> mem = UserMemory::Create(kSize);
+    ktl::unique_ptr<UserMemory> mem = UserMemory::Create(kSize);
     auto mem_in = make_user_in_ptr(mem->in());
     auto mem_out = make_user_out_ptr(mem->out());
 
     fbl::AllocChecker ac;
-    auto in_buf = fbl::unique_ptr<char[]>(new (&ac) char[kSize]);
+    auto in_buf = ktl::unique_ptr<char[]>(new (&ac) char[kSize]);
     ASSERT_TRUE(ac.check(), "");
     memset(in_buf.get(), 'B', kSize);
     void* in = in_buf.get();
 
     constexpr uint32_t kNumHandles = 0;
-    fbl::unique_ptr<MessagePacket> mp;
+    MessagePacketPtr mp;
     EXPECT_EQ(ZX_OK, MessagePacket::Create(in, kSize, kNumHandles, &mp), "");
     ASSERT_EQ(kSize, mp->data_size(), "");
     EXPECT_EQ(kNumHandles, mp->num_handles(), "");
     EXPECT_NE(0U, mp->get_txid(), "");
 
-    auto result_buf = fbl::unique_ptr<char[]>(new (&ac) char[kSize]);
+    auto result_buf = ktl::unique_ptr<char[]>(new (&ac) char[kSize]);
     ASSERT_TRUE(ac.check(), "");
     ASSERT_EQ(ZX_OK, mp->CopyDataTo(mem_out), "");
     ASSERT_EQ(ZX_OK, mem_in.copy_array_from_user(result_buf.get(), kSize), "");
@@ -71,11 +71,11 @@ static bool create_void_star() {
 // Create a MessagePacket with zero-length data.
 static bool create_zero() {
     BEGIN_TEST;
-    fbl::unique_ptr<UserMemory> mem = UserMemory::Create(1);
+    ktl::unique_ptr<UserMemory> mem = UserMemory::Create(1);
     auto mem_in = make_user_in_ptr(mem->in());
     auto mem_out = make_user_out_ptr(mem->out());
 
-    fbl::unique_ptr<MessagePacket> mp;
+    MessagePacketPtr mp;
     EXPECT_EQ(ZX_OK, MessagePacket::Create(mem_in, 0, 0, &mp), "");
     ASSERT_EQ(0U, mp->data_size(), "");
     EXPECT_EQ(0U, mp->num_handles(), "");
@@ -88,10 +88,10 @@ static bool create_zero() {
 // Attempt to create a MessagePacket with too many handles.
 static bool create_too_many_handles() {
     BEGIN_TEST;
-    fbl::unique_ptr<UserMemory> mem = UserMemory::Create(1);
+    ktl::unique_ptr<UserMemory> mem = UserMemory::Create(1);
     auto mem_in = make_user_in_ptr(mem->in());
 
-    fbl::unique_ptr<MessagePacket> mp;
+    MessagePacketPtr mp;
     EXPECT_EQ(ZX_ERR_OUT_OF_RANGE, MessagePacket::Create(mem_in, 1, 65, &mp), "");
     END_TEST;
 }
@@ -102,13 +102,13 @@ static bool create_bad_mem() {
     constexpr size_t kSize = 64;
 
     fbl::AllocChecker ac;
-    auto buf = fbl::unique_ptr<char[]>(new (&ac) char[kSize]);
+    auto buf = ktl::unique_ptr<char[]>(new (&ac) char[kSize]);
     ASSERT_TRUE(ac.check(), "");
     memset(buf.get(), 'C', kSize);
     auto in = make_user_in_ptr(static_cast<const void*>(buf.get()));
 
     constexpr uint32_t kNumHandles = 0;
-    fbl::unique_ptr<MessagePacket> mp;
+    MessagePacketPtr mp;
     EXPECT_EQ(ZX_ERR_INVALID_ARGS, MessagePacket::Create(in, kSize, kNumHandles, &mp), "");
     END_TEST;
 }
@@ -117,18 +117,18 @@ static bool create_bad_mem() {
 static bool copy_bad_mem() {
     BEGIN_TEST;
     constexpr size_t kSize = 64;
-    fbl::unique_ptr<UserMemory> mem = UserMemory::Create(kSize);
+    ktl::unique_ptr<UserMemory> mem = UserMemory::Create(kSize);
     auto mem_in = make_user_in_ptr(mem->in());
     auto mem_out = make_user_out_ptr(mem->out());
 
     fbl::AllocChecker ac;
-    auto buf = fbl::unique_ptr<char[]>(new (&ac) char[kSize]);
+    auto buf = ktl::unique_ptr<char[]>(new (&ac) char[kSize]);
     ASSERT_TRUE(ac.check(), "");
     memset(buf.get(), 'D', kSize);
     ASSERT_EQ(ZX_OK, mem_out.copy_array_to_user(buf.get(), kSize), "");
 
     constexpr uint32_t kNumHandles = 0;
-    fbl::unique_ptr<MessagePacket> mp;
+    MessagePacketPtr mp;
     EXPECT_EQ(ZX_OK, MessagePacket::Create(mem_in, kSize, kNumHandles, &mp), "");
 
     auto out = make_user_out_ptr(static_cast<void*>(buf.get()));

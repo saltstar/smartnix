@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <errno.h>
 #include <fcntl.h>
@@ -9,16 +12,18 @@
 #include <fbl/array.h>
 #include <fbl/auto_call.h>
 #include <fbl/unique_fd.h>
+#include <fuchsia/hardware/input/c/fidl.h>
 #include <hid-parser/parser.h>
 #include <hid-parser/usages.h>
 #include <lib/fdio/util.h>
 #include <lib/fdio/watcher.h>
 #include <lib/fzl/fdio.h>
 #include <zircon/device/device.h>
-#include <zircon/input/c/fidl.h>
 #include <zircon/processargs.h>
 #include <zircon/status.h>
 #include <zircon/syscalls.h>
+
+#include <utility>
 
 #define INPUT_PATH "/input"
 #define DMCTL_PATH "/misc/dmctl"
@@ -127,15 +132,16 @@ static zx_status_t InputDeviceAdded(int dirfd, int event, const char* name, void
         }
         fd.reset(raw_fd);
     }
-    fzl::FdioCaller caller(fbl::move(fd));
+    fzl::FdioCaller caller(std::move(fd));
 
     // Retrieve and parse the report descriptor
     uint16_t desc_len = 0;
-    zx_status_t status = zircon_input_DeviceGetReportDescSize(caller.borrow_channel(), &desc_len);
+    zx_status_t status =
+        fuchsia_hardware_input_DeviceGetReportDescSize(caller.borrow_channel(), &desc_len);
     if (status != ZX_OK) {
         return ZX_OK;
     }
-    if (desc_len > zircon_input_MAX_DESC_LEN) {
+    if (desc_len > fuchsia_hardware_input_MAX_DESC_LEN) {
         return ZX_OK;
     }
 
@@ -146,8 +152,8 @@ static zx_status_t InputDeviceAdded(int dirfd, int event, const char* name, void
     }
 
     size_t actual_size;
-    status = zircon_input_DeviceGetReportDesc(caller.borrow_channel(),
-                                              raw_desc.get(), raw_desc.size(), &actual_size);
+    status = fuchsia_hardware_input_DeviceGetReportDesc(caller.borrow_channel(), raw_desc.get(),
+                                                        raw_desc.size(), &actual_size);
     if (status != ZX_OK || actual_size != raw_desc.size()) {
         return ZX_OK;
     }
@@ -194,9 +200,10 @@ int main(int argc, char**argv) {
     }
     dirfd.reset();
 
-    fzl::FdioCaller caller(fbl::move(info.fd));
+    fzl::FdioCaller caller(std::move(info.fd));
     uint16_t report_size = 0;
-    if (zircon_input_DeviceGetMaxInputReportSize(caller.borrow_channel(), &report_size) != ZX_OK) {
+    if (fuchsia_hardware_input_DeviceGetMaxInputReportSize(caller.borrow_channel(), &report_size) !=
+        ZX_OK) {
         printf("pwrbtn-monitor: Failed to to get max report size\n");
         return 1;
     }

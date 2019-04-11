@@ -16,10 +16,11 @@
 #define LOCAL_TRACE 0
 
 zx_status_t VmObjectDispatcher::Create(fbl::RefPtr<VmObject> vmo,
+                                       zx_koid_t pager_koid,
                                        fbl::RefPtr<Dispatcher>* dispatcher,
                                        zx_rights_t* rights) {
     fbl::AllocChecker ac;
-    auto disp = new (&ac) VmObjectDispatcher(fbl::move(vmo));
+    auto disp = new (&ac) VmObjectDispatcher(ktl::move(vmo), pager_koid);
     if (!ac.check())
         return ZX_ERR_NO_MEMORY;
 
@@ -29,8 +30,8 @@ zx_status_t VmObjectDispatcher::Create(fbl::RefPtr<VmObject> vmo,
     return ZX_OK;
 }
 
-VmObjectDispatcher::VmObjectDispatcher(fbl::RefPtr<VmObject> vmo)
-    : SoloDispatcher(ZX_VMO_ZERO_CHILDREN), vmo_(vmo) {
+VmObjectDispatcher::VmObjectDispatcher(fbl::RefPtr<VmObject> vmo, zx_koid_t pager_koid)
+    : SoloDispatcher(ZX_VMO_ZERO_CHILDREN), vmo_(vmo), pager_koid_(pager_koid) {
         vmo_->SetChildObserver(this);
     }
 
@@ -135,7 +136,7 @@ zx_status_t VmObjectDispatcher::RangeOp(uint32_t op, uint64_t offset, uint64_t s
                 return ZX_ERR_ACCESS_DENIED;
             }
             // TODO: handle partial commits
-            auto status = vmo_->CommitRange(offset, size, nullptr);
+            auto status = vmo_->CommitRange(offset, size);
             return status;
         }
         case ZX_VMO_OP_DECOMMIT: {
@@ -143,7 +144,7 @@ zx_status_t VmObjectDispatcher::RangeOp(uint32_t op, uint64_t offset, uint64_t s
                 return ZX_ERR_ACCESS_DENIED;
             }
             // TODO: handle partial decommits
-            auto status = vmo_->DecommitRange(offset, size, nullptr);
+            auto status = vmo_->DecommitRange(offset, size);
             return status;
         }
         case ZX_VMO_OP_LOCK:

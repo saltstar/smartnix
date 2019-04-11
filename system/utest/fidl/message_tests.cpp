@@ -86,7 +86,40 @@ bool message_builder_test() {
     EXPECT_EQ(message.txid(), 5u);
     EXPECT_EQ(message.ordinal(), 42u);
     EXPECT_EQ(message.handles().actual(), 1u);
+    EXPECT_EQ(message.handles().size(), 1u);
     EXPECT_EQ(message.handles().data()[0], handle_value);
+
+    END_TEST;
+}
+
+bool message_part_is_stl_container_test() {
+    BEGIN_TEST;
+
+    EXPECT_EQ(sizeof(uint8_t), sizeof(fidl::BytePart::value_type));
+    EXPECT_EQ(sizeof(zx_handle_t), sizeof(fidl::HandlePart::value_type));
+
+    EXPECT_EQ(sizeof(const uint8_t*), sizeof(fidl::BytePart::const_iterator));
+    EXPECT_EQ(sizeof(const zx_handle_t*), sizeof(fidl::HandlePart::const_iterator));
+
+    END_TEST;
+}
+
+bool message_part_size_test() {
+    BEGIN_TEST;
+
+    fidl::Message message;
+
+    EXPECT_EQ(message.bytes().size(), 0u);
+
+    uint8_t dummy_msg[42];
+    fidl::MessagePart msg(dummy_msg, 42, 10);
+
+    EXPECT_EQ(msg.size(), 10u);
+
+    fidl::MessagePart new_msg = std::move(msg);
+
+    EXPECT_EQ(new_msg.size(), 10u);
+    EXPECT_EQ(msg.size(), 0u);
 
     END_TEST;
 }
@@ -96,4 +129,6 @@ bool message_builder_test() {
 BEGIN_TEST_CASE(message_tests)
 RUN_NAMED_TEST("Message test", message_test)
 RUN_NAMED_TEST("MessageBuilder test", message_builder_test)
+RUN_NAMED_TEST("MessagePart friendly with STL test", message_part_is_stl_container_test)
+RUN_NAMED_TEST("MessagePart size test", message_part_size_test)
 END_TEST_CASE(message_tests);

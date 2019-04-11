@@ -1,5 +1,6 @@
 
 #include <arch/arm64.h>
+#include <arch/arm64/registers.h>
 #include <arch/debugger.h>
 #include <err.h>
 #include <kernel/thread.h>
@@ -110,9 +111,6 @@ zx_status_t arch_set_fp_regs(struct thread* thread, const zx_thread_state_fp_reg
 zx_status_t arch_get_vector_regs(struct thread* thread, zx_thread_state_vector_regs* out) {
     Guard<spin_lock_t, IrqSave> thread_lock_guard{ThreadLock::Get()};
 
-    if (thread->state == THREAD_RUNNING)
-        return ZX_ERR_BAD_STATE;
-
     const fpstate* in = &thread->arch.fpstate;
     out->fpcr = in->fpcr;
     out->fpsr = in->fpsr;
@@ -127,9 +125,6 @@ zx_status_t arch_get_vector_regs(struct thread* thread, zx_thread_state_vector_r
 zx_status_t arch_set_vector_regs(struct thread* thread, const zx_thread_state_vector_regs* in) {
     Guard<spin_lock_t, IrqSave> thread_lock_guard{ThreadLock::Get()};
 
-    if (thread->state == THREAD_RUNNING)
-        return ZX_ERR_BAD_STATE;
-
     fpstate* out = &thread->arch.fpstate;
     out->fpcr = in->fpcr;
     out->fpsr = in->fpsr;
@@ -142,11 +137,40 @@ zx_status_t arch_set_vector_regs(struct thread* thread, const zx_thread_state_ve
 }
 
 zx_status_t arch_get_debug_regs(struct thread* thread, zx_thread_state_debug_regs* out) {
-  return ZX_ERR_NOT_SUPPORTED;
+    *out = {};
+    out->hw_bps_count = arm64_hw_breakpoint_count();
+    out->hw_wps_count = arm64_hw_watchpoint_count();
+    Guard<spin_lock_t, IrqSave> thread_lock_guard{ThreadLock::Get()};
+
+    // The kernel ensures that this state is being kept up to date, so we can safely copy the
+    // information over.
+    for (size_t i = 0; i < out->hw_bps_count; i++) {
+        out->hw_bps[i].dbgbcr = thread->arch.debug_state.hw_bps[i].dbgbcr;
+        out->hw_bps[i].dbgbvr = thread->arch.debug_state.hw_bps[i].dbgbvr;
+    }
+
+    return ZX_OK;
 }
 
 zx_status_t arch_set_debug_regs(struct thread* thread, const zx_thread_state_debug_regs* in) {
-  return ZX_ERR_NOT_SUPPORTED;
+    arm64_debug_state_t state = {};
+
+    // We copy over the state from the input.
+    uint64_t bp_count = arm64_hw_breakpoint_count();
+    for (size_t i = 0; i < bp_count; i++) {
+        state.hw_bps[i].dbgbcr = in->hw_bps[i].dbgbcr;
+        state.hw_bps[i].dbgbvr = in->hw_bps[i].dbgbvr;
+    }
+
+    if (!arm64_validate_debug_state(&state)) {
+        return ZX_ERR_INVALID_ARGS;
+    }
+
+    Guard<spin_lock_t, IrqSave> thread_lock_guard{ThreadLock::Get()};
+    thread->arch.track_debug_state = true;
+    thread->arch.debug_state = state;
+
+    return ZX_OK;
 }
 
 zx_status_t arch_get_x86_register_fs(struct thread* thread, uint64_t* out) {
@@ -171,4 +195,12 @@ zx_status_t arch_set_x86_register_gs(struct thread* thread, const uint64_t* in) 
     // There are no GS register on ARM.
     (void)in;
     return ZX_ERR_NOT_SUPPORTED;
+}
+
+uint8_t arch_get_hw_breakpoint_count() {
+    return arm64_hw_breakpoint_count();
+}
+
+uint8_t arch_get_hw_watchpoint_count() {
+    return arm64_hw_watchpoint_count();
 }

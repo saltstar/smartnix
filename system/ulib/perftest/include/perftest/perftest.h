@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,6 +9,8 @@
 #include <fbl/function.h>
 #include <fbl/string.h>
 #include <perftest/results.h>
+
+#include <utility>
 
 // This is a library for writing performance tests.  It supports
 // performance tests that involve running an operation repeatedly,
@@ -175,7 +180,7 @@ void RegisterSimpleTest(const char* test_name) {
         }
         return true;
     };
-    RegisterTest(test_name, fbl::move(wrapper_func));
+    RegisterTest(test_name, std::move(wrapper_func));
 }
 
 // Entry point for the perf test runner that a test executable should call

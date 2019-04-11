@@ -2,7 +2,7 @@
 #include "tests.h"
 
 #include <fbl/alloc_checker.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 #include <lib/unittest/unittest.h>
 
 static bool alloc_checker_ctor() {
@@ -35,7 +35,7 @@ static bool alloc_checker_basic() {
     ac.arm(16u, false);
     EXPECT_FALSE(ac.check(), "");
 
-    // Allocating zero bytes, allways succeeds.
+    // Allocating zero bytes, always succeeds.
     ac.arm(0u, false);
     EXPECT_TRUE(ac.check(), "");
 
@@ -84,7 +84,7 @@ static bool alloc_checker_new() {
 
     const int kCount = 128;
     fbl::AllocChecker ac;
-    fbl::unique_ptr<StructWithCtor[]> arr(new (&ac) StructWithCtor[kCount]);
+    ktl::unique_ptr<StructWithCtor[]> arr(new (&ac) StructWithCtor[kCount]);
     EXPECT_EQ(ac.check(), true, "");
 
     // Check that the constructor got run.

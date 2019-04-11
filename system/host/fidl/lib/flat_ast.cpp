@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "fidl/flat_ast.h"
 
@@ -11,18 +14,24 @@
 #include "fidl/attributes.h"
 #include "fidl/lexer.h"
 #include "fidl/names.h"
+#include "fidl/ordinals.h"
 #include "fidl/parser.h"
 #include "fidl/raw_ast.h"
+#include "fidl/utils.h"
+
+#include "zircon/fidl.h"
 
 namespace fidl {
 namespace flat {
 
 namespace {
 
+constexpr uint32_t kMessageAlign = 8u;
+
 class ScopeInsertResult {
 public:
-    explicit ScopeInsertResult(std::unique_ptr<SourceLocation> previous_occurance)
-        : previous_occurance_(std::move(previous_occurance)) {}
+    explicit ScopeInsertResult(std::unique_ptr<SourceLocation> previous_occurrence)
+        : previous_occurrence_(std::move(previous_occurrence)) {}
 
     static ScopeInsertResult Ok() { return ScopeInsertResult(nullptr); }
     static ScopeInsertResult FailureAt(SourceLocation previous) {
@@ -30,16 +39,16 @@ public:
     }
 
     bool ok() const {
-        return previous_occurance_ == nullptr;
+        return previous_occurrence_ == nullptr;
     }
 
-    const SourceLocation& previous_occurance() const {
+    const SourceLocation& previous_occurrence() const {
         assert(!ok());
-        return *previous_occurance_;
+        return *previous_occurrence_;
     }
 
 private:
-    std::unique_ptr<SourceLocation> previous_occurance_;
+    std::unique_ptr<SourceLocation> previous_occurrence_;
 };
 
 template <typename T>
@@ -120,6 +129,12 @@ uint32_t ClampedAdd(uint32_t a, uint32_t b) {
                  static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
 }
 
+TypeShape AlignTypeshape(TypeShape shape, uint32_t alignment) {
+    uint32_t new_alignment = std::max(shape.Alignment(), alignment);
+    uint32_t new_size = AlignTo(shape.Size(), new_alignment);
+    return TypeShape(new_size, new_alignment, shape.Depth(), shape.MaxHandles(), shape.MaxOutOfLine());
+}
+
 TypeShape CStructTypeShape(std::vector<FieldShape*>* fields, uint32_t extra_handles = 0u) {
     uint32_t size = 0u;
     uint32_t alignment = 1u;
@@ -141,6 +156,15 @@ TypeShape CStructTypeShape(std::vector<FieldShape*>* fields, uint32_t extra_hand
     max_handles = ClampedAdd(max_handles, extra_handles);
 
     size = AlignTo(size, alignment);
+
+    if (fields->empty()) {
+        assert(size == 0);
+        assert(alignment == 1);
+
+        // Empty structs are defined to have a size of 1 (a single byte).
+        size = 1;
+    }
+
     return TypeShape(size, alignment, depth, max_handles, max_out_of_line);
 }
 
@@ -164,7 +188,16 @@ TypeShape CUnionTypeShape(const std::vector<flat::Union::Member>& members) {
     return TypeShape(size, alignment, depth, max_handles, max_out_of_line);
 }
 
-TypeShape PointerTypeShape(TypeShape element, uint32_t max_element_count = 1u) {
+TypeShape FidlStructTypeShape(std::vector<FieldShape*>* fields) {
+    return CStructTypeShape(fields);
+}
+
+TypeShape FidlMessageTypeShape(std::vector<FieldShape*>* fields) {
+    auto struct_shape = FidlStructTypeShape(fields);
+    return AlignTypeshape(struct_shape, kMessageAlign);
+}
+
+TypeShape PointerTypeShape(const TypeShape& element, uint32_t max_element_count = 1u) {
     // Because FIDL supports recursive data structures, we might not have
     // computed the TypeShape for the element we're pointing to. In that case,
     // the size will be zero and we'll use |numeric_limits<uint32_t>::max()| as
@@ -191,7 +224,7 @@ TypeShape PointerTypeShape(TypeShape element, uint32_t max_element_count = 1u) {
     return TypeShape(8u, 8u, depth, max_handles, max_out_of_line);
 }
 
-TypeShape CEnvelopeTypeShape(TypeShape contained_type) {
+TypeShape CEnvelopeTypeShape(const TypeShape& contained_type) {
     auto packed_sizes_field = FieldShape(kUint64TypeShape);
     auto pointer_type = FieldShape(PointerTypeShape(contained_type));
     std::vector<FieldShape*> header{&packed_sizes_field, &pointer_type};
@@ -220,6 +253,22 @@ TypeShape CTableTypeShape(std::vector<TypeShape*>* fields, uint32_t extra_handle
     auto data_field = FieldShape(PointerTypeShape(pointer_element));
     std::vector<FieldShape*> header{&num_fields, &data_field};
     return CStructTypeShape(&header, extra_handles);
+}
+
+TypeShape CXUnionTypeShape(const std::vector<flat::XUnion::Member>& members, uint32_t extra_handles = 0u) {
+    uint32_t depth = 0u;
+    uint32_t max_handles = 0u;
+    uint32_t max_out_of_line = 0u;
+
+    for (const auto& member : members) {
+        const auto& envelope = CEnvelopeTypeShape(member.fieldshape.Typeshape());
+
+        depth = ClampedAdd(depth, envelope.Depth());
+        max_handles = ClampedAdd(max_handles, envelope.MaxHandles());
+        max_out_of_line = std::max(max_out_of_line, envelope.MaxOutOfLine());
+    }
+
+    return TypeShape(sizeof(fidl_xunion_t), 8u, depth, max_handles, max_out_of_line);
 }
 
 TypeShape ArrayTypeShape(TypeShape element, uint32_t count) {
@@ -273,10 +322,6 @@ TypeShape PrimitiveTypeShape(types::PrimitiveSubtype type) {
     }
 }
 
-std::unique_ptr<PrimitiveType> MakePrimitiveType(const raw::PrimitiveType* primitive_type) {
-    return std::make_unique<PrimitiveType>(primitive_type->subtype);
-}
-
 } // namespace
 
 bool Decl::HasAttribute(fidl::StringView name) const {
@@ -302,14 +347,15 @@ fidl::StringView Decl::GetAttribute(fidl::StringView name) const {
 }
 
 std::string Decl::GetName() const {
-    return name.name().data();
+    return name.name_part();
 }
 
-bool Interface::Method::Parameter::IsSimple() const {
+bool IsSimple(const Type* type, const FieldShape& fieldshape) {
     switch (type->kind) {
     case Type::Kind::kVector: {
-        auto vector_type = static_cast<VectorType*>(type.get());
-        if (vector_type->element_count.Value() == Size::Max().Value())
+        auto vector_type = static_cast<const VectorType*>(type);
+        auto element_count = static_cast<const Size&>(vector_type->element_count->Value());
+        if (element_count == Size::Max())
             return false;
         switch (vector_type->element_type->kind) {
         case Type::Kind::kHandle:
@@ -324,8 +370,9 @@ bool Interface::Method::Parameter::IsSimple() const {
         }
     }
     case Type::Kind::kString: {
-        auto string_type = static_cast<StringType*>(type.get());
-        return string_type->max_size.Value() < Size::Max().Value();
+        auto string_type = static_cast<const StringType*>(type);
+        auto max_size = static_cast<const Size&>(string_type->max_size->Value());
+        return max_size < Size::Max();
     }
     case Type::Kind::kArray:
     case Type::Kind::kHandle:
@@ -333,7 +380,7 @@ bool Interface::Method::Parameter::IsSimple() const {
     case Type::Kind::kPrimitive:
         return fieldshape.Depth() == 0u;
     case Type::Kind::kIdentifier: {
-        auto identifier_type = static_cast<IdentifierType*>(type.get());
+        auto identifier_type = static_cast<const IdentifierType*>(type);
         switch (identifier_type->nullability) {
         case types::Nullability::kNullable:
             // If the identifier is nullable, then we can handle a depth of 1
@@ -344,6 +391,302 @@ bool Interface::Method::Parameter::IsSimple() const {
         }
     }
     }
+}
+
+Type* Typespace::Lookup(const flat::Name& name, types::Nullability nullability,
+                        LookupMode lookup_mode) {
+    assert(lookup_mode == LookupMode::kNoForwardReferences && "forward refs not implemented yet");
+
+    const auto by_nullability_iter = named_types_.find(nullability);
+    if (by_nullability_iter != named_types_.end()) {
+        // Direct lookup.
+        const ByName& by_name = by_nullability_iter->second;
+        auto by_name_iter1 = by_name.find(&name);
+        if (by_name_iter1 != by_name.end())
+            return by_name_iter1->second.get();
+
+        // Global lookup.
+        Name global_name(nullptr, name.name_part());
+        auto by_name_iter2 = by_name.find(&global_name);
+        if (by_name_iter2 != by_name.end())
+            return by_name_iter2->second.get();
+    }
+
+    // Unknown.
+    switch (lookup_mode) {
+    case LookupMode::kNoForwardReferences:
+        return nullptr;
+    case LookupMode::kAllowForwardReferences:
+        return CreateForwardDeclaredType(name, nullability);
+    }
+}
+
+Type* Typespace::CreateForwardDeclaredType(const flat::Name& name, types::Nullability nullability) {
+    // TODO(pascallouis): Implement :-).
+
+    return nullptr;
+}
+
+bool NoOpConstraint(ErrorReporter* error_reporter,
+                    const raw::Attribute* attribute,
+                    const Decl* decl) {
+    return true;
+}
+
+AttributeSchema::AttributeSchema(const std::set<Placement>& allowed_placements,
+                                 const std::set<std::string> allowed_values,
+                                 Constraint constraint)
+    : allowed_placements_(allowed_placements),
+      allowed_values_(allowed_values),
+      constraint_(std::move(constraint)) {}
+
+void AttributeSchema::ValidatePlacement(ErrorReporter* error_reporter,
+                                        const raw::Attribute* attribute,
+                                        Placement placement) const {
+    if (allowed_placements_.size() == 0)
+        return;
+    auto iter = allowed_placements_.find(placement);
+    if (iter != allowed_placements_.end())
+        return;
+    std::string message("placement of attribute '");
+    message.append(attribute->name);
+    message.append("' disallowed here");
+    error_reporter->ReportError(attribute->location(), message);
+}
+
+void AttributeSchema::ValidateValue(ErrorReporter* error_reporter,
+                                    const raw::Attribute* attribute) const {
+    if (allowed_values_.size() == 0)
+        return;
+    auto iter = allowed_values_.find(attribute->value);
+    if (iter != allowed_values_.end())
+        return;
+    std::string message("attribute '");
+    message.append(attribute->name);
+    message.append("' has invalid value '");
+    message.append(attribute->value);
+    message.append("', should be one of '");
+    bool first = true;
+    for (const auto& hint : allowed_values_) {
+        if (!first)
+            message.append(", ");
+        message.append(hint);
+        message.append("'");
+        first = false;
+    }
+    error_reporter->ReportError(attribute->location(), message);
+}
+
+void AttributeSchema::ValidateConstraint(ErrorReporter* error_reporter,
+                                         const raw::Attribute* attribute,
+                                         const Decl* decl) const {
+    auto check = error_reporter->Checkpoint();
+    auto passed = constraint_(error_reporter, attribute, decl);
+    if (passed) {
+        assert(check.NoNewErrors() && "cannot add errors and pass");
+    } else if (check.NoNewErrors()) {
+        std::string message("declaration did not satisfy constraint of attribute '");
+        message.append(attribute->name);
+        message.append("' with value '");
+        message.append(attribute->value);
+        message.append("'");
+        // TODO(pascallouis): It would be nicer to use the location of
+        // the declaration, however we do not keep it around today.
+        error_reporter->ReportError(attribute->location(), message);
+    }
+}
+
+bool SimpleLayoutConstraint(ErrorReporter* error_reporter,
+                            const raw::Attribute* attribute,
+                            const Decl* decl) {
+    assert(decl->kind == Decl::Kind::kStruct);
+    auto struct_decl = static_cast<const Struct*>(decl);
+    bool ok = true;
+    for (const auto& member : struct_decl->members) {
+        if (!IsSimple(member.type.get(), member.fieldshape)) {
+            std::string message("member '");
+            message.append(member.name.data());
+            message.append("' is not simple");
+            error_reporter->ReportError(member.name, message);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+bool ParseBound(ErrorReporter* error_reporter, const SourceLocation& location,
+                const std::string& input, uint32_t* out_value) {
+    auto result = utils::ParseNumeric(input, out_value, 10);
+    switch (result) {
+    case utils::ParseNumericResult::kOutOfBounds:
+        error_reporter->ReportError(location, "bound is too big");
+        return false;
+    case utils::ParseNumericResult::kMalformed: {
+        std::string message("unable to parse bound '");
+        message.append(input);
+        message.append("'");
+        error_reporter->ReportError(location, message);
+        return false;
+    }
+    case utils::ParseNumericResult::kSuccess:
+        return true;
+    }
+}
+
+bool MaxBytesConstraint(ErrorReporter* error_reporter,
+                        const raw::Attribute* attribute,
+                        const Decl* decl) {
+    uint32_t bound;
+    if (!ParseBound(error_reporter, attribute->location(), attribute->value, &bound))
+        return false;
+    uint32_t max_bytes = std::numeric_limits<uint32_t>::max();
+    switch (decl->kind) {
+    case Decl::Kind::kStruct: {
+        auto struct_decl = static_cast<const Struct*>(decl);
+        max_bytes = struct_decl->typeshape.Size() + struct_decl->typeshape.MaxOutOfLine();
+        break;
+    }
+    case Decl::Kind::kTable: {
+        auto table_decl = static_cast<const Table*>(decl);
+        max_bytes = table_decl->typeshape.Size() + table_decl->typeshape.MaxOutOfLine();
+        break;
+    }
+    case Decl::Kind::kUnion: {
+        auto union_decl = static_cast<const Union*>(decl);
+        max_bytes = union_decl->typeshape.Size() + union_decl->typeshape.MaxOutOfLine();
+        break;
+    }
+    case Decl::Kind::kXUnion: {
+        auto xunion_decl = static_cast<const XUnion*>(decl);
+        max_bytes = xunion_decl->typeshape.Size() + xunion_decl->typeshape.MaxOutOfLine();
+        break;
+    }
+    default:
+        assert(false && "unexpected kind");
+        return false;
+    }
+    if (max_bytes > bound) {
+        std::ostringstream message;
+        message << "too large: only ";
+        message << bound;
+        message << " bytes allowed, but ";
+        message << max_bytes;
+        message << " bytes found";
+        error_reporter->ReportError(attribute->location(), message.str());
+        return false;
+    }
+    return true;
+}
+
+bool MaxHandlesConstraint(ErrorReporter* error_reporter,
+                          const raw::Attribute* attribute,
+                          const Decl* decl) {
+    uint32_t bound;
+    if (!ParseBound(error_reporter, attribute->location(), attribute->value.c_str(), &bound))
+        return false;
+    uint32_t max_handles = std::numeric_limits<uint32_t>::max();
+    switch (decl->kind) {
+    case Decl::Kind::kStruct: {
+        auto struct_decl = static_cast<const Struct*>(decl);
+        max_handles = struct_decl->typeshape.MaxHandles();
+        break;
+    }
+    case Decl::Kind::kTable: {
+        auto table_decl = static_cast<const Table*>(decl);
+        max_handles = table_decl->typeshape.MaxHandles();
+        break;
+    }
+    case Decl::Kind::kUnion: {
+        auto union_decl = static_cast<const Union*>(decl);
+        max_handles = union_decl->typeshape.MaxHandles();
+        break;
+    }
+    case Decl::Kind::kXUnion: {
+        auto xunion_decl = static_cast<const XUnion*>(decl);
+        max_handles = xunion_decl->typeshape.MaxHandles();
+        break;
+    }
+    default:
+        assert(false && "unexpected kind");
+        return false;
+    }
+    if (max_handles > bound) {
+        std::ostringstream message;
+        message << "too many handles: only ";
+        message << bound;
+        message << " allowed, but ";
+        message << max_handles;
+        message << " found";
+        error_reporter->ReportError(attribute->location(), message.str());
+        return false;
+    }
+    return true;
+}
+
+Libraries::Libraries() {
+    // clang-format off
+    AddAttributeSchema("Discoverable", AttributeSchema({
+        AttributeSchema::Placement::kInterfaceDecl,
+    }, {
+        "",
+    }));
+    AddAttributeSchema("Doc", AttributeSchema({
+        /* any placement */
+    }, {
+        /* any value */
+    }));
+    AddAttributeSchema("FragileBase", AttributeSchema({
+        AttributeSchema::Placement::kInterfaceDecl,
+    }, {
+        "",
+    }));
+    AddAttributeSchema("Layout", AttributeSchema({
+        AttributeSchema::Placement::kInterfaceDecl,
+    }, {
+        "Simple",
+    },
+    SimpleLayoutConstraint));
+    AddAttributeSchema("MaxBytes", AttributeSchema({
+        AttributeSchema::Placement::kInterfaceDecl,
+        AttributeSchema::Placement::kMethod,
+        AttributeSchema::Placement::kStructDecl,
+        AttributeSchema::Placement::kTableDecl,
+        AttributeSchema::Placement::kUnionDecl,
+        AttributeSchema::Placement::kXUnionDecl,
+    }, {
+        /* any value */
+    },
+    MaxBytesConstraint));
+    AddAttributeSchema("MaxHandles", AttributeSchema({
+        AttributeSchema::Placement::kInterfaceDecl,
+        AttributeSchema::Placement::kMethod,
+        AttributeSchema::Placement::kStructDecl,
+        AttributeSchema::Placement::kTableDecl,
+        AttributeSchema::Placement::kUnionDecl,
+        AttributeSchema::Placement::kXUnionDecl,
+    }, {
+        /* any value */
+    },
+    MaxHandlesConstraint));
+    AddAttributeSchema("Selector", AttributeSchema({
+        AttributeSchema::Placement::kMethod,
+        AttributeSchema::Placement::kXUnionMember,
+    }, {
+        /* any value */
+    }));
+    AddAttributeSchema("Transport", AttributeSchema({
+        AttributeSchema::Placement::kInterfaceDecl,
+    }, {
+        "Channel",
+        "SocketControl",
+        "OvernetStream",
+    }));
+    AddAttributeSchema("Result", AttributeSchema({
+        AttributeSchema::Placement::kUnionDecl,
+    }, {
+        "",
+    }));
+    // clang-format on
 }
 
 bool Libraries::Insert(std::unique_ptr<Library> library) {
@@ -361,6 +704,59 @@ bool Libraries::Lookup(const std::vector<StringView>& library_name,
 
     *out_library = iter->second.get();
     return true;
+}
+
+size_t EditDistance(const std::string& sequence1, const std::string& sequence2) {
+    size_t s1_length = sequence1.length();
+    size_t s2_length = sequence2.length();
+    size_t row1[s1_length + 1];
+    size_t row2[s1_length + 1];
+    size_t* last_row = row1;
+    size_t* this_row = row2;
+    for (size_t i = 0; i <= s1_length; i++)
+        last_row[i] = i;
+    for (size_t j = 0; j < s2_length; j++) {
+        this_row[0] = j + 1;
+        auto s2c = sequence2[j];
+        for (size_t i = 1; i <= s1_length; i++) {
+            auto s1c = sequence1[i - 1];
+            this_row[i] = std::min(std::min(
+                                       last_row[i] + 1, this_row[i - 1] + 1),
+                                   last_row[i - 1] + (s1c == s2c ? 0 : 1));
+        }
+        std::swap(last_row, this_row);
+    }
+    return last_row[s1_length];
+}
+
+const AttributeSchema* Libraries::RetrieveAttributeSchema(ErrorReporter* error_reporter,
+                                                          const raw::Attribute* attribute) const {
+    const auto& attribute_name = attribute->name;
+    auto iter = attribute_schemas_.find(attribute_name);
+    if (iter != attribute_schemas_.end()) {
+        const auto& schema = iter->second;
+        return &schema;
+    }
+
+    // Skip typo check?
+    if (error_reporter == nullptr)
+        return nullptr;
+
+    // Match against all known attributes.
+    for (const auto& name_and_schema : attribute_schemas_) {
+        auto edit_distance = EditDistance(name_and_schema.first, attribute_name);
+        if (0 < edit_distance && edit_distance < 2) {
+            std::string message("suspect attribute with name '");
+            message.append(attribute_name);
+            message.append("'; did you mean '");
+            message.append(name_and_schema.first);
+            message.append("'?");
+            error_reporter->ReportWarning(attribute->location(), message);
+            return nullptr;
+        }
+    }
+
+    return nullptr;
 }
 
 bool Dependencies::Register(StringView filename, Library* dep_library,
@@ -435,6 +831,48 @@ bool Library::Fail(const SourceLocation& location, StringView message) {
     return false;
 }
 
+void Library::ValidateAttributesPlacement(AttributeSchema::Placement placement,
+                                          const raw::AttributeList* attributes) {
+    if (attributes == nullptr)
+        return;
+    for (const auto& attribute : attributes->attributes) {
+        auto schema = all_libraries_->RetrieveAttributeSchema(error_reporter_, attribute.get());
+        if (schema != nullptr) {
+            schema->ValidatePlacement(error_reporter_, attribute.get(), placement);
+            schema->ValidateValue(error_reporter_, attribute.get());
+        }
+    }
+}
+
+void Library::ValidateAttributesConstraints(const Decl* decl,
+                                            const raw::AttributeList* attributes) {
+    if (attributes == nullptr)
+        return;
+    for (const auto& attribute : attributes->attributes) {
+        auto schema = all_libraries_->RetrieveAttributeSchema(nullptr, attribute.get());
+        if (schema != nullptr)
+            schema->ValidateConstraint(error_reporter_, attribute.get(), decl);
+    }
+}
+
+Name Library::NextAnonymousName() {
+    // TODO(pascallouis): Improve anonymous name generation. We want to be
+    // specific about how these names are generated once they appear in the
+    // JSON IR, and are exposed to the backends.
+    std::ostringstream data;
+    data << "SomeLongAnonymousPrefix";
+    data << anon_counter_++;
+    return GeneratedName(data.str());
+}
+
+Name Library::GeneratedName(const std::string& name) {
+    return Name(this, generated_source_file_.AddLine(name));
+}
+
+Name Library::DerivedName(const std::vector<StringView>& components) {
+  return GeneratedName(StringJoin(components, "_"));
+}
+
 bool Library::CompileCompoundIdentifier(const raw::CompoundIdentifier* compound_identifier,
                                         SourceLocation location, Name* name_out) {
     const auto& components = compound_identifier->components;
@@ -469,16 +907,6 @@ bool Library::CompileCompoundIdentifier(const raw::CompoundIdentifier* compound_
     return true;
 }
 
-bool Library::ParseSize(std::unique_ptr<Constant> constant, Size* out_size) {
-    uint32_t value;
-    if (!ParseIntegerConstant(constant.get(), &value)) {
-        *out_size = Size();
-        return false;
-    }
-    *out_size = Size(std::move(constant), value);
-    return true;
-}
-
 void Library::RegisterConst(Const* decl) {
     const Name* name = &decl->name;
     constants_.emplace(name, decl);
@@ -489,7 +917,7 @@ bool Library::RegisterDecl(Decl* decl) {
     auto iter = declarations_.emplace(name, decl);
     if (!iter.second) {
         std::string message = "Name collision: ";
-        message.append(name->name().data());
+        message.append(name->name_part());
         return Fail(*name, message);
     }
     return true;
@@ -524,14 +952,11 @@ bool Library::ConsumeType(std::unique_ptr<raw::Type> raw_type, SourceLocation lo
         std::unique_ptr<Type> element_type;
         if (!ConsumeType(std::move(array_type->element_type), location, &element_type))
             return false;
-        std::unique_ptr<Constant> constant;
-        if (!ConsumeConstant(std::move(array_type->element_count), location, &constant))
+        std::unique_ptr<Constant> element_count;
+        if (!ConsumeConstant(std::move(array_type->element_count), location, &element_count))
             return false;
-        Size element_count;
-        if (!ParseSize(std::move(constant), &element_count))
-            return Fail(location, "Unable to parse array element count");
-        *out_type =
-            std::make_unique<ArrayType>(std::move(element_type), std::move(element_count));
+        *out_type = std::make_unique<ArrayType>(location, std::move(element_type),
+                                                std::move(element_count));
         break;
     }
     case raw::Type::Kind::kVector: {
@@ -539,30 +964,32 @@ bool Library::ConsumeType(std::unique_ptr<raw::Type> raw_type, SourceLocation lo
         std::unique_ptr<Type> element_type;
         if (!ConsumeType(std::move(vector_type->element_type), location, &element_type))
             return false;
-        Size element_count = Size::Max();
+        std::unique_ptr<Constant> element_count = std::make_unique<SynthesizedConstant>(
+            std::make_unique<Size>(Size::Max()));
         if (vector_type->maybe_element_count) {
-            std::unique_ptr<Constant> constant;
-            if (!ConsumeConstant(std::move(vector_type->maybe_element_count), location, &constant))
+            if (!ConsumeConstant(std::move(vector_type->maybe_element_count),
+                                 location,
+                                 &element_count))
                 return false;
-            if (!ParseSize(std::move(constant), &element_count))
-                return Fail(location, "Unable to parse vector size bound");
         }
-        *out_type = std::make_unique<VectorType>(std::move(element_type), std::move(element_count),
+        *out_type = std::make_unique<VectorType>(location, std::move(element_type),
+                                                 std::move(element_count),
                                                  vector_type->nullability);
         break;
     }
     case raw::Type::Kind::kString: {
         auto string_type = static_cast<raw::StringType*>(raw_type.get());
-        Size element_count = Size::Max();
+        std::unique_ptr<Constant> element_count = std::make_unique<SynthesizedConstant>(
+            std::make_unique<Size>(Size::Max()));
         if (string_type->maybe_element_count) {
-            std::unique_ptr<Constant> constant;
-            if (!ConsumeConstant(std::move(string_type->maybe_element_count), location, &constant))
+            if (!ConsumeConstant(std::move(string_type->maybe_element_count),
+                                 location,
+                                 &element_count))
                 return false;
-            if (!ParseSize(std::move(constant), &element_count))
-                return Fail(location, "Unable to parse string size bound");
         }
         *out_type =
-            std::make_unique<StringType>(std::move(element_count), string_type->nullability);
+            std::make_unique<StringType>(location, std::move(element_count),
+                                         string_type->nullability);
         break;
     }
     case raw::Type::Kind::kHandle: {
@@ -579,23 +1006,34 @@ bool Library::ConsumeType(std::unique_ptr<raw::Type> raw_type, SourceLocation lo
         *out_type = std::make_unique<RequestHandleType>(std::move(name), request_type->nullability);
         break;
     }
-    case raw::Type::Kind::kPrimitive: {
-        auto primitive_type = static_cast<raw::PrimitiveType*>(raw_type.get());
-        *out_type = MakePrimitiveType(primitive_type);
-        break;
-    }
     case raw::Type::Kind::kIdentifier: {
         auto identifier_type = static_cast<raw::IdentifierType*>(raw_type.get());
         Name name;
         if (!CompileCompoundIdentifier(identifier_type->identifier.get(), location, &name)) {
             return false;
         }
-        auto primitive_type = LookupTypeAlias(name);
+
+        // Special case: primitives.
+        const auto primitive_type = LookupPrimitiveType(name);
         if (primitive_type != nullptr) {
+            if (identifier_type->nullability != types::Nullability::kNonnullable) {
+                return Fail(raw_type->location(), "primitives cannot be nullable");
+            }
             *out_type = std::make_unique<PrimitiveType>(*primitive_type);
-        } else {
-            *out_type = std::make_unique<IdentifierType>(std::move(name), identifier_type->nullability);
+            return true;
         }
+
+        // Special case: type aliases.
+        const auto alias_type = LookupTypeAlias(name);
+        if (alias_type != nullptr) {
+            if (identifier_type->nullability != types::Nullability::kNonnullable) {
+                return Fail(raw_type->location(), "type aliases cannot be nullable");
+            }
+            *out_type = std::make_unique<PrimitiveType>(*alias_type);
+            return true;
+        }
+
+        *out_type = std::make_unique<IdentifierType>(std::move(name), identifier_type->nullability);
         break;
     }
     }
@@ -603,7 +1041,7 @@ bool Library::ConsumeType(std::unique_ptr<raw::Type> raw_type, SourceLocation lo
 }
 
 bool Library::ConsumeUsing(std::unique_ptr<raw::Using> using_directive) {
-    if (using_directive->maybe_primitive)
+    if (using_directive->maybe_type)
         return ConsumeTypeAlias(std::move(using_directive));
 
     std::vector<StringView> library_name;
@@ -637,10 +1075,23 @@ bool Library::ConsumeUsing(std::unique_ptr<raw::Using> using_directive) {
 }
 
 bool Library::ConsumeTypeAlias(std::unique_ptr<raw::Using> using_directive) {
-    assert(using_directive->maybe_primitive);
+    assert(using_directive->maybe_type);
+
     auto location = using_directive->using_path->components[0]->location();
-    auto name = Name(this, location);
-    auto using_dir = std::make_unique<Using>(std::move(name), MakePrimitiveType(using_directive->maybe_primitive.get()));
+    auto alias_name = Name(this, location);
+    Name type_name;
+    if (!CompileCompoundIdentifier(using_directive->maybe_type->identifier.get(),
+                                   using_directive->maybe_type->location(),
+                                   &type_name)) {
+        return false;
+    }
+    auto primitive_type = LookupPrimitiveType(type_name);
+    if (primitive_type == nullptr) {
+        std::string message("may only alias primitive types, found ");
+        message += NameName(type_name, ".", "/");
+        return Fail(location, message);
+    }
+    auto using_dir = std::make_unique<Using>(std::move(alias_name), primitive_type);
     type_aliases_.emplace(&using_dir->name, using_dir.get());
     using_.push_back(std::move(using_dir));
     return true;
@@ -674,28 +1125,90 @@ bool Library::ConsumeEnumDeclaration(std::unique_ptr<raw::EnumDeclaration> enum_
             return false;
         auto attributes = std::move(member->attributes);
         members.emplace_back(location, std::move(value), std::move(attributes));
+        // TODO(pascallouis): right now, members are not registered. Look into
+        // registering them, potentially under the enum name qualifier such as
+        // <name_of_enum>.<name_of_member>.
     }
-    auto type = types::PrimitiveSubtype::kUint32;
-    if (enum_declaration->maybe_subtype)
-        type = enum_declaration->maybe_subtype->subtype;
 
-    auto attributes = std::move(enum_declaration->attributes);
-    auto name = Name(this, enum_declaration->identifier->location());
-
-    enum_declarations_.push_back(
-        std::make_unique<Enum>(std::move(attributes), std::move(name), type, std::move(members)));
+    enum_declarations_.push_back(std::make_unique<Enum>(
+        std::move(enum_declaration->attributes),
+        Name(this, enum_declaration->identifier->location()),
+        std::move(enum_declaration->maybe_subtype),
+        std::move(members)));
     if (!RegisterDecl(enum_declarations_.back().get()))
         return false;
 
-    // TODO(pascallouis): right now, members are not registered. Look into
-    // registering them, potentially under the enum name qualifier such as
-    // <name_of_enum>.<name_of_member>.
-    //
-    // When doing this, change type ownership to be at library level, rather
-    // than node level, and change references from std::unique_ptr<Type> to
-    // const Type* throughout raw and flat nodes. Otherwhise, it's that much
-    // harder to create inferred types, and share types, e.g. here between the
-    // enum decl and the multiple const decl for each member.
+    return true;
+}
+
+bool Library::CreateMethodResult(const Name& interface_name,
+                                raw::InterfaceMethod* method,
+                                Struct* in_response,
+                                Struct** out_response) {
+    // Compile the error type.
+    auto error_location = method->maybe_error->location();
+    std::unique_ptr<Type> error_type;
+    if (!ConsumeType(std::move(method->maybe_error), error_location, &error_type))
+        return false;
+
+    const PrimitiveType* error_primitive = nullptr;
+    if (error_type->kind == Type::Kind::kPrimitive) {
+        error_primitive = static_cast<const PrimitiveType*>(error_type.get());
+    } else if (error_type->kind == Type::Kind::kIdentifier) {
+        auto identifier_type = static_cast<const IdentifierType*>(error_type.get());
+        Decl* decl = LookupDeclByName(identifier_type->name);
+        if (decl && decl->kind == Decl::Kind::kEnum) {
+            Enum* error_enum = static_cast<Enum*>(decl);
+            if (!error_enum->type) {
+                if (!CompileEnum(error_enum))
+                    return false;
+            }
+            error_primitive = error_enum->type;
+        }
+    }
+    if (!error_primitive ||
+        (error_primitive->subtype != types::PrimitiveSubtype::kInt32 &&
+         error_primitive->subtype != types::PrimitiveSubtype::kUint32)) {
+        return Fail(error_location,
+                    "invalid error type: must be int32, uint32 or an enum therof");
+    }
+
+    // Make the Result union containing the response struct and the
+    // error type.
+    Union::Member response_member{
+        IdentifierTypeForDecl(in_response, types::Nullability::kNonnullable),
+        GeneratedName("response").source_location(),
+        nullptr};
+    Union::Member error_member{
+        std::move(error_type),
+        GeneratedName("err").source_location(),
+        nullptr};
+    SourceLocation method_name = method->identifier->location();
+    Name result_name = DerivedName({interface_name.name_part(), method_name.data(), "Result"});
+    std::vector<Union::Member> result_members;
+    result_members.push_back(std::move(response_member));
+    result_members.push_back(std::move(error_member));
+    std::vector<std::unique_ptr<raw::Attribute>> result_attributes;
+    result_attributes.emplace_back(std::make_unique<raw::Attribute>(*method, "Result", ""));
+    auto result_attributelist = std::make_unique<raw::AttributeList>(*method,
+                                                                     std::move(result_attributes));
+    union_declarations_.push_back(std::make_unique<Union>(std::move(result_attributelist),
+                                                          std::move(result_name),
+                                                          std::move(result_members)));
+    auto result_decl = union_declarations_.back().get();
+    if (!RegisterDecl(result_decl))
+        return false;
+
+    // Make a new response struct for the method containing just the
+    // result union.
+    std::vector<Struct::Member> response_members;
+    response_members.push_back(Struct::Member(IdentifierTypeForDecl(result_decl, types::Nullability::kNonnullable),
+                                              GeneratedName("result").source_location(), nullptr, nullptr));
+    struct_declarations_.push_back(std::make_unique<Struct>(nullptr, NextAnonymousName(), std::move(response_members), true));
+    *out_response = struct_declarations_.back().get();
+    if (!RegisterDecl(*out_response))
+        return false;
+
     return true;
 }
 
@@ -716,38 +1229,37 @@ bool Library::ConsumeInterfaceDeclaration(
 
     std::vector<Interface::Method> methods;
     for (auto& method : interface_declaration->methods) {
+        std::unique_ptr<raw::Ordinal> ordinal_literal =
+            std::make_unique<raw::Ordinal>(fidl::ordinals::GetOrdinal(library_name_, name.name_part(), *method));
+        std::unique_ptr<raw::Ordinal> generated_ordinal =
+            std::make_unique<raw::Ordinal>(fidl::ordinals::GetGeneratedOrdinal(library_name_, name.name_part(), *method));
         auto attributes = std::move(method->attributes);
-        auto ordinal_literal = std::move(method->ordinal);
-
         SourceLocation method_name = method->identifier->location();
 
-        std::unique_ptr<Interface::Method::Message> maybe_request;
+        Struct* maybe_request = nullptr;
         if (method->maybe_request != nullptr) {
-            maybe_request.reset(new Interface::Method::Message());
-            for (auto& parameter : method->maybe_request->parameter_list) {
-                SourceLocation parameter_name = parameter->identifier->location();
-                std::unique_ptr<Type> type;
-                if (!ConsumeType(std::move(parameter->type), parameter_name, &type))
-                    return false;
-                maybe_request->parameters.emplace_back(std::move(type), std::move(parameter_name));
-            }
+            Name request_name = NextAnonymousName();
+            if (!ConsumeParameterList(std::move(request_name), std::move(method->maybe_request), true, &maybe_request))
+                return false;
         }
 
-        std::unique_ptr<Interface::Method::Message> maybe_response;
+        bool has_error = (method->maybe_error != nullptr);
+
+        Struct* maybe_response = nullptr;
         if (method->maybe_response != nullptr) {
-            maybe_response.reset(new Interface::Method::Message());
-            for (auto& parameter : method->maybe_response->parameter_list) {
-                SourceLocation parameter_name = parameter->identifier->location();
-                std::unique_ptr<Type> type;
-                if (!ConsumeType(std::move(parameter->type), parameter_name, &type))
-                    return false;
-                maybe_response->parameters.emplace_back(std::move(type), parameter_name);
-            }
+            Name response_name = has_error ? DerivedName({name.name_part(), method_name.data(), "Response"}) : NextAnonymousName();
+            if (!ConsumeParameterList(std::move(response_name), std::move(method->maybe_response), !has_error, &maybe_response))
+                return false;
+        }
+
+        if (has_error) {
+          if (!CreateMethodResult(name, method.get(), maybe_response, &maybe_response))
+            return false;
         }
 
         assert(maybe_request != nullptr || maybe_response != nullptr);
-
         methods.emplace_back(std::move(attributes),
+                             std::move(generated_ordinal),
                              std::move(ordinal_literal),
                              std::move(method_name), std::move(maybe_request),
                              std::move(maybe_response));
@@ -757,6 +1269,36 @@ bool Library::ConsumeInterfaceDeclaration(
         std::make_unique<Interface>(std::move(attributes), std::move(name),
                                     std::move(superinterfaces), std::move(methods)));
     return RegisterDecl(interface_declarations_.back().get());
+}
+
+std::unique_ptr<IdentifierType> Library::IdentifierTypeForDecl(const Decl* decl, types::Nullability nullability) {
+    return std::make_unique<IdentifierType>(Name(decl->name.library(), decl->name.name_part()), nullability);
+}
+
+bool Library::ConsumeParameterList(Name name, std::unique_ptr<raw::ParameterList> parameter_list,
+                                   bool anonymous, Struct** out_struct_decl) {
+    std::vector<Struct::Member> members;
+    for (auto& parameter : parameter_list->parameter_list) {
+        const SourceLocation name = parameter->identifier->location();
+        std::unique_ptr<Type> type;
+        if (!ConsumeType(std::move(parameter->type), name, &type))
+            return false;
+        members.emplace_back(
+            std::move(type), name,
+            nullptr /* maybe_default_value */,
+            nullptr /* attributes */);
+    }
+
+    struct_declarations_.push_back(
+        std::make_unique<Struct>(nullptr /* attributes */, std::move(name), std::move(members),
+                                 anonymous));
+
+    auto struct_decl = struct_declarations_.back().get();
+    if (!RegisterDecl(struct_decl))
+        return false;
+
+    *out_struct_decl = struct_decl;
+    return true;
 }
 
 bool Library::ConsumeStructDeclaration(std::unique_ptr<raw::StructDeclaration> struct_declaration) {
@@ -839,8 +1381,34 @@ bool Library::ConsumeUnionDeclaration(std::unique_ptr<raw::UnionDeclaration> uni
     return RegisterDecl(union_declarations_.back().get());
 }
 
+bool Library::ConsumeXUnionDeclaration(std::unique_ptr<raw::XUnionDeclaration> xunion_declaration) {
+    auto name = Name(this, xunion_declaration->identifier->location());
+
+    std::vector<XUnion::Member> members;
+    for (auto& member : xunion_declaration->members) {
+        std::unique_ptr<raw::Ordinal> ordinal =
+            std::make_unique<raw::Ordinal>(fidl::ordinals::GetOrdinal(library_name_, name.name_part(), *member));
+
+        auto location = member->identifier->location();
+        std::unique_ptr<Type> type;
+        if (!ConsumeType(std::move(member->type), location, &type))
+            return false;
+
+        if (type->nullability != types::Nullability::kNonnullable) {
+            return Fail(member->location(), "Extensible union members cannot be nullable");
+        }
+
+        members.emplace_back(std::move(ordinal), std::move(type), location, std::move(member->attributes));
+    }
+
+    xunion_declarations_.push_back(
+        std::make_unique<XUnion>(std::move(xunion_declaration->attributes), std::move(name), std::move(members)));
+    return RegisterDecl(xunion_declarations_.back().get());
+}
+
 bool Library::ConsumeFile(std::unique_ptr<raw::File> file) {
     if (file->attributes) {
+        ValidateAttributesPlacement(AttributeSchema::Placement::kLibrary, file->attributes.get());
         if (!attributes_) {
             attributes_ = std::move(file->attributes);
         } else {
@@ -917,7 +1485,274 @@ bool Library::ConsumeFile(std::unique_ptr<raw::File> file) {
         }
     }
 
+    auto xunion_declaration_list = std::move(file->xunion_declaration_list);
+    for (auto& xunion_declaration : xunion_declaration_list) {
+        if (!ConsumeXUnionDeclaration(std::move(xunion_declaration))) {
+            return false;
+        }
+    }
+
     return true;
+}
+
+bool Library::ResolveConstant(Constant* constant, const Type* type) {
+    assert(constant != nullptr);
+
+    if (constant->IsResolved())
+        return true;
+
+    switch (constant->kind) {
+    case Constant::Kind::kIdentifier: {
+        auto identifier_constant = static_cast<IdentifierConstant*>(constant);
+        return ResolveIdentifierConstant(identifier_constant, type);
+    }
+    case Constant::Kind::kLiteral: {
+        auto literal_constant = static_cast<LiteralConstant*>(constant);
+        return ResolveLiteralConstant(literal_constant, type);
+    }
+    case Constant::Kind::kSynthesized: {
+        assert(false && "Compiler bug: synthesized constant does not have a resolved value!");
+    }
+    }
+}
+
+bool Library::ResolveIdentifierConstant(IdentifierConstant* identifier_constant, const Type* type) {
+    assert(TypeCanBeConst(type) &&
+           "Compiler bug: resolving identifier constant to non-const-able type!");
+
+    auto decl = LookupDeclByName(identifier_constant->name);
+    if (!decl || decl->kind != Decl::Kind::kConst)
+        return false;
+
+    // Recursively resolve constants
+    auto const_decl = static_cast<Const*>(decl);
+    if (!CompileConst(const_decl))
+        return false;
+    assert(const_decl->value->IsResolved());
+
+    const ConstantValue& const_val = const_decl->value->Value();
+    std::unique_ptr<ConstantValue> resolved_val;
+    switch (type->kind) {
+    case Type::Kind::kString: {
+        if (!TypeIsConvertibleTo(const_decl->type.get(), type))
+            goto fail_cannot_convert;
+
+        if (!const_val.Convert(ConstantValue::Kind::kString, &resolved_val))
+            goto fail_cannot_convert;
+        break;
+    }
+    case Type::Kind::kPrimitive: {
+        auto primitive_type = static_cast<const PrimitiveType*>(type);
+        switch (primitive_type->subtype) {
+        case types::PrimitiveSubtype::kBool:
+            if (!const_val.Convert(ConstantValue::Kind::kBool, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kInt8:
+            if (!const_val.Convert(ConstantValue::Kind::kInt8, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kInt16:
+            if (!const_val.Convert(ConstantValue::Kind::kInt16, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kInt32:
+            if (!const_val.Convert(ConstantValue::Kind::kInt32, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kInt64:
+            if (!const_val.Convert(ConstantValue::Kind::kInt64, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kUint8:
+            if (!const_val.Convert(ConstantValue::Kind::kUint8, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kUint16:
+            if (!const_val.Convert(ConstantValue::Kind::kUint16, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kUint32:
+            if (!const_val.Convert(ConstantValue::Kind::kUint32, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kUint64:
+            if (!const_val.Convert(ConstantValue::Kind::kUint64, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kFloat32:
+            if (!const_val.Convert(ConstantValue::Kind::kFloat32, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        case types::PrimitiveSubtype::kFloat64:
+            if (!const_val.Convert(ConstantValue::Kind::kFloat64, &resolved_val))
+                goto fail_cannot_convert;
+            break;
+        }
+        break;
+    }
+    default: {
+        assert(false &&
+               "Compiler bug: const-able type not handled during identifier constant resolution!");
+    }
+    }
+
+    identifier_constant->ResolveTo(std::move(resolved_val));
+    return true;
+
+fail_cannot_convert:
+    std::ostringstream msg_stream;
+    msg_stream << NameFlatConstant(identifier_constant) << ", of type ";
+    msg_stream << NameFlatType(const_decl->type.get());
+    msg_stream << ", cannot be converted to type " << NameFlatType(type);
+    return Fail(msg_stream.str());
+}
+
+bool Library::ResolveLiteralConstant(LiteralConstant* literal_constant, const Type* type) {
+    switch (literal_constant->literal->kind) {
+    case raw::Literal::Kind::kString: {
+        if (type->kind != Type::Kind::kString)
+            goto return_fail;
+        auto string_type = static_cast<const StringType*>(type);
+        auto string_literal = static_cast<raw::StringLiteral*>(literal_constant->literal.get());
+        auto string_data = string_literal->location().data();
+
+        if (!ResolveConstant(string_type->max_size.get(), &kSizeType))
+            return false;
+
+        auto max_size = static_cast<const Size&>(string_type->max_size->Value());
+        // TODO(pascallouis): because data() contains the raw content,
+        // with the two " to identify strings, we need to take this
+        // into account. We should expose the actual size of string
+        // literals properly, and take into account escaping.
+        uint64_t string_size = string_data.size() - 2;
+        if (max_size.value < string_size) {
+            std::ostringstream msg_stream;
+            msg_stream << NameFlatConstant(literal_constant) << " (string:" << string_size;
+            msg_stream << ") exceeds the size bound of type " << NameFlatType(type);
+            return Fail(literal_constant->literal->location(), msg_stream.str());
+        }
+
+        literal_constant->ResolveTo(
+            std::make_unique<StringConstantValue>(string_literal->location().data()));
+        return true;
+    }
+    case raw::Literal::Kind::kTrue: {
+        if (type->kind != Type::Kind::kPrimitive)
+            goto return_fail;
+        if (static_cast<const PrimitiveType*>(type)->subtype != types::PrimitiveSubtype::kBool)
+            goto return_fail;
+        literal_constant->ResolveTo(std::make_unique<BoolConstantValue>(true));
+        return true;
+    }
+    case raw::Literal::Kind::kFalse: {
+        if (type->kind != Type::Kind::kPrimitive)
+            goto return_fail;
+        if (static_cast<const PrimitiveType*>(type)->subtype != types::PrimitiveSubtype::kBool)
+            goto return_fail;
+        literal_constant->ResolveTo(std::make_unique<BoolConstantValue>(false));
+        return true;
+    }
+    case raw::Literal::Kind::kNumeric: {
+        if (type->kind != Type::Kind::kPrimitive)
+            goto return_fail;
+
+        // These must be initialized out of line to allow for goto statement
+        const raw::NumericLiteral* numeric_literal;
+        const PrimitiveType* primitive_type;
+        numeric_literal =
+            static_cast<const raw::NumericLiteral*>(literal_constant->literal.get());
+        primitive_type = static_cast<const PrimitiveType*>(type);
+        switch (primitive_type->subtype) {
+        case types::PrimitiveSubtype::kInt8: {
+            int8_t value;
+            if (!ParseNumericLiteral<int8_t>(numeric_literal, &value))
+                goto return_fail;
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<int8_t>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kInt16: {
+            int16_t value;
+            if (!ParseNumericLiteral<int16_t>(numeric_literal, &value))
+                goto return_fail;
+
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<int16_t>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kInt32: {
+            int32_t value;
+            if (!ParseNumericLiteral<int32_t>(numeric_literal, &value))
+                goto return_fail;
+
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<int32_t>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kInt64: {
+            int64_t value;
+            if (!ParseNumericLiteral<int64_t>(numeric_literal, &value))
+                goto return_fail;
+
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<int64_t>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kUint8: {
+            uint8_t value;
+            if (!ParseNumericLiteral<uint8_t>(numeric_literal, &value))
+                goto return_fail;
+
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<uint8_t>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kUint16: {
+            uint16_t value;
+            if (!ParseNumericLiteral<uint16_t>(numeric_literal, &value))
+                goto return_fail;
+
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<uint16_t>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kUint32: {
+            uint32_t value;
+            if (!ParseNumericLiteral<uint32_t>(numeric_literal, &value))
+                goto return_fail;
+
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<uint32_t>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kUint64: {
+            uint64_t value;
+            if (!ParseNumericLiteral<uint64_t>(numeric_literal, &value))
+                goto return_fail;
+
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<uint64_t>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kFloat32: {
+            float value;
+            if (!ParseNumericLiteral<float>(numeric_literal, &value))
+                goto return_fail;
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<float>>(value));
+            return true;
+        }
+        case types::PrimitiveSubtype::kFloat64: {
+            double value;
+            if (!ParseNumericLiteral<double>(numeric_literal, &value))
+                goto return_fail;
+
+            literal_constant->ResolveTo(std::make_unique<NumericConstantValue<double>>(value));
+            return true;
+        }
+        default:
+            goto return_fail;
+        }
+
+    return_fail:
+        std::ostringstream msg_stream;
+        msg_stream << NameFlatConstant(literal_constant) << " cannot be interpreted as type ";
+        msg_stream << NameFlatType(type);
+        return Fail(literal_constant->literal->location(), msg_stream.str());
+    }
+    }
 }
 
 bool Library::TypeCanBeConst(const Type* type) {
@@ -926,60 +1761,6 @@ bool Library::TypeCanBeConst(const Type* type) {
         return type->nullability != types::Nullability::kNullable;
     case flat::Type::Kind::kPrimitive:
         return true;
-    default:
-        return false;
-    } // switch
-}
-
-bool Library::TypeInferConstantType(const Constant* constant,
-                                    std::unique_ptr<Type>* out_type) {
-    switch (constant->kind) {
-    case Constant::Kind::kLiteral: {
-        auto literal_constant = static_cast<const LiteralConstant*>(constant);
-        switch (literal_constant->literal->kind) {
-            case raw::Literal::Kind::kString: {
-                auto string_literal = static_cast<const raw::StringLiteral*>(literal_constant->literal.get());
-                // TODO(pascallouis): because data() contains the raw content,
-                // with the two " to identify strings, we need to take this
-                // into account. Whe should expose the actual size of string
-                // literals properly, and take into account escaping.
-                auto max_size = Size(string_literal->location().data().size() - 2);
-                *out_type = std::make_unique<flat::StringType>(
-                    std::move(max_size),
-                    types::Nullability::kNonnullable);
-                return true;
-            }
-
-            case raw::Literal::Kind::kNumeric: {
-                // TODO(pascallouis): depending on the numeric literal, we
-                // should properly infer the most restrictive type fitting
-                // that value, e.g. 255 would be uint8, -128 would be int8.
-                // Then we can express conversion flexibility in
-                // TypeIsConvertibleTo, e.g. uint8 to uint16, uint32, etc.
-                *out_type = std::make_unique<flat::PrimitiveType>(types::PrimitiveSubtype::kInt64);
-                return true;
-            }
-
-            case raw::Literal::Kind::kTrue:
-                // fallthrough
-            case raw::Literal::Kind::kFalse:
-                *out_type = std::make_unique<flat::PrimitiveType>(types::PrimitiveSubtype::kBool);
-                return true;
-        }
-    }
-    case Constant::Kind::kIdentifier: {
-        auto identifier_constant = static_cast<const IdentifierConstant*>(constant);
-        auto iter = constants_.find(&identifier_constant->name);
-        if (iter == constants_.end()) {
-            return false;
-        }
-        // TODO(pascallouis): this is not exactly correct, we should use the
-        // const declaration's type, rather than infer from the constant. This
-        // could yield a less restrictive type, and we want to make sure
-        // this is honored. In practice though, for the use of inference we
-        // make today, this is not key, beyond getting precise error messages.
-        return TypeInferConstantType(iter->second->value.get(), out_type);
-    }
     default:
         return false;
     } // switch
@@ -998,7 +1779,7 @@ const Type* Library::TypeResolve(const Type* type) {
         // forbidding that out-of-range values be assignable to this enum in
         // const declarations.
         auto enum_decl = static_cast<const flat::Enum*>(decl);
-        return enum_decl->type.get();
+        return enum_decl->type;
     }
     default:
         return type;
@@ -1023,7 +1804,9 @@ bool Library::TypeIsConvertibleTo(const Type* from_type, const Type* to_type) {
             return false;
         }
 
-        if (to_string_type->max_size.Value() < from_string_type->max_size.Value()) {
+        auto to_string_size = static_cast<const Size&>(to_string_type->max_size->Value());
+        auto from_string_size = static_cast<const Size&>(from_string_type->max_size->Value());
+        if (to_string_size < from_string_size) {
             return false;
         }
 
@@ -1041,7 +1824,7 @@ bool Library::TypeIsConvertibleTo(const Type* from_type, const Type* to_type) {
         case types::PrimitiveSubtype::kBool:
             return from_primitive_type->subtype == types::PrimitiveSubtype::kBool;
         default:
-            // TODO(pascallouis): be more precise about convertability, e.g. it
+            // TODO(pascallouis): be more precise about convertibility, e.g. it
             // should not be allowed to convert a float to an int.
             return from_primitive_type->subtype != types::PrimitiveSubtype::kBool;
         }
@@ -1049,37 +1832,6 @@ bool Library::TypeIsConvertibleTo(const Type* from_type, const Type* to_type) {
     default:
         return false;
     } // switch
-}
-
-bool Library::TypecheckConst(const Const* const_declaration) {
-    auto type = const_declaration->type.get();
-    if (!TypeCanBeConst(type)) {
-        std::string msg("invalid constant type ");
-        msg.append(NameFlatType(type));
-        return Fail(msg);
-    }
-
-    auto constant = const_declaration->value.get();
-    std::unique_ptr<flat::Type> constant_type_ptr(nullptr);
-    if (!TypeInferConstantType(constant, &constant_type_ptr)) {
-        std::string msg("unable to infer type for ");
-        msg.append(NameFlatConstant(constant));
-        Fail(msg);
-        return false;
-    }
-
-    auto constant_type = constant_type_ptr.get();
-    if (!TypeIsConvertibleTo(constant_type, type)) {
-        std::string msg("cannot convert ");
-        msg.append(NameFlatConstant(constant));
-        msg.append(" (type ");
-        msg.append(NameFlatType(constant_type));
-        msg.append(") to type ");
-        msg.append(NameFlatType(type));
-        return Fail(msg);
-    }
-
-    return true;
 }
 
 Decl* Library::LookupConstant(const Type* type, const Name& name) {
@@ -1100,7 +1852,7 @@ Decl* Library::LookupConstant(const Type* type, const Name& name) {
     }
     auto enum_decl = static_cast<Enum*>(decl);
     for (auto& member : enum_decl->members) {
-        if (member.name.data() == name.name().data()) {
+        if (member.name.data() == name.name_part()) {
             return enum_decl;
         }
     }
@@ -1111,11 +1863,21 @@ Decl* Library::LookupConstant(const Type* type, const Name& name) {
 // Library resolution is concerned with resolving identifiers to their
 // declarations, and with computing type sizes and alignments.
 
-PrimitiveType* Library::LookupTypeAlias(const Name& name) const {
-    auto it = type_aliases_.find(&name);
+const PrimitiveType* Library::LookupPrimitiveType(const Name& name) const {
+    auto type = typespace_->Lookup(name, types::Nullability::kNonnullable,
+                                   Typespace::LookupMode::kNoForwardReferences);
+    if (type == nullptr)
+        return nullptr;
+    if (type->kind != Type::Kind::kPrimitive)
+        return nullptr;
+    return static_cast<PrimitiveType*>(type);
+}
+
+const PrimitiveType* Library::LookupTypeAlias(const Name& name) const {
+    const auto it = type_aliases_.find(&name);
     if (it == type_aliases_.end())
         return nullptr;
-    return it->second->type.get();
+    return it->second->type;
 }
 
 Decl* Library::LookupDeclByType(const Type* type, LookupOption option) const {
@@ -1153,12 +1915,24 @@ Decl* Library::LookupDeclByName(const Name& name) const {
     return iter->second;
 }
 
+template <typename NumericType>
+bool Library::ParseNumericLiteral(const raw::NumericLiteral* literal,
+                                  NumericType* out_value) const {
+    assert(literal != nullptr);
+    assert(out_value != nullptr);
+
+    auto data = literal->location().data();
+    std::string string_data(data.data(), data.data() + data.size());
+    auto result = utils::ParseNumeric(string_data, out_value);
+    return result == utils::ParseNumericResult::kSuccess;
+}
+
 // An edge from D1 to D2 means that a C needs to see the declaration
 // of D1 before the declaration of D2. For instance, given the fidl
 //     struct D2 { D1 d; };
 //     struct D1 { int32 x; };
-// D1 has an edge pointing to D2. Note that struct and union pointers,
-// unlike inline structs or unions, do not have dependency edges.
+// D1 has an edge pointing to D2. Note that struct, union, and xunion pointers,
+// unlike inline structs/unions/xunions, do not have dependency edges.
 bool Library::DeclDependencies(Decl* decl, std::set<Decl*>* out_edges) {
     std::set<Decl*> edges;
     auto maybe_add_decl = [this, &edges](const Type* type, LookupOption option) {
@@ -1180,14 +1954,15 @@ bool Library::DeclDependencies(Decl* decl, std::set<Decl*>* out_edges) {
             auto decl = LookupConstant(type, identifier->name);
             if (decl == nullptr) {
                 std::string message("Unable to find the constant named: ");
-                message += identifier->name.name().data();
+                message += identifier->name.name_part();
                 return Fail(identifier->name, message.data());
             }
             edges.insert(decl);
             break;
         }
-        case Constant::Kind::kLiteral: {
-            // Literals have no dependencies on other declarations.
+        case Constant::Kind::kLiteral:
+        case Constant::Kind::kSynthesized: {
+            // Literal and synthesized constants have no dependencies on other declarations.
             break;
         }
         }
@@ -1210,14 +1985,10 @@ bool Library::DeclDependencies(Decl* decl, std::set<Decl*>* out_edges) {
         }
         for (const auto& method : interface_decl->methods) {
             if (method.maybe_request != nullptr) {
-                for (const auto& parameter : method.maybe_request->parameters) {
-                    maybe_add_decl(parameter.type.get(), LookupOption::kIncludeNullable);
-                }
+                edges.insert(method.maybe_request);
             }
             if (method.maybe_response != nullptr) {
-                for (const auto& parameter : method.maybe_response->parameters) {
-                    maybe_add_decl(parameter.type.get(), LookupOption::kIncludeNullable);
-                }
+                edges.insert(method.maybe_response);
             }
         }
         break;
@@ -1225,7 +1996,9 @@ bool Library::DeclDependencies(Decl* decl, std::set<Decl*>* out_edges) {
     case Decl::Kind::kStruct: {
         auto struct_decl = static_cast<const Struct*>(decl);
         for (const auto& member : struct_decl->members) {
-            maybe_add_decl(member.type.get(), LookupOption::kIgnoreNullable);
+            auto option = struct_decl->anonymous ? LookupOption::kIncludeNullable
+                                                 : LookupOption::kIgnoreNullable;
+            maybe_add_decl(member.type.get(), option);
             if (member.maybe_default_value) {
                 if (!maybe_add_constant(member.type.get(), member.maybe_default_value.get()))
                     return false;
@@ -1250,6 +2023,13 @@ bool Library::DeclDependencies(Decl* decl, std::set<Decl*>* out_edges) {
     case Decl::Kind::kUnion: {
         auto union_decl = static_cast<const Union*>(decl);
         for (const auto& member : union_decl->members) {
+            maybe_add_decl(member.type.get(), LookupOption::kIgnoreNullable);
+        }
+        break;
+    }
+    case Decl::Kind::kXUnion: {
+        auto xunion_decl = static_cast<const XUnion*>(decl);
+        for (const auto& member : xunion_decl->members) {
             maybe_add_decl(member.type.get(), LookupOption::kIgnoreNullable);
         }
         break;
@@ -1325,41 +2105,115 @@ bool Library::SortDeclarations() {
 }
 
 bool Library::CompileConst(Const* const_declaration) {
+    if (const_declaration->compiled)
+        return true;
+
     Compiling guard(const_declaration);
     TypeShape typeshape;
-    if (!CompileType(const_declaration->type.get(), &typeshape)) {
+    if (!CompileType(const_declaration->type.get(), &typeshape))
         return false;
+    const auto* const_type = const_declaration->type.get();
+    if (!TypeCanBeConst(const_type)) {
+        std::ostringstream msg_stream;
+        msg_stream << "invalid constant type " << NameFlatType(const_type);
+        return Fail(*const_declaration, msg_stream.str());
     }
-    if (!TypecheckConst(const_declaration)) {
-        return false;
-    }
+    if (!ResolveConstant(const_declaration->value.get(), const_type))
+        return Fail(*const_declaration, "unable to resolve constant value");
+
+    // Attributes: for const declarations, we only check placement.
+    ValidateAttributesPlacement(
+        AttributeSchema::Placement::kConstDecl, const_declaration->attributes.get());
+
     return true;
 }
 
 bool Library::CompileEnum(Enum* enum_declaration) {
     Compiling guard(enum_declaration);
-    switch (enum_declaration->type->subtype) {
-    case types::PrimitiveSubtype::kInt8:
-    case types::PrimitiveSubtype::kInt16:
-    case types::PrimitiveSubtype::kInt32:
-    case types::PrimitiveSubtype::kInt64:
-    case types::PrimitiveSubtype::kUint8:
-    case types::PrimitiveSubtype::kUint16:
-    case types::PrimitiveSubtype::kUint32:
-    case types::PrimitiveSubtype::kUint64:
-        // These are allowed as enum subtypes. Compile the size and alignment.
-        enum_declaration->typeshape = PrimitiveTypeShape(enum_declaration->type->subtype);
-        break;
 
+    Name subtype_name(nullptr, "uint32");
+    if (enum_declaration->maybe_subtype) {
+        auto location = enum_declaration->maybe_subtype->location();
+        if (!CompileCompoundIdentifier(enum_declaration->maybe_subtype->identifier.get(),
+                                       location, &subtype_name)) {
+            return false;
+        }
+    }
+
+    auto primitive_type = LookupPrimitiveType(subtype_name);
+    if (primitive_type == nullptr) {
+        std::string message("enums may only be of integral primitive type, found ");
+        message += NameName(subtype_name, ".", "/");
+        return Fail(*enum_declaration, message);
+    }
+
+    enum_declaration->type = primitive_type;
+    enum_declaration->typeshape = PrimitiveTypeShape(primitive_type->subtype);
+
+    // Validate constants.
+    switch (primitive_type->subtype) {
+    case types::PrimitiveSubtype::kInt8:
+        if (!ValidateEnumMembers<int8_t>(enum_declaration))
+            return false;
+        break;
+    case types::PrimitiveSubtype::kInt16:
+        if (!ValidateEnumMembers<int16_t>(enum_declaration))
+            return false;
+        break;
+    case types::PrimitiveSubtype::kInt32:
+        if (!ValidateEnumMembers<int32_t>(enum_declaration))
+            return false;
+        break;
+    case types::PrimitiveSubtype::kInt64:
+        if (!ValidateEnumMembers<int64_t>(enum_declaration))
+            return false;
+        break;
+    case types::PrimitiveSubtype::kUint8:
+        if (!ValidateEnumMembers<uint8_t>(enum_declaration))
+            return false;
+        break;
+    case types::PrimitiveSubtype::kUint16:
+        if (!ValidateEnumMembers<uint16_t>(enum_declaration))
+            return false;
+        break;
+    case types::PrimitiveSubtype::kUint32:
+        if (!ValidateEnumMembers<uint32_t>(enum_declaration))
+            return false;
+        break;
+    case types::PrimitiveSubtype::kUint64:
+        if (!ValidateEnumMembers<uint64_t>(enum_declaration))
+            return false;
+        break;
     case types::PrimitiveSubtype::kBool:
     case types::PrimitiveSubtype::kFloat32:
     case types::PrimitiveSubtype::kFloat64:
-        // These are not allowed as enum subtypes.
-        return Fail(*enum_declaration, "Enums cannot be bools, statuses, or floats");
+        std::string message("enums may only be of integral primitive type, found ");
+        message += NameName(subtype_name, ".", "/");
+        return Fail(*enum_declaration, message);
     }
 
-    // TODO(TO-702) Validate values.
+    auto placement_ok = error_reporter_->Checkpoint();
+    // Attributes: check placement.
+    ValidateAttributesPlacement(
+        AttributeSchema::Placement::kEnumDecl,
+        enum_declaration->attributes.get());
+    for (const auto& member : enum_declaration->members) {
+        ValidateAttributesPlacement(
+            AttributeSchema::Placement::kEnumMember,
+            member.attributes.get());
+    }
+    if (placement_ok.NoNewErrors()) {
+        // Attributes: check constraints.
+        ValidateAttributesConstraints(
+            enum_declaration,
+            enum_declaration->attributes.get());
+    }
+
     return true;
+}
+
+bool HasSimpleLayout(const Decl* decl) {
+    return decl->GetAttribute("Layout") == "Simple";
 }
 
 bool Library::CompileInterface(Interface* interface_declaration) {
@@ -1381,7 +2235,8 @@ bool Library::CompileInterface(Interface* interface_declaration) {
                 return Fail(name, message);
             }
             auto superinterface = static_cast<const Interface*>(decl);
-            if (method_scope.interfaces.Insert(superinterface, superinterface->name.name()).ok()) {
+            assert(!superinterface->name.is_anonymous());
+            if (method_scope.interfaces.Insert(superinterface, superinterface->name.source_location()).ok()) {
                 if (!Visitor(superinterface, Visitor))
                     return false;
             } else {
@@ -1393,13 +2248,22 @@ bool Library::CompileInterface(Interface* interface_declaration) {
             auto name_result = method_scope.names.Insert(method.name.data(), method.name);
             if (!name_result.ok())
                 return Fail(method.name,
-                            "Multiple methods with the same name in an interface; last occurance was at " +
-                                name_result.previous_occurance().position());
+                            "Multiple methods with the same name in an interface; last occurrence was at " +
+                                name_result.previous_occurrence().position());
             auto ordinal_result = method_scope.ordinals.Insert(method.ordinal->value, method.name);
-            if (!ordinal_result.ok())
-                return Fail(method.name,
-                            "Mulitple methods with the same ordinal in an interface; last occurance was at " +
-                                ordinal_result.previous_occurance().position());
+            if (method.ordinal->value == 0)
+                return Fail(method.ordinal->location(), "Ordinal value 0 disallowed.");
+            if (!ordinal_result.ok()) {
+                std::string replacement_method(
+                    fidl::ordinals::GetSelector(method.attributes.get(), method.name));
+                replacement_method.push_back('_');
+                return Fail(method.ordinal->location(),
+                            "Multiple methods with the same ordinal in an interface; previous was at " +
+                                ordinal_result.previous_occurrence().position() + ". If these " +
+                                "were automatically generated, consider using attribute " +
+                                "[Selector=\"" + replacement_method + "\"] to change the " +
+                                "name used to calculate the ordinal.");
+            }
 
             // Add a pointer to this method to the interface_declarations list.
             interface_declaration->all_methods.push_back(&method);
@@ -1409,48 +2273,70 @@ bool Library::CompileInterface(Interface* interface_declaration) {
     if (!CheckScopes(interface_declaration, CheckScopes))
         return false;
 
+    // Beware, hacky solution: method request and response are structs, whose
+    // typeshape is computed separately. However, in the JSON IR, we add 16 bytes
+    // to request and response to account for the header size (and ensure the
+    // alignment is at least 4 bytes). Now that we represent request and responses
+    // as structs, we should represent this differently in the JSON IR, and let the
+    // backends figure this out, or better yet, describe the header directly.
+    //
+    // For now though, due to topological sort, the code below will always overwrite
+    // the previous calculation of the typeshape for these request and response
+    // struct, hence keeping the behavior of the compiler unchanged.
     for (auto& method : interface_declaration->methods) {
-        auto CreateMessage = [&](Interface::Method::Message* message) -> bool {
+        auto CreateMessage = [&](Struct* message) -> bool {
             Scope<StringView> scope;
             auto header_field_shape = FieldShape(TypeShape(16u, 4u));
             std::vector<FieldShape*> message_struct;
             message_struct.push_back(&header_field_shape);
-            for (auto& param : message->parameters) {
+            for (auto& param : message->members) {
                 if (!scope.Insert(param.name.data(), param.name).ok())
                     return Fail(param.name, "Multiple parameters with the same name in a method");
                 if (!CompileType(param.type.get(), &param.fieldshape.Typeshape()))
                     return false;
                 message_struct.push_back(&param.fieldshape);
             }
-            message->typeshape = CStructTypeShape(&message_struct);
+            message->typeshape = FidlMessageTypeShape(&message_struct);
             return true;
         };
         if (method.maybe_request) {
-            if (!CreateMessage(method.maybe_request.get()))
+            if (!CreateMessage(method.maybe_request))
                 return false;
         }
         if (method.maybe_response) {
-            if (!CreateMessage(method.maybe_response.get()))
+            if (!CreateMessage(method.maybe_response))
                 return false;
         }
     }
 
-    if (HasSimpleLayout(interface_declaration)) {
-        for (const auto& method_pointer : interface_declaration->all_methods) {
-            auto CheckSimpleMessage = [&](const Interface::Method::Message* message) -> bool {
-                for (const auto& parameter : message->parameters) {
-                    if (!parameter.IsSimple())
-                        return Fail(parameter.name, "Non-simple parameter in interface with [Layout=\"Simple\"]");
-                }
-                return true;
-            };
-            if (method_pointer->maybe_request) {
-                if (!CheckSimpleMessage(method_pointer->maybe_request.get()))
-                    return false;
+    auto placement_ok = error_reporter_->Checkpoint();
+    // Attributes: check placement.
+    ValidateAttributesPlacement(
+        AttributeSchema::Placement::kInterfaceDecl,
+        interface_declaration->attributes.get());
+    for (const auto& method : interface_declaration->methods) {
+        ValidateAttributesPlacement(
+            AttributeSchema::Placement::kMethod,
+            method.attributes.get());
+    }
+    if (placement_ok.NoNewErrors()) {
+        // Attributes: check constraints.
+        for (const auto& method : interface_declaration->methods) {
+            if (method.maybe_request) {
+                ValidateAttributesConstraints(
+                    method.maybe_request,
+                    interface_declaration->attributes.get());
+                ValidateAttributesConstraints(
+                    method.maybe_request,
+                    method.attributes.get());
             }
-            if (method_pointer->maybe_response) {
-                if (!CheckSimpleMessage(method_pointer->maybe_response.get()))
-                    return false;
+            if (method.maybe_response) {
+                ValidateAttributesConstraints(
+                    method.maybe_response,
+                    interface_declaration->attributes.get());
+                ValidateAttributesConstraints(
+                    method.maybe_response,
+                    method.attributes.get());
             }
         }
     }
@@ -1469,7 +2355,7 @@ bool Library::CompileStruct(Struct* struct_declaration) {
         if (!name_result.ok())
             return Fail(member.name,
                         "Multiple struct fields with the same name; previous was at " +
-                            name_result.previous_occurance().position());
+                            name_result.previous_occurrence().position());
         if (!CompileType(member.type.get(), &member.fieldshape.Typeshape()))
             return false;
         fidl_struct.push_back(&member.fieldshape);
@@ -1483,6 +2369,23 @@ bool Library::CompileStruct(Struct* struct_declaration) {
     }
 
     struct_declaration->typeshape = CStructTypeShape(&fidl_struct, max_member_handles);
+
+    auto placement_ok = error_reporter_->Checkpoint();
+    // Attributes: check placement.
+    ValidateAttributesPlacement(
+        AttributeSchema::Placement::kStructDecl,
+        struct_declaration->attributes.get());
+    for (const auto& member : struct_declaration->members) {
+        ValidateAttributesPlacement(
+            AttributeSchema::Placement::kStructMember,
+            member.attributes.get());
+    }
+    if (placement_ok.NoNewErrors()) {
+        // Attributes: check constraint.
+        ValidateAttributesConstraints(
+            struct_declaration,
+            struct_declaration->attributes.get());
+    }
 
     return true;
 }
@@ -1498,13 +2401,13 @@ bool Library::CompileTable(Table* table_declaration) {
         if (!ordinal_result.ok())
             return Fail(member.ordinal->location(),
                         "Multiple table fields with the same ordinal; previous was at " +
-                            ordinal_result.previous_occurance().position());
+                            ordinal_result.previous_occurrence().position());
         if (member.maybe_used) {
             auto name_result = name_scope.Insert(member.maybe_used->name.data(), member.maybe_used->name);
             if (!name_result.ok())
                 return Fail(member.maybe_used->name,
                             "Multiple table fields with the same name; previous was at " +
-                                name_result.previous_occurance().position());
+                                name_result.previous_occurrence().position());
             if (!CompileType(member.maybe_used->type.get(), &member.maybe_used->typeshape))
                 return false;
         }
@@ -1535,6 +2438,25 @@ bool Library::CompileTable(Table* table_declaration) {
 
     table_declaration->typeshape = CTableTypeShape(&fields, max_member_handles);
 
+    // Attributes: check placement.
+    auto placement_ok = error_reporter_->Checkpoint();
+    ValidateAttributesPlacement(
+        AttributeSchema::Placement::kTableDecl,
+        table_declaration->attributes.get());
+    for (const auto& member : table_declaration->members) {
+        if (member.maybe_used) {
+            ValidateAttributesPlacement(
+                AttributeSchema::Placement::kTableMember,
+                member.maybe_used->attributes.get());
+        }
+    }
+    if (placement_ok.NoNewErrors()) {
+        // Attributes: check constraint.
+        ValidateAttributesConstraints(
+            table_declaration,
+            table_declaration->attributes.get());
+    }
+
     return true;
 }
 
@@ -1546,7 +2468,7 @@ bool Library::CompileUnion(Union* union_declaration) {
         if (!name_result.ok())
             return Fail(member.name,
                         "Multiple union members with the same name; previous was at " +
-                            name_result.previous_occurance().position());
+                            name_result.previous_occurrence().position());
         if (!CompileType(member.type.get(), &member.fieldshape.Typeshape()))
             return false;
     }
@@ -1565,6 +2487,75 @@ bool Library::CompileUnion(Union* union_declaration) {
     auto offset = union_declaration->membershape.Offset();
     for (auto& member : union_declaration->members) {
         member.fieldshape.SetOffset(offset);
+    }
+
+    auto placement_ok = error_reporter_->Checkpoint();
+    // Attributes: check placement.
+    ValidateAttributesPlacement(
+        AttributeSchema::Placement::kUnionDecl,
+        union_declaration->attributes.get());
+    for (const auto& member : union_declaration->members) {
+        ValidateAttributesPlacement(
+            AttributeSchema::Placement::kUnionMember,
+            member.attributes.get());
+    }
+    if (placement_ok.NoNewErrors()) {
+        // Attributes: check constraint.
+        ValidateAttributesConstraints(
+            union_declaration,
+            union_declaration->attributes.get());
+    }
+
+    return true;
+}
+
+bool Library::CompileXUnion(XUnion* xunion_declaration) {
+    Compiling guard(xunion_declaration);
+    Scope<StringView> scope;
+    Scope<uint32_t> ordinal_scope;
+
+    for (auto& member : xunion_declaration->members) {
+        auto ordinal_result = ordinal_scope.Insert(member.ordinal->value, member.ordinal->location());
+        if (!ordinal_result.ok())
+            return Fail(member.ordinal->location(),
+                        "Multiple xunion fields with the same ordinal; previous was at " +
+                            ordinal_result.previous_occurrence().position());
+
+        auto name_result = scope.Insert(member.name.data(), member.name);
+        if (!name_result.ok())
+            return Fail(member.name,
+                        "Multiple xunion members with the same name; previous was at " +
+                            name_result.previous_occurrence().position());
+
+        if (!CompileType(member.type.get(), &member.fieldshape.Typeshape()))
+            return false;
+    }
+
+    uint32_t max_member_handles;
+    if (xunion_declaration->recursive) {
+        max_member_handles = std::numeric_limits<uint32_t>::max();
+    } else {
+        // Member handles will be counted by CXUnionTypeShape.
+        max_member_handles = 0u;
+    }
+
+    xunion_declaration->typeshape = CXUnionTypeShape(xunion_declaration->members, max_member_handles);
+
+    auto placement_ok = error_reporter_->Checkpoint();
+    // Attributes: check placement.
+    ValidateAttributesPlacement(
+        AttributeSchema::Placement::kXUnionDecl,
+        xunion_declaration->attributes.get());
+    for (const auto& member : xunion_declaration->members) {
+        ValidateAttributesPlacement(
+            AttributeSchema::Placement::kXUnionMember,
+            member.attributes.get());
+    }
+    if (placement_ok.NoNewErrors()) {
+        // Attributes: check constraint.
+        ValidateAttributesConstraints(
+            xunion_declaration,
+            xunion_declaration->attributes.get());
     }
 
     return true;
@@ -1642,6 +2633,13 @@ bool Library::Compile() {
             }
             break;
         }
+        case Decl::Kind::kXUnion: {
+            auto xunion_decl = static_cast<XUnion*>(decl);
+            if (!CompileXUnion(xunion_decl)) {
+                return false;
+            }
+            break;
+        }
         default:
             abort();
         }
@@ -1649,7 +2647,7 @@ bool Library::Compile() {
         assert(decl->compiled);
     }
 
-    return true;
+    return error_reporter_->errors().size() == 0;
 }
 
 bool Library::CompileArrayType(flat::ArrayType* array_type, TypeShape* out_typeshape) {
@@ -1657,7 +2655,13 @@ bool Library::CompileArrayType(flat::ArrayType* array_type, TypeShape* out_types
     if (!CompileType(array_type->element_type.get(), &element_typeshape))
         return false;
 
-    TypeShape typeshape = ArrayTypeShape(element_typeshape, array_type->element_count.Value());
+    // Resolve element count bound now that all constant identifiers have been consumed
+    if (!ResolveConstant(array_type->element_count.get(), &kSizeType))
+        return Fail(array_type->name, "unable to parse size bound for array");
+
+    assert(array_type->element_count->Value().kind == ConstantValue::Kind::kUint32);
+    auto element_count = static_cast<const Size&>(array_type->element_count->Value());
+    TypeShape typeshape = ArrayTypeShape(element_typeshape, element_count.value);
 
     // Now that the array element type is compiled and the size is resolved, set the array size.
     array_type->size = typeshape.Size();
@@ -1670,17 +2674,26 @@ bool Library::CompileVectorType(flat::VectorType* vector_type, TypeShape* out_ty
     TypeShape element_typeshape;
     if (!CompileType(vector_type->element_type.get(), &element_typeshape))
         return false;
-    uint32_t max_element_count = vector_type->element_count.Value();
-    if (max_element_count == Size::Max().Value()) {
-        // No upper bound specified on vector.
-        max_element_count = std::numeric_limits<uint32_t>::max();
-    }
-    *out_typeshape = VectorTypeShape(element_typeshape, max_element_count);
+
+    // Resolve element count bound now that all constant identifiers have been consumed
+    if (!ResolveConstant(vector_type->element_count.get(), &kSizeType))
+        return Fail(vector_type->name, "unable to parse size bound for vector");
+
+    assert(vector_type->element_count->Value().kind == ConstantValue::Kind::kUint32);
+    auto element_count = static_cast<const Size&>(vector_type->element_count->Value());
+    *out_typeshape = VectorTypeShape(element_typeshape, element_count.value);
+
     return true;
 }
 
 bool Library::CompileStringType(flat::StringType* string_type, TypeShape* out_typeshape) {
-    *out_typeshape = StringTypeShape(string_type->max_size.Value());
+    // Resolve max size bound now that all constant identifiers have been consumed
+    if (!ResolveConstant(string_type->max_size.get(), &kSizeType))
+        return Fail(string_type->name, "unable to parse size bound for string");
+
+    assert(string_type->max_size->Value().kind == ConstantValue::Kind::kUint32);
+    auto max_size = static_cast<const Size&>(string_type->max_size->Value());
+    *out_typeshape = StringTypeShape(max_size.value);
     return true;
 }
 
@@ -1695,7 +2708,7 @@ bool Library::CompileRequestHandleType(flat::RequestHandleType* request_type,
     auto named_decl = LookupDeclByName(request_type->name);
     if (!named_decl || named_decl->kind != Decl::Kind::kInterface) {
         std::string message = "Undefined reference \"";
-        message.append(request_type->name.name().data());
+        message.append(request_type->name.name_part());
         message.append("\" in request handle name");
         return Fail(request_type->name, message);
     }
@@ -1716,7 +2729,7 @@ bool Library::CompileIdentifierType(flat::IdentifierType* identifier_type,
     auto named_decl = LookupDeclByName(identifier_type->name);
     if (!named_decl) {
         std::string message("Undefined reference \"");
-        message.append(identifier_type->name.name().data());
+        message.append(identifier_type->name.name_part());
         message.append("\" in identifier type name");
         return Fail(identifier_type->name, message);
     }
@@ -1788,7 +2801,25 @@ bool Library::CompileIdentifierType(flat::IdentifierType* identifier_type,
             typeshape = PointerTypeShape(typeshape);
         break;
     }
-    default: { abort(); }
+    case Decl::Kind::kXUnion: {
+        XUnion* xunion_decl = static_cast<XUnion*>(named_decl);
+        if (!xunion_decl->compiled) {
+            if (xunion_decl->compiling) {
+                xunion_decl->recursive = true;
+            } else {
+                if (!CompileXUnion(xunion_decl)) {
+                    return false;
+                }
+            }
+        }
+        typeshape = xunion_decl->typeshape;
+        if (identifier_type->nullability == types::Nullability::kNullable)
+            typeshape = PointerTypeShape(typeshape);
+        break;
+    }
+    default: {
+        abort();
+    }
     }
 
     identifier_type->size = typeshape.Size();
@@ -1833,6 +2864,53 @@ bool Library::CompileType(Type* type, TypeShape* out_typeshape) {
         return CompileIdentifierType(identifier_type, out_typeshape);
     }
     }
+}
+
+template <typename MemberType>
+bool Library::ValidateEnumMembers(Enum* enum_decl) {
+    static_assert(std::is_integral<MemberType>::value && !std::is_same<MemberType, bool>::value,
+                  "Enum members must be an integral type!");
+    assert(enum_decl != nullptr);
+
+    Scope<std::string> name_scope;
+    Scope<MemberType> value_scope;
+    bool success = true;
+    for (auto& member : enum_decl->members) {
+        assert(member.value != nullptr && "Compiler bug: enum member value is null!");
+
+        if (!ResolveConstant(member.value.get(), enum_decl->type))
+            return Fail(member.name, "unable to resolve struct member");
+
+        // Check that the enum member identifier hasn't been used yet
+        std::string name = NameIdentifier(member.name);
+        auto name_result = name_scope.Insert(name, member.name);
+        if (!name_result.ok()) {
+            std::ostringstream msg_stream;
+            msg_stream << "name of member " << name;
+            msg_stream << " conflicts with previously declared member in the enum ";
+            msg_stream << enum_decl->GetName();
+
+            // We can log the error and then continue validating for other issues in the enum
+            success = Fail(member.name, msg_stream.str());
+        }
+
+        MemberType value = static_cast<const NumericConstantValue<MemberType>&>(
+                               member.value->Value())
+                               .value;
+        auto value_result = value_scope.Insert(value, member.name);
+        if (!value_result.ok()) {
+            std::ostringstream msg_stream;
+            msg_stream << "value of member " << name;
+            msg_stream << " conflicts with previously declared member ";
+            msg_stream << NameIdentifier(value_result.previous_occurrence()) << " in the enum ";
+            msg_stream << enum_decl->GetName();
+
+            // We can log the error and then continue validating other members for other bugs
+            success = Fail(member.name, msg_stream.str());
+        }
+    }
+
+    return success;
 }
 
 bool Library::HasAttribute(fidl::StringView name) const {

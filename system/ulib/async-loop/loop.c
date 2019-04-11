@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef _ALL_SOURCE
 #define _ALL_SOURCE // Enables thrd_create_with_name in <threads.h>.
@@ -162,7 +165,7 @@ zx_status_t async_loop_create(const async_loop_config_t* config, async_loop_t** 
 
     zx_status_t status = zx_port_create(0u, &loop->port);
     if (status == ZX_OK)
-        status = zx_timer_create(0u, ZX_CLOCK_MONOTONIC, &loop->timer);
+        status = zx_timer_create(ZX_TIMER_SLACK_LATE, ZX_CLOCK_MONOTONIC, &loop->timer);
     if (status == ZX_OK) {
         status = zx_object_wait_async(loop->timer, loop->port, KEY_CONTROL,
                                       ZX_TIMER_SIGNALED,
@@ -507,7 +510,7 @@ static zx_status_t async_loop_cancel_wait(async_dispatcher_t* async, async_wait_
     ZX_DEBUG_ASSERT(loop);
     ZX_DEBUG_ASSERT(wait);
 
-    // Note: We need to process cancelations even while the loop is being
+    // Note: We need to process cancellations even while the loop is being
     // destroyed in case the client is counting on the handler not being
     // invoked again past this point.
 
@@ -562,7 +565,7 @@ static zx_status_t async_loop_cancel_task(async_dispatcher_t* async, async_task_
     ZX_DEBUG_ASSERT(loop);
     ZX_DEBUG_ASSERT(task);
 
-    // Note: We need to process cancelations even while the loop is being
+    // Note: We need to process cancellations even while the loop is being
     // destroyed in case the client is counting on the handler not being
     // invoked again past this point.  Also, the task we're removing here
     // might be present in the dispatcher's |due_list| if it is pending
@@ -751,7 +754,7 @@ zx_status_t async_loop_start_thread(async_loop_t* loop, const char* name, thrd_t
     ZX_DEBUG_ASSERT(loop);
 
     // This check is inherently racy.  The client should not be racing shutdown
-    // with attemps to start new threads.  This is mainly a sanity check.
+    // with attempts to start new threads.  This is mainly a sanity check.
     async_loop_state_t state = atomic_load_explicit(&loop->state, memory_order_acquire);
     if (state == ASYNC_LOOP_SHUTDOWN)
         return ZX_ERR_BAD_STATE;

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fcntl.h>
 #include <getopt.h>
@@ -8,6 +11,8 @@
 #include <fbl/unique_fd.h>
 #include <fvm/fvm-check.h>
 #include <zircon/status.h>
+
+#include <utility>
 
 namespace {
 
@@ -53,7 +58,7 @@ bool GetOptions(int argc, char** argv, fvm::Checker* checker) {
             return false;
         }
 
-        checker->SetDevice(fbl::move(fd));
+        checker->SetDevice(std::move(fd));
         return true;
     }
     return false;

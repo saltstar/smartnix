@@ -1,7 +1,11 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef LIB_FIDL_CPP_BUILDER_H_
 #define LIB_FIDL_CPP_BUILDER_H_
 
+#include <new>  // For placement new.
 #include <stdalign.h>
 #include <stdint.h>
 
@@ -10,26 +14,11 @@
 #include <zircon/fidl.h>
 #include <zircon/types.h>
 
-// Try to pull a definition of the placement new operator from existing
-// libraries that we may be linking with.
-#if __has_include(<new>)
-#include <new>
-#elif __has_include(<zxcpp/new.h>)
-#include <zxcpp/new.h>
-#elif __has_include(<fbl/new.h>)
-#include <fbl/new.h>
-#else
-// If none of the existing libraries are available, define our own
-// placement allocation functions as inline for optimal code generation.
-inline void* operator new(size_t size, void* ptr) noexcept { return ptr; }
-inline void* operator new[](size_t size, void* ptr) noexcept { return ptr; }
-#endif
-
 namespace fidl {
 
 // Builder helps FIDL clients store decoded objects in a buffer.
 //
-// Objects are allocated sequentually in the buffer with appropriate alignment
+// Objects are allocated sequentially in the buffer with appropriate alignment
 // for in-place encoding. The client is responsible for ordering the objects in
 // the buffer appropriately.
 class Builder {
@@ -87,7 +76,7 @@ public:
     //
     // The allocated objects are placed in the returned buffer in the order in
     // which they were allocated, with appropriate alignment for a FIDL message.
-    // The returned buffer's capacity cooresponds to the capacity originally
+    // The returned buffer's capacity corresponds to the capacity originally
     // provided to this builder in its constructor.
     BytePart Finalize();
 

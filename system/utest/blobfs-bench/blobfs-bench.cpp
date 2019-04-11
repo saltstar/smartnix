@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <errno.h>
 #include <fcntl.h>
@@ -18,6 +21,8 @@
 #include <fs-test-utils/perftest.h>
 #include <perftest/perftest.h>
 #include <unittest/unittest.h>
+
+#include <utility>
 
 namespace {
 
@@ -152,7 +157,7 @@ bool MakeBlob(fbl::String fs_path, size_t blob_size, unsigned int* seed,
                                  info->size_merkle, 0, info->size_data, digest),
               ZX_OK, "Failed to validate Merkle Tree");
 
-    *out = fbl::move(info);
+    *out = std::move(info);
     END_HELPER;
 }
 
@@ -167,7 +172,7 @@ fbl::String GetNegativeLookupPath(const fbl::String& fs_path) {
 class BlobfsTest {
 public:
     BlobfsTest(BlobfsInfo&& info)
-        : info_(fbl::move(info)) {}
+        : info_(std::move(info)) {}
 
     // Measure how much time each of the operations in the Fs takes, for a known size.
     // First we add as many blobs as we need to, and then, we proceed to execute each operation.
@@ -197,11 +202,11 @@ public:
         state->DeclareStep("create");
         state->DeclareStep("truncate");
         state->DeclareStep("write");
-        state->DeclareStep("close");
+        state->DeclareStep("close_write_fd");
         state->DeclareStep("open");
         state->DeclareStep("read");
         state->DeclareStep("unlink");
-        state->DeclareStep("close");
+        state->DeclareStep("close_read_fd");
 
         // At this specific state, measure how much time in average it takes to perform each of the
         // operations declared.
@@ -339,7 +344,7 @@ bool RunBenchmark(int argc, char** argv) {
             BlobfsInfo fs_info;
             fs_info.blob_count = (p_opts.is_unittest) ? 1 : blob_count;
             fs_info.blob_size = blob_size;
-            blobfs_tests.push_back(fbl::move(fs_info));
+            blobfs_tests.push_back(std::move(fs_info));
             TestCaseInfo testcase;
             testcase.teardown = false;
             testcase.sample_count = kSampleCount;
@@ -357,7 +362,7 @@ bool RunBenchmark(int argc, char** argv) {
                                                            fs_test_utils::Fixture* fixture) {
                 return blobfs_tests[test_index].ApiTest(state, fixture);
             };
-            testcase.tests.push_back(fbl::move(api_test));
+            testcase.tests.push_back(std::move(api_test));
 
             if (blob_count > 0) {
                 for (auto order : orders) {
@@ -373,10 +378,10 @@ bool RunBenchmark(int argc, char** argv) {
                     read_test.required_disk_space =
                         blob_count *
                         (blob_size + 2 * MerkleTree::kNodeSize + blobfs::kBlobfsInodeSize);
-                    testcase.tests.push_back(fbl::move(read_test));
+                    testcase.tests.push_back(std::move(read_test));
                 }
             }
-            testcases.push_back(fbl::move(testcase));
+            testcases.push_back(std::move(testcase));
             ++test_index;
         }
     }

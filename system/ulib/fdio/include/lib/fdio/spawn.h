@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -20,10 +23,14 @@ __BEGIN_CDECLS
 // argument.
 #define FDIO_SPAWN_CLONE_JOB ((uint32_t)0x0001u)
 
-// Provides the spawned process with the shared library loader used by this
+// Provides the spawned process with the shared library loader resolved via
+// fuchsia.process.Resolver (if resolved), or that which is used by this
 // process.
 //
 // The shared library loader is passed as |PA_LDSVC_LOADER|.
+#define FDIO_SPAWN_DEFAULT_LDSVC ((uint32_t)0x0002u)
+// FDIO_SPAWN_CLONE_LDSVC is the same as FDIO_SPAWN_DEFAULT_LDSVC.
+// TODO(ZX-3031): this name is deprecated.
 #define FDIO_SPAWN_CLONE_LDSVC ((uint32_t)0x0002u)
 
 // Clones the filesystem namespace into the spawned process.
@@ -43,9 +50,10 @@ __BEGIN_CDECLS
 
 // Spawn a process in the given job.
 //
-// The binary for the process is loaded from the given |path| and passed |argv|.
+// The program for the process is loaded from the given |path| and passed |argv|.
 // The aspects of this process' environment indicated by |flags| are shared with
-// the process.
+// the process. If the target program begins with |#!resolve | then the binary is
+// resolved by url via |fuchsia.process.Resolver|.
 //
 // The |argv| array must be terminated with a null pointer.
 //
@@ -83,6 +91,21 @@ zx_status_t fdio_spawn(zx_handle_t job,
 //
 // If |FDIO_SPAWN_CLONE_NAMESPACE| is specified via |flags|, the namespace entry
 // is added to the cloned namespace from the calling process.
+//
+// The namespace entries are added in the order they appear in the action list.
+// If |FDIO_SPAWN_CLONE_NAMESPACE| is specified via |flags|, the entries from
+// the calling process are added before any entries specified with
+// |FDIO_SPAWN_ACTION_ADD_NS_ENTRY|.
+//
+// The spawned process decides how to process and interpret the namespace
+// entries. Typically, the spawned process with disregard duplicate entries
+// (i.e., the first entry for a given name wins) and will ignore nested entries
+// (e.g., |/foo/bar| when |/foo| has already been added to the namespace).
+//
+// To override or replace an entry in the namespace of the calling process,
+// use |fdio_ns_export_root| to export the namespace table of the calling
+// process and construct the namespace for the spawned process explicitly using
+// |FDIO_SPAWN_ACTION_ADD_NS_ENTRY|.
 //
 // The given handle will be closed regardless of whether the |fdio_spawn_etc|
 // call succeeds.

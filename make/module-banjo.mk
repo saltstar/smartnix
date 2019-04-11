@@ -9,6 +9,12 @@ ifeq ($(filter banjo,$(MODULE_EXPORT)),banjo)
 MODULE_PACKAGE += $(sort $(MODULE_PACKAGE) banjo)
 endif
 
+# TODO(mcgrathr): make this error after bogons are fixed
+ifneq ($(MODULE_BANJO_LIBRARY),$(subst -,.,$(notdir $(MODULE))))
+$(error system/banjo/foo-bar-baz name must match library name foo.bar.baz)
+$(error $(MODULE_BANJO_LIBRARY) vs $(notdir $(MODULE)) should be $(subst .,-,$(notdir $(MODULE_BANJO_LIBRARY))))
+endif
+
 ifneq ($(strip $(MODULE_PACKAGE)),)
 
 MODULE_PKG_FILE := $(MODULE_BUILDDIR)/$(MODULE_NAME).pkg
@@ -38,8 +44,8 @@ $(MODULE_PKG_FILE): $(MODULE_RULESMK) make/module-banjo.mk
 	echo "library=$(_LIBRARY)" >> $@ ;\
 	echo "arch=banjo" >> $@ ;\
 	echo "type=banjo" >> $@ ;\
-	for i in $(_SRCS) ; do echo $$i >> $@ ; done ;\
-	for i in $(_DEPS) ; do echo $$i >> $@ ; done
+	for i in $(_SRCS) ; do echo "$$i" >> $@ ; done ;\
+	for i in $(_DEPS) ; do echo "$$i" >> $@ ; done
 
 
 $(MODULE_EXP_FILE): $(MODULE_PKG_FILE)

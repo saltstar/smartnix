@@ -12,7 +12,7 @@
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/metadata.h>
-#include <ddk/protocol/platform-bus.h>
+#include <ddk/protocol/platform/bus.h>
 #include <ddktl/device.h>
 #include <hw/reg.h>
 
@@ -51,7 +51,7 @@ zx_status_t AmlUart::Create(zx_device_t* parent) {
     }
 
     mmio_buffer_t mmio;
-    status = pdev_map_mmio_buffer2(&pdev, 0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    status = pdev_map_mmio_buffer(&pdev, 0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
     if (status != ZX_OK) {
         zxlogf(ERROR, "%s: pdev_map_&mmio__buffer failed %d\n", __func__, status);
         return status;

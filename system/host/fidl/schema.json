@@ -11,6 +11,7 @@
         "struct_declarations",
         "table_declarations",
         "union_declarations",
+        "xunion_declarations",
         "declaration_order",
         "declarations",
         "library_dependencies"
@@ -64,6 +65,13 @@
             "type": "array",
             "items": {
                 "$ref": "#/definitions/union"
+            }
+        },
+        "xunion_declarations": {
+            "description": "List of extensible unions",
+            "type": "array",
+            "items": {
+                "$ref": "#/definitions/xunion"
             }
         },
         "declaration_order": {
@@ -195,6 +203,7 @@
             "type": "object",
             "required": [
                 "ordinal",
+  	        "generated_ordinal",
                 "name",
                 "has_request",
                 "has_response"
@@ -206,6 +215,10 @@
                 },
                 "ordinal": {
                     "description": "Ordinal number of the interface method",
+                    "$ref": "#/definitions/ordinal"
+                },
+                "generated_ordinal": {
+                    "description": "Ordinal number that would be automatically generated for the interface method",
                     "$ref": "#/definitions/ordinal"
                 },
                 "name": {
@@ -259,6 +272,7 @@
                 "type",
                 "name",
                 "size",
+                "max_out_of_line",
                 "alignment",
                 "offset"
             ],
@@ -273,6 +287,10 @@
                 },
                 "size": {
                     "description": "Size of the parameter or return",
+                    "$ref": "#/definitions/count"
+                },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line payload",
                     "$ref": "#/definitions/count"
                 },
                 "alignment": {
@@ -291,7 +309,8 @@
             "required": [
                 "name",
                 "members",
-                "size"
+                "size",
+                "max_out_of_line"
             ],
             "properties": {
                 "max_handles": {
@@ -306,6 +325,10 @@
                     "description": "Name of struct",
                     "$ref": "#/definitions/compound-identifier"
                 },
+                "anonymous": {
+                    "description": "Flag indicating that struct is anonymous",
+                    "type": "boolean"
+                },
                 "members": {
                     "description": "List of struct members",
                     "type": "array",
@@ -315,6 +338,10 @@
                 },
                 "size": {
                     "description": "Size of struct",
+                    "$ref": "#/definitions/count"
+                },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line struct payload",
                     "$ref": "#/definitions/count"
                 }
             }
@@ -326,6 +353,7 @@
                 "type",
                 "name",
                 "size",
+                "max_out_of_line",
                 "alignment",
                 "offset"
             ],
@@ -340,6 +368,10 @@
                 },
                 "size": {
                     "description": "Size of struct member",
+                    "$ref": "#/definitions/count"
+                },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line payload",
                     "$ref": "#/definitions/count"
                 },
                 "alignment": {
@@ -366,7 +398,8 @@
             "required": [
                 "name",
                 "members",
-                "size"
+                "size",
+                "max_out_of_line"
             ],
             "properties": {
                 "max_handles": {
@@ -390,6 +423,10 @@
                 },
                 "size": {
                     "description": "Size of table",
+                    "$ref": "#/definitions/count"
+                },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line payload for the entire table. Note that this value is computed without considering future member additions, otherwise it would always be pegged at the maximum. Bindings should take this into consideration when using max_out_of_line.",
                     "$ref": "#/definitions/count"
                 }
             }
@@ -422,6 +459,10 @@
                     "description": "Size of table member",
                     "$ref": "#/definitions/count"
                 },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line payload",
+                    "$ref": "#/definitions/count"
+                },
                 "alignment": {
                     "description": "Alignment of table member",
                     "$ref": "#/definitions/count"
@@ -443,6 +484,7 @@
                 "name",
                 "members",
                 "size",
+                "max_out_of_line",
                 "alignment"
             ],
             "properties": {
@@ -469,6 +511,10 @@
                     "description": "Size of union",
                     "$ref": "#/definitions/count"
                 },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line payload",
+                    "$ref": "#/definitions/count"
+                },
                 "alignment": {
                     "description": "Alignment of union",
                     "$ref": "#/definitions/count"
@@ -482,6 +528,7 @@
                 "type",
                 "name",
                 "size",
+                "max_out_of_line",
                 "alignment",
                 "offset"
             ],
@@ -498,6 +545,10 @@
                     "description": "Size of union member",
                     "$ref": "#/definitions/count"
                 },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line payload",
+                    "$ref": "#/definitions/count"
+                },
                 "alignment": {
                     "description": "Alignment of union member",
                     "$ref": "#/definitions/count"
@@ -508,6 +559,97 @@
                 },
                 "maybe_attributes": {
                     "description": "Optional list of union member attributes",
+                    "$ref": "#/definitions/attributes-list"
+                }
+            }
+        },
+        "xunion": {
+            "description": "Definition of an extensible union",
+            "type": "object",
+            "required": [
+                "name",
+                "members",
+                "size",
+                "max_out_of_line",
+                "alignment"
+            ],
+            "properties": {
+                "max_handles": {
+                    "description": "Maximum number of handles present in the extensible union",
+                    "$ref": "#/definitions/count"
+                },
+                "maybe_attributes": {
+                    "description": "Optional list of extensible union attributes",
+                    "$ref": "#/definitions/attributes-list"
+                },
+                "name": {
+                    "description": "Name of extensible union",
+                    "$ref": "#/definitions/compound-identifier"
+                },
+                "members": {
+                    "description": "List of extensible union members",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/xunion-member"
+                    }
+                },
+                "size": {
+                    "description": "Size of extensible union",
+                    "$ref": "#/definitions/count"
+                },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line payload",
+                    "$ref": "#/definitions/count"
+                },
+                "alignment": {
+                    "description": "Alignment of extensible union",
+                    "$ref": "#/definitions/count"
+                }
+            }
+        },
+        "xunion-member": {
+            "description": "Definition of an extensible union member",
+            "type": "object",
+            "required": [
+                "ordinal",
+                "type",
+                "name",
+                "size",
+                "max_out_of_line",
+                "alignment",
+                "offset"
+            ],
+            "properties": {
+                "ordinal": {
+                    "description": "Ordinal value of extensible union member",
+                    "$ref": "#/definitions/ordinal"
+                },
+                "type": {
+                    "description": "Type of extensible union member",
+                    "$ref": "#/definitions/type"
+                },
+                "name": {
+                    "description": "Name of extensible union member",
+                    "$ref": "#/definitions/identifier"
+                },
+                "size": {
+                    "description": "Size of extensible union member",
+                    "$ref": "#/definitions/count"
+                },
+                "max_out_of_line": {
+                    "description": "Maximum size of the out-of-line payload",
+                    "$ref": "#/definitions/count"
+                },
+                "alignment": {
+                    "description": "Alignment of extensible union member",
+                    "$ref": "#/definitions/count"
+                },
+                "offset": {
+                    "description": "Offset of extensible union member",
+                    "$ref": "#/definitions/count"
+                },
+                "maybe_attributes": {
+                    "description": "Optional list of extensible union member attributes",
                     "$ref": "#/definitions/attributes-list"
                 }
             }
@@ -524,7 +666,8 @@
                         "interface",
                         "struct",
                         "table",
-                        "union"
+                        "union",
+                        "xunion"
                     ]
                 }
             }
@@ -967,7 +1110,7 @@
                 "event",
                 "port",
                 "interrupt",
-                "log",
+                "debuglog",
                 "socket",
                 "resource",
                 "eventpair",
@@ -975,7 +1118,9 @@
                 "vmar",
                 "fifo",
                 "guest",
-                "timer"
+                "timer",
+                "bti",
+                "profile"
             ]
         },
         "primitive-subtype": {

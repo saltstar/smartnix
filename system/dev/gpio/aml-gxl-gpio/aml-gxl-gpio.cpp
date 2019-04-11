@@ -6,14 +6,16 @@
 
 #include <ddk/debug.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/platform-bus.h>
-#include <ddk/protocol/platform-device.h>
+#include <ddk/protocol/platform/bus.h>
+#include <ddk/protocol/platform/device.h>
 #include <ddk/protocol/platform-device-lib.h>
 #include <fbl/alloc_checker.h>
 #include <fbl/array.h>
 #include <fbl/auto_lock.h>
 #include <fbl/mutex.h>
 #include <fbl/unique_ptr.h>
+
+#include <utility>
 
 #include "s905-blocks.h"
 #include "s905x-blocks.h"
@@ -60,7 +62,7 @@ zx_status_t AmlGxlGpio::Create(zx_device_t* parent) {
     }
 
     mmio_buffer_t mmio;
-    status = pdev_map_mmio_buffer2(&pdev, MMIO_GPIO, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    status = pdev_map_mmio_buffer(&pdev, MMIO_GPIO, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
     if (status != ZX_OK) {
         zxlogf(ERROR, "AmlGxlGpio::Create: pdev_map_mmio_buffer failed\n");
         return status;
@@ -68,7 +70,7 @@ zx_status_t AmlGxlGpio::Create(zx_device_t* parent) {
 
     ddk::MmioBuffer mmio_gpio(mmio);
 
-    status = pdev_map_mmio_buffer2(&pdev, MMIO_GPIO_A0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    status = pdev_map_mmio_buffer(&pdev, MMIO_GPIO_A0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
     if (status != ZX_OK) {
         zxlogf(ERROR, "AmlGxlGpio::Create: pdev_map_mmio_buffer failed\n");
         return status;
@@ -76,8 +78,8 @@ zx_status_t AmlGxlGpio::Create(zx_device_t* parent) {
 
     ddk::MmioBuffer mmio_gpio_a0(mmio);
 
-    status = pdev_map_mmio_buffer2(&pdev, MMIO_GPIO_INTERRUPTS, ZX_CACHE_POLICY_UNCACHED_DEVICE,
-                                   &mmio);
+    status = pdev_map_mmio_buffer(&pdev, MMIO_GPIO_INTERRUPTS, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+                                  &mmio);
     if (status != ZX_OK) {
         zxlogf(ERROR, "AmlGxlGpio::Create: pdev_map_mmio_buffer failed\n");
         return status;
@@ -136,15 +138,15 @@ zx_status_t AmlGxlGpio::Create(zx_device_t* parent) {
 
     fbl::unique_ptr<AmlGxlGpio> device(new (&ac) AmlGxlGpio(parent,
                                                             pdev,
-                                                            fbl::move(mmio_gpio),
-                                                            fbl::move(mmio_gpio_a0),
-                                                            fbl::move(mmio_interrupt),
+                                                            std::move(mmio_gpio),
+                                                            std::move(mmio_gpio_a0),
+                                                            std::move(mmio_interrupt),
                                                             gpio_blocks,
                                                             gpio_interrupt,
                                                             pinmux_blocks,
                                                             block_count,
-                                                            fbl::move(block_locks),
-                                                            fbl::move(irq_info)));
+                                                            std::move(block_locks),
+                                                            std::move(irq_info)));
     if (!ac.check()) {
         zxlogf(ERROR, "AmlGxlGpio::Create: device object alloc failed\n");
         return ZX_ERR_NO_MEMORY;
@@ -164,7 +166,7 @@ zx_status_t AmlGxlGpio::Create(zx_device_t* parent) {
 
 void AmlGxlGpio::Bind(const pbus_protocol_t& pbus) {
     gpio_impl_protocol_t gpio_proto = {
-        .ops = &ops_,
+        .ops = &gpio_impl_protocol_ops_,
         .ctx = this
     };
 
@@ -358,7 +360,7 @@ zx_status_t AmlGxlGpio::GpioImplWrite(uint32_t pin, uint8_t value) {
 }
 
 zx_status_t AmlGxlGpio::GpioImplGetInterrupt(uint32_t pin, uint32_t flags,
-                                             zx_handle_t* out_handle) {
+                                             zx::interrupt* out_irq) {
     if (pin > kMaxGpioIndex) {
         return ZX_ERR_INVALID_ARGS;
     }
@@ -397,7 +399,8 @@ zx_status_t AmlGxlGpio::GpioImplGetInterrupt(uint32_t pin, uint32_t flags,
     }
 
     // Create Interrupt Object
-    if ((status = pdev_get_interrupt(&pdev_, index, flags_, out_handle)) != ZX_OK) {
+    if ((status = pdev_get_interrupt(&pdev_, index, flags_,
+                                     out_irq->reset_and_get_address())) != ZX_OK) {
         zxlogf(ERROR, "AmlGxlGpio::GpioImplGetInterrupt: pdev_map_interrupt failed %d\n", status);
         return status;
     }

@@ -21,6 +21,7 @@ EXAMPLE_FILES := \
     $(EXAMPLE_DIR)/empty.fidl \
     $(EXAMPLE_DIR)/enums.fidl \
     $(EXAMPLE_DIR)/events.fidl \
+    $(EXAMPLE_DIR)/errors.fidl \
     $(EXAMPLE_DIR)/example-0.fidl \
     $(EXAMPLE_DIR)/example-1.fidl \
     $(EXAMPLE_DIR)/example-2.fidl \
@@ -31,6 +32,7 @@ EXAMPLE_FILES := \
     $(EXAMPLE_DIR)/example-7.fidl \
     $(EXAMPLE_DIR)/example-8.fidl \
     $(EXAMPLE_DIR)/example-9.fidl \
+    $(EXAMPLE_DIR)/example-10.fidl \
     $(EXAMPLE_DIR)/interface-ordinals.fidl \
     $(EXAMPLE_DIR)/library-a/point.fidl \
     $(EXAMPLE_DIR)/library-b/view.fidl \
@@ -61,30 +63,43 @@ std::map<std::string, std::string> Examples::map_ = {\n" >> $@ && \
 
 
 MODULE_SRCS := \
-    $(LOCAL_DIR)/main.cpp \
+    $(LOCAL_DIR)/attributes_tests.cpp \
+    $(LOCAL_DIR)/coded_types_generator_tests.cpp \
     $(LOCAL_DIR)/consts_tests.cpp \
-    $(LOCAL_DIR)/dup_attributes_tests.cpp \
+    $(LOCAL_DIR)/declaration_order_tests.cpp \
+    $(LOCAL_DIR)/enums_tests.cpp \
+    $(LOCAL_DIR)/errors_tests.cpp \
     $(LOCAL_DIR)/flat_ast_tests.cpp \
     $(LOCAL_DIR)/formatter_unittests.cpp \
     $(LOCAL_DIR)/json_generator_tests.cpp \
+    $(LOCAL_DIR)/main.cpp \
+    $(LOCAL_DIR)/max_bytes_multipass_tests.cpp \
     $(LOCAL_DIR)/max_bytes_tests.cpp \
     $(LOCAL_DIR)/max_handle_tests.cpp \
-    $(LOCAL_DIR)/max_bytes_multipass_tests.cpp \
+    $(LOCAL_DIR)/optionals_tests.cpp \
+    $(LOCAL_DIR)/ordinals_tests.cpp \
     $(LOCAL_DIR)/parsing_tests.cpp \
     $(LOCAL_DIR)/superinterface_tests.cpp \
     $(LOCAL_DIR)/table_tests.cpp \
+    $(LOCAL_DIR)/types_tests.cpp \
     $(LOCAL_DIR)/using_tests.cpp \
+    $(LOCAL_DIR)/virtual_source_tests.cpp \
     $(LOCAL_DIR)/visitor_unittests.cpp \
+    $(LOCAL_DIR)/xunion_tests.cpp \
     $(BUILDGEN_DIR)/examples.cpp \
 
 MODULE_COMPILEFLAGS := \
+    -Isystem/ulib/fit/include \
     -Isystem/ulib/unittest/include \
     -Isystem/utest/fidl-compiler \
+    -Ithird_party/ulib/uboringssl/include \
 
 MODULE_HOST_LIBS := \
     system/host/fidl \
+    system/ulib/fit.hostlib \
     system/ulib/pretty.hostlib \
     system/ulib/unittest.hostlib \
+    third_party/ulib/uboringssl.hostlib \
 
 MODULE_PACKAGE_INCS := \
     $(LOCAL_DIR)/examples.h \

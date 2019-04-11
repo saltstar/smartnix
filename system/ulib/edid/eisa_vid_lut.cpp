@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Note: Data in this LUT was up to date as of 7/10/2018 and was published by
 // UEFI.  It can be found at http://www.uefi.org/pnp_id_list

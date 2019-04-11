@@ -8,8 +8,12 @@
 
 #include <fbl/array.h>
 #include <fbl/unique_ptr.h>
+#include <fbl/vector.h>
+#include <lib/zx/vmo.h>
 #include <tee-client-api/tee-client-types.h>
 #include <zircon/assert.h>
+
+#include <utility>
 
 #include "optee-smc.h"
 #include "shared-memory.h"
@@ -163,7 +167,7 @@ protected:
     //
     // Move constructor for MessageBase.
     MessageBase(MessageBase&& msg)
-        : memory_(fbl::move(msg.memory_)) {
+        : memory_(std::move(msg.memory_)) {
         msg.memory_ = nullptr;
     }
 
@@ -175,7 +179,7 @@ protected:
         : memory_(nullptr) {}
 
     explicit MessageBase(SharedMemoryPtr memory)
-        : memory_(fbl::move(memory)) {}
+        : memory_(std::move(memory)) {}
 
     MessageHeader* header() const {
         ZX_DEBUG_ASSERT_MSG(is_valid(), "Accessing uninitialized OP-TEE message");
@@ -210,6 +214,49 @@ public:
 
 protected:
     using MessageBase::MessageBase; // inherit constructors
+
+    bool TryInitializeParameters(size_t starting_param_index,
+                                 const fuchsia_hardware_tee_ParameterSet& parameter_set,
+                                 SharedMemoryManager::ClientMemoryPool* temp_memory_pool);
+    bool TryInitializeValue(const fuchsia_hardware_tee_Value& value, MessageParam* out_param);
+    bool TryInitializeBuffer(const fuchsia_hardware_tee_Buffer& buffer,
+                             SharedMemoryManager::ClientMemoryPool* temp_memory_pool,
+                             MessageParam* out_param);
+
+    zx_status_t CreateOutputParameterSet(size_t starting_param_index,
+                                         fuchsia_hardware_tee_ParameterSet* out_parameter_set);
+
+private:
+    // This nested class is just a container for pairing a vmo with a chunk of shared memory. It
+    // can be used to synchronize the user provided buffers with the TEE shared memory.
+    class TemporarySharedMemory {
+    public:
+        explicit TemporarySharedMemory(zx::vmo vmo, uint64_t vmo_offset, size_t size,
+                                       fbl::unique_ptr<SharedMemory>);
+
+        TemporarySharedMemory(TemporarySharedMemory&&) = default;
+        TemporarySharedMemory& operator=(TemporarySharedMemory&&) = default;
+
+        uint64_t vmo_offset() const { return vmo_offset_; }
+        bool is_valid() const { return vmo_.is_valid() && shared_memory_ != nullptr; }
+
+        zx_status_t SyncToSharedMemory();
+        zx_status_t SyncToVmo(size_t actual_size);
+
+        zx_handle_t ReleaseVmo();
+
+    private:
+        zx::vmo vmo_;
+        uint64_t vmo_offset_;
+        size_t size_;
+        fbl::unique_ptr<SharedMemory> shared_memory_;
+    };
+
+    fuchsia_hardware_tee_Value CreateOutputValueParameter(const MessageParam& optee_param);
+    zx_status_t CreateOutputBufferParameter(const MessageParam& optee_param,
+                                            fuchsia_hardware_tee_Buffer* out_buffer);
+
+    fbl::Vector<TemporarySharedMemory> allocated_temp_memory_;
 };
 
 // OpenSessionMessage
@@ -218,13 +265,18 @@ protected:
 class OpenSessionMessage : public Message {
 public:
     explicit OpenSessionMessage(SharedMemoryManager::DriverMemoryPool* message_pool,
+                                SharedMemoryManager::ClientMemoryPool* temp_memory_pool,
                                 const Uuid& trusted_app,
-                                const zircon_tee_ParameterSet& parameter_set);
+                                const fuchsia_hardware_tee_ParameterSet& parameter_set);
 
     // Outputs
     uint32_t session_id() const { return header()->session_id; }
     uint32_t return_code() const { return header()->return_code; }
     uint32_t return_origin() const { return header()->return_origin; }
+
+    zx_status_t CreateOutputParameterSet(fuchsia_hardware_tee_ParameterSet* out_parameter_set) {
+        return Message::CreateOutputParameterSet(kNumFixedOpenSessionParams, out_parameter_set);
+    }
 
 protected:
     using Message::header; // make header() protected
@@ -258,13 +310,17 @@ protected:
 class InvokeCommandMessage : public Message {
 public:
     explicit InvokeCommandMessage(SharedMemoryManager::DriverMemoryPool* message_pool,
-                                  uint32_t session_id,
-                                  uint32_t command_id,
-                                  const zircon_tee_ParameterSet& parameter_set);
+                                  SharedMemoryManager::ClientMemoryPool* temp_memory_pool,
+                                  uint32_t session_id, uint32_t command_id,
+                                  const fuchsia_hardware_tee_ParameterSet& parameter_set);
 
     // Outputs
     uint32_t return_code() const { return header()->return_code; }
     uint32_t return_origin() const { return header()->return_origin; }
+
+    zx_status_t CreateOutputParameterSet(fuchsia_hardware_tee_ParameterSet* out_parameter_set) {
+        return Message::CreateOutputParameterSet(0, out_parameter_set);
+    }
 };
 
 // RpcMessage
@@ -290,8 +346,8 @@ public:
     //
     // Move constructor for RpcMessage.
     RpcMessage(RpcMessage&& rpc_msg)
-        : MessageBase(fbl::move(rpc_msg)),
-          is_valid_(fbl::move(rpc_msg.is_valid_)) {
+        : MessageBase(std::move(rpc_msg)),
+          is_valid_(std::move(rpc_msg.is_valid_)) {
         rpc_msg.is_valid_ = false;
     }
 
@@ -350,7 +406,7 @@ public:
     //
     // Constructs a LoadTaRpcMessage from a moved-in RpcMessage.
     explicit LoadTaRpcMessage(RpcMessage&& rpc_message)
-        : RpcMessage(fbl::move(rpc_message)) {
+        : RpcMessage(std::move(rpc_message)) {
         ZX_DEBUG_ASSERT(is_valid()); // The RPC message passed in should've been valid
         ZX_DEBUG_ASSERT(command() == RpcMessage::Command::kLoadTa);
 
@@ -413,7 +469,7 @@ public:
     //
     // Constructs a AllocateMemoryRpcMessage from a moved-in RpcMessage.
     explicit AllocateMemoryRpcMessage(RpcMessage&& rpc_message)
-        : RpcMessage(fbl::move(rpc_message)) {
+        : RpcMessage(std::move(rpc_message)) {
         ZX_DEBUG_ASSERT(is_valid()); // The RPC message passed in should've been valid
         ZX_DEBUG_ASSERT(command() == RpcMessage::Command::kAllocateMemory);
 
@@ -478,7 +534,7 @@ public:
     //
     // Constructs a FreeMemoryRpcMessage from a moved-in RpcMessage.
     explicit FreeMemoryRpcMessage(RpcMessage&& rpc_message)
-        : RpcMessage(fbl::move(rpc_message)) {
+        : RpcMessage(std::move(rpc_message)) {
         ZX_DEBUG_ASSERT(is_valid()); // The RPC message passed in should've been valid
         ZX_DEBUG_ASSERT(command() == RpcMessage::Command::kFreeMemory);
 
@@ -535,7 +591,7 @@ public:
     //
     // Constructs a FileSystemRpcMessage from a moved-in RpcMessage.
     explicit FileSystemRpcMessage(RpcMessage&& rpc_message)
-        : RpcMessage(fbl::move(rpc_message)) {
+        : RpcMessage(std::move(rpc_message)) {
         ZX_DEBUG_ASSERT(is_valid()); // The RPC message passed in should've been valid
         ZX_DEBUG_ASSERT(command() == RpcMessage::Command::kAccessFileSystem);
 

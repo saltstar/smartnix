@@ -1,10 +1,12 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
-#include <stddef.h>
-
-#include <fbl/integer_sequence.h>
-#include <fbl/new.h>
+#include <cstddef>
+#include <new>
+#include <utility>
 
 #include <lockdep/common.h>
 #include <lockdep/guard.h>
@@ -33,7 +35,7 @@ public:
     template <typename Class, size_t Index,
               template <typename, typename, size_t> class... Locks>
     GuardMultiple(Locks<Class, LockType, Index>*... locks)
-        : GuardMultiple{fbl::make_index_sequence<sizeof...(locks)>{}, locks...} {}
+        : GuardMultiple{std::make_index_sequence<sizeof...(locks)>{}, locks...} {}
 
     ~GuardMultiple() {
         // Destroy union storage. Array elements are destroyed in reverse order.
@@ -78,7 +80,7 @@ private:
     // address, and then aggregate initializes the union storage. Array elements
     // are constructed in order.
     template <size_t... Is, template <typename> class... Locks>
-    GuardMultiple(fbl::index_sequence<Is...>, Locks<LockType>*... locks) {
+    GuardMultiple(std::index_sequence<Is...>, Locks<LockType>*... locks) {
         Lock<LockType>* lock_pointers[] = {locks...};
         InsertionSortPointers(lock_pointers);
         new (&guard_storage_) Storage{

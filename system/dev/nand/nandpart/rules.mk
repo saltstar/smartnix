@@ -18,6 +18,7 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/nandpart-utils.cpp \
 
 MODULE_STATIC_LIBS := \
+    system/dev/lib/operation \
     system/ulib/ddk \
     system/ulib/ddktl \
     system/ulib/fbl \
@@ -31,7 +32,11 @@ MODULE_LIBS := \
     system/ulib/zircon \
 
 MODULE_FIDL_LIBS := \
-    system/fidl/zircon-nand \
+    system/fidl/fuchsia-hardware-nand \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-badblock \
+    system/banjo/ddk-protocol-nand \
 
 include make/module.mk
 
@@ -72,6 +77,9 @@ MODULE_LIBS := \
     system/ulib/zircon \
 
 MODULE_FIDL_LIBS := \
-    system/fidl/zircon-nand \
+    system/fidl/fuchsia-hardware-nand \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-nand \
 
 include make/module.mk

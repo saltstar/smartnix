@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <ddk/usb/usb.h>
-#include <ddk/protocol/usb-composite.h>
+#include <usb/usb.h>
 #include <zircon/compiler.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,9 +13,14 @@ static zx_status_t usb_desc_iter_additional_init(usb_composite_protocol_t* comp,
                                                  usb_desc_iter_t* iter) {
     memset(iter, 0, sizeof(*iter));
 
-    void* descriptors;
-    size_t length;
-    zx_status_t status = usb_composite_get_additional_descriptor_list(comp, &descriptors, &length);
+    size_t length = usb_composite_get_additional_descriptor_length(comp);
+    uint8_t* descriptors = malloc(length);
+    if (!descriptors) {
+        return ZX_ERR_NO_MEMORY;
+    }
+    size_t actual;
+    zx_status_t status = usb_composite_get_additional_descriptor_list(comp, descriptors, length,
+                                                                      &actual);
     if (status != ZX_OK) {
         return status;
     }
@@ -30,8 +34,8 @@ static zx_status_t usb_desc_iter_additional_init(usb_composite_protocol_t* comp,
 // helper function for claiming additional interfaces that satisfy the want_interface predicate,
 // want_interface will be passed the supplied arg
 __EXPORT zx_status_t usb_claim_additional_interfaces(usb_composite_protocol_t* comp,
-                                                     bool (*want_interface)(usb_interface_descriptor_t*, void*),
-                                                     void* arg) {
+    bool (*want_interface)(usb_interface_descriptor_t*, void*),
+    void* arg) {
     usb_desc_iter_t iter;
     zx_status_t status = usb_desc_iter_additional_init(comp, &iter);
     if (status != ZX_OK) {
@@ -61,16 +65,32 @@ __EXPORT zx_status_t usb_claim_additional_interfaces(usb_composite_protocol_t* c
 __EXPORT zx_status_t usb_desc_iter_init(usb_protocol_t* usb, usb_desc_iter_t* iter) {
     memset(iter, 0, sizeof(*iter));
 
-    void* descriptors;
-    size_t length;
-    zx_status_t status = usb_get_descriptor_list(usb, &descriptors, &length);
-    if (status != ZX_OK) {
-        return status;
+    size_t length = usb_get_descriptors_length(usb);
+    void* descriptors = malloc(length);
+    if (!descriptors) {
+        return ZX_ERR_NO_MEMORY;
     }
+    size_t actual;
+    usb_get_descriptors(usb, descriptors, length, &actual);
 
     iter->desc = descriptors;
     iter->desc_end = descriptors + length;
     iter->current = descriptors;
+    return ZX_OK;
+}
+
+// clones a usb_desc_iter_t
+zx_status_t usb_desc_iter_clone(const usb_desc_iter_t* src, usb_desc_iter_t* dest) {
+    size_t length = (size_t)(src->desc_end)-(size_t)(src->desc);
+    size_t offset = (size_t)(src->current)-(size_t)(src->desc);
+    void* descriptors = malloc(length);
+    if(!descriptors) {
+        return ZX_ERR_NO_MEMORY;
+    }
+    memcpy(descriptors, src->desc, length);
+    dest->desc = descriptors;
+    dest->current = ((unsigned char*)descriptors)+offset;
+    dest->desc_end = ((unsigned char*)descriptors)+length;
     return ZX_OK;
 }
 

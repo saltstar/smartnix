@@ -1,8 +1,10 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fs/vfs.h>
 #include <fuchsia/io/c/fidl.h>
 #include <lib/fdio/debug.h>
-#include <lib/fdio/remoteio.h>
 #include <lib/fdio/vfs.h>
 
 #include <stdlib.h>

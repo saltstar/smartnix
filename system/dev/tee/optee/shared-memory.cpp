@@ -7,13 +7,14 @@
 #include <ddk/debug.h>
 #include <fbl/algorithm.h>
 #include <fbl/auto_call.h>
-#include <fbl/optional.h>
-#include <fbl/limits.h>
+
+#include <optional>
+#include <utility>
 
 namespace optee {
 
 SharedMemory::SharedMemory(zx_vaddr_t base_vaddr, zx_paddr_t base_paddr, RegionPtr region)
-    : base_vaddr_(base_vaddr), base_paddr_(base_paddr), region_(fbl::move(region)) {}
+    : base_vaddr_(base_vaddr), base_paddr_(base_paddr), region_(std::move(region)) {}
 
 zx_status_t SharedMemoryManager::Create(zx_paddr_t shared_mem_start,
                                         size_t shared_mem_size,
@@ -33,7 +34,7 @@ zx_status_t SharedMemoryManager::Create(zx_paddr_t shared_mem_start,
     }
     shared_mem_size = shared_mem_end - shared_mem_start;
 
-    fbl::optional<ddk::MmioPinnedBuffer> pinned;
+    std::optional<ddk::MmioPinnedBuffer> pinned;
     zx_status_t status = secure_world_memory.Pin(bti, &pinned);
     if (status != ZX_OK) {
         zxlogf(ERROR, "optee: unable to pin secure world memory\n");
@@ -65,14 +66,14 @@ zx_status_t SharedMemoryManager::Create(zx_paddr_t shared_mem_start,
         secure_world_vaddr + shared_mem_offset,
         secure_world_paddr + shared_mem_offset,
         shared_mem_size,
-        fbl::move(secure_world_memory),
-        fbl::move(*pinned)));
+        std::move(secure_world_memory),
+        *std::move(pinned)));
 
     if (!ac.check()) {
         return ZX_ERR_NO_MEMORY;
     }
 
-    *out_manager = fbl::move(manager);
+    *out_manager = std::move(manager);
     return ZX_OK;
 }
 
@@ -81,8 +82,8 @@ SharedMemoryManager::SharedMemoryManager(zx_vaddr_t base_vaddr,
                                          size_t total_size,
                                          ddk::MmioBuffer secure_world_memory,
                                          ddk::MmioPinnedBuffer secure_world_memory_pin)
-    : secure_world_memory_(fbl::move(secure_world_memory)),
-      secure_world_memory_pin_(fbl::move(secure_world_memory_pin)),
+    : secure_world_memory_(std::move(secure_world_memory)),
+      secure_world_memory_pin_(std::move(secure_world_memory_pin)),
       driver_pool_(base_vaddr, base_paddr, kDriverPoolSize),
       client_pool_(base_vaddr + kDriverPoolSize,
                    base_paddr + kDriverPoolSize,

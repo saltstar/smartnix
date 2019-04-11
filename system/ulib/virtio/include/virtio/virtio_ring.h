@@ -1,4 +1,3 @@
-
 /* taken from linux source 3.15 at include/uapi/linux/virtio_ring.h */
 #ifndef _UAPI_LINUX_VIRTIO_RING_H
 #define _UAPI_LINUX_VIRTIO_RING_H

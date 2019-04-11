@@ -1,3 +1,8 @@
+// Copyright 2016 The Fuchsia Authors
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
 
 #if WITH_KERNEL_PCIE
 
@@ -58,7 +63,7 @@ zx_status_t PciInterruptDispatcher::Create(
     if (maskable) {
         device->UnmaskIrq(irq_id);
     }
-    *out_interrupt = fbl::move(dispatcher);
+    *out_interrupt = ktl::move(dispatcher);
     *out_rights    = ZX_DEFAULT_PCI_INTERRUPT_RIGHTS;
     return ZX_OK;
 }

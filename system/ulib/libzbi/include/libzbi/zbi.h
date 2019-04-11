@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // ZBI Processing Library
 // This library is meant to be a generic processing library for the ZBI format
@@ -45,6 +48,9 @@ typedef zbi_result_t (*zbi_foreach_cb_t)(zbi_header_t* hdr,
                                          void* payload,
                                          void* cookie);
 
+// Creates an empty ZBI container in buffer.
+zbi_result_t zbi_init(void* buffer, size_t length);
+
 // Checks the integrity of the underlying ZBI.
 // If err is not null and an error is found, err will point to the ZBI entry
 // in which a problem was found the return value will attempt to specify the
@@ -85,12 +91,13 @@ zbi_result_t zbi_append_section(void* base, size_t capacity,
                                 uint32_t extra, uint32_t flags,
                                 const void* payload);
 
-
 // Create a new ZBI section and returns a pointer to the payload.
 zbi_result_t zbi_create_section(void* base, size_t capacity,
                                 uint32_t section_length, uint32_t type,
                                 uint32_t extra, uint32_t flags,
                                 void** payload);
 
+// Extend dst by appending src to the end of it.
+zbi_result_t zbi_extend(void* dst, size_t capacity, const void* src);
 
 __END_CDECLS

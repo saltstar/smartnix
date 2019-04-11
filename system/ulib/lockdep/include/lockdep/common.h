@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 //
 // Common definitions for the lockdep library.
@@ -7,8 +10,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-
-#include <fbl/type_support.h>
+#include <type_traits>
 
 #include <lockdep/runtime_api.h>
 
@@ -75,7 +77,7 @@ constexpr bool kLockValidationEnabled = static_cast<bool>(LOCK_DEP_ENABLE_VALIDA
 // Utility template alias to simplify selecting different types based whether
 // lock validation is enabled or disabled.
 template <typename EnabledType, typename DisabledType>
-using IfLockValidationEnabled = typename fbl::conditional<kLockValidationEnabled,
+using IfLockValidationEnabled = typename std::conditional<kLockValidationEnabled,
                                                           EnabledType,
                                                           DisabledType>::type;
 

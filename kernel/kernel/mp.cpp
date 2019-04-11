@@ -35,7 +35,6 @@ struct mp_sync_context;
 static void mp_sync_task(void* context);
 
 void mp_init(void) {
-    mutex_init(&mp.hotplug_lock);
     mp.ipi_task_lock = SPIN_LOCK_INITIAL_VALUE;
     for (uint i = 0; i < fbl::count_of(mp.ipi_task_list); ++i) {
         list_initialize(&mp.ipi_task_list[i]);
@@ -114,10 +113,10 @@ void mp_sync_exec(mp_ipi_target_t target, cpu_mask_t mask, mp_sync_task_t task, 
         // if the local CPU may be changed underneath us
         DEBUG_ASSERT(arch_ints_disabled());
         mask = mp_get_online_mask() & ~cpu_num_to_mask(arch_curr_cpu_num());
+    } else {
+        // Mask any offline CPUs from target list
+        mask &= mp_get_online_mask();
     }
-
-    // Mask any offline CPUs from target list
-    mask &= mp_get_online_mask();
 
     // disable interrupts so our current CPU doesn't change
     spin_lock_saved_state_t irqstate;
@@ -281,7 +280,7 @@ cleanup_mutex:
     return status;
 }
 
-// Unplug a single CPU.  Must be called while hodling the hotplug lock
+// Unplug a single CPU.  Must be called while holding the hotplug lock
 static zx_status_t mp_unplug_cpu_mask_single_locked(cpu_num_t cpu_id) {
     // Wait for |cpu_id| to complete any in-progress DPCs and terminate its DPC thread.  Later, once
     // nothing is running on it, we'll migrate its queued DPCs to another CPU.
@@ -385,7 +384,7 @@ cleanup_mutex:
     return status;
 }
 
-void mp_mbx_generic_irq(void*) {
+interrupt_eoi mp_mbx_generic_irq(void*) {
     DEBUG_ASSERT(arch_ints_disabled());
     const cpu_num_t local_cpu = arch_curr_cpu_num();
 
@@ -402,9 +401,11 @@ void mp_mbx_generic_irq(void*) {
 
         task->func(task->context);
     }
+
+    return IRQ_EOI_DEACTIVATE;
 }
 
-void mp_mbx_reschedule_irq(void*) {
+interrupt_eoi mp_mbx_reschedule_irq(void*) {
     const cpu_num_t cpu = arch_curr_cpu_num();
 
     LTRACEF("cpu %u\n", cpu);
@@ -414,15 +415,19 @@ void mp_mbx_reschedule_irq(void*) {
     if (mp.active_cpus & cpu_num_to_mask(cpu)) {
         thread_preempt_set_pending();
     }
+
+    return IRQ_EOI_DEACTIVATE;
 }
 
-void mp_mbx_interrupt_irq(void*) {
+interrupt_eoi mp_mbx_interrupt_irq(void*) {
     const cpu_num_t cpu = arch_curr_cpu_num();
 
     LTRACEF("cpu %u\n", cpu);
 
     // do nothing, the entire point of this interrupt is to simply have one
     // delivered to the cpu.
+
+    return IRQ_EOI_DEACTIVATE;
 }
 
 __WEAK zx_status_t arch_mp_cpu_hotplug(uint cpu_id) {

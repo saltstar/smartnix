@@ -6,8 +6,8 @@
 #include <ddk/debug.h>
 #include <ddk/driver.h>
 #include <ddk/platform-defs.h>
-#include <ddk/protocol/usb-hci.h>
-#include <ddk/protocol/usb.h>
+#include <ddk/protocol/usb/hci.h>
+#include <ddk/protocol/pci-lib.h>
 
 #include <hw/arch_ops.h>
 #include <hw/reg.h>
@@ -43,7 +43,7 @@ zx_status_t xhci_add_device(xhci_t* xhci, int slot_id, int hub_address, int spee
         return ZX_ERR_INTERNAL;
     }
 
-    return usb_bus_add_device(&xhci->bus, slot_id, hub_address, speed);
+    return usb_bus_interface_add_device(&xhci->bus, slot_id, hub_address, speed);
 }
 
 void xhci_remove_device(xhci_t* xhci, int slot_id) {
@@ -54,15 +54,16 @@ void xhci_remove_device(xhci_t* xhci, int slot_id) {
         return;
     }
 
-    usb_bus_remove_device(&xhci->bus, slot_id);
+    usb_bus_interface_remove_device(&xhci->bus, slot_id);
 }
 
-static void xhci_hci_request_queue(void* ctx, usb_request_t* req) {
+static void xhci_hci_request_queue(void* ctx, usb_request_t* usb_request,
+                                   const usb_request_complete_t* complete_cb) {
     auto* xhci = static_cast<xhci_t*>(ctx);
-    xhci_request_queue(xhci, req);
+    xhci_request_queue(xhci, usb_request, complete_cb);
 }
 
-static void xhci_set_bus_interface(void* ctx, usb_bus_interface_t* bus) {
+static void xhci_set_bus_interface(void* ctx, const usb_bus_interface_t* bus) {
     auto* xhci = static_cast<xhci_t*>(ctx);
 
     if (bus) {
@@ -81,8 +82,8 @@ static size_t xhci_get_max_device_count(void* ctx) {
 }
 
 static zx_status_t xhci_enable_ep(void* ctx, uint32_t device_id,
-                                  usb_endpoint_descriptor_t* ep_desc,
-                                  usb_ss_ep_comp_descriptor_t* ss_comp_desc, bool enable) {
+                                  const usb_endpoint_descriptor_t* ep_desc,
+                                  const usb_ss_ep_comp_descriptor_t* ss_comp_desc, bool enable) {
     auto* xhci = static_cast<xhci_t*>(ctx);
     return xhci_enable_endpoint(xhci, device_id, ep_desc, ss_comp_desc, enable);
 }
@@ -93,26 +94,46 @@ static uint64_t xhci_get_frame(void* ctx) {
 }
 
 static zx_status_t xhci_config_hub(void* ctx, uint32_t device_id, usb_speed_t speed,
-                            usb_hub_descriptor_t* descriptor) {
+                                   const usb_hub_descriptor_t* descriptor) {
     auto* xhci = static_cast<xhci_t*>(ctx);
     return xhci_configure_hub(xhci, device_id, speed, descriptor);
 }
 
-static zx_status_t xhci_hub_device_added(void* ctx, uint32_t hub_address, int port,
+static zx_status_t xhci_hub_device_added(void* ctx, uint32_t hub_address, uint32_t port,
                                   usb_speed_t speed) {
     auto* xhci = static_cast<xhci_t*>(ctx);
     return xhci_enumerate_device(xhci, hub_address, port, speed);
 }
 
-static zx_status_t xhci_hub_device_removed(void* ctx, uint32_t hub_address, int port) {
+static zx_status_t xhci_hub_device_removed(void* ctx, uint32_t hub_address, uint32_t port) {
     auto* xhci = static_cast<xhci_t*>(ctx);
     xhci_device_disconnected(xhci, hub_address, port);
     return ZX_OK;
 }
 
+static zx_status_t xhci_hub_device_reset(void* ctx, uint32_t hub_address, uint32_t port) {
+    auto* xhci = static_cast<xhci_t*>(ctx);
+    return xhci_device_reset(xhci, hub_address, port);
+}
+
 static zx_status_t xhci_reset_ep(void* ctx, uint32_t device_id, uint8_t ep_address) {
     auto* xhci = static_cast<xhci_t*>(ctx);
     return xhci_reset_endpoint(xhci, device_id, ep_address);
+}
+
+static zx_status_t xhci_reset_device(void* ctx, uint32_t hub_address, uint32_t device_id) {
+    auto* xhci = static_cast<xhci_t*>(ctx);
+
+    auto* slot = &xhci->slots[device_id];
+    uint32_t port = slot->port;
+    if (slot->hub_address == 0) {
+        // Convert real port number to virtual root hub number.
+        port = xhci->rh_port_map[port - 1] + 1;
+    }
+    zxlogf(TRACE, "xhci_reset_device slot_id: %u port: %u hub_address: %u\n",
+           device_id, port, hub_address);
+
+    return usb_bus_interface_reset_port(&xhci->bus, hub_address, port, /* enumerating */ false);
 }
 
 static size_t xhci_get_max_transfer_size(void* ctx, uint32_t device_id, uint8_t ep_address) {
@@ -133,12 +154,6 @@ static zx_status_t xhci_cancel_all(void* ctx, uint32_t device_id, uint8_t ep_add
     return xhci_cancel_transfers(xhci, device_id, xhci_endpoint_index(ep_address));
 }
 
-static zx_status_t xhci_get_bti(void* ctx, zx_handle_t* out_handle) {
-    auto* xhci = static_cast<xhci_t*>(ctx);
-    *out_handle = xhci->bti_handle;
-    return ZX_OK;
-}
-
 //Returns the public request size plus its private context size.
 static size_t xhci_get_request_size(void* ctx) {
     return sizeof(xhci_usb_request_internal_t) + sizeof(usb_request_t);
@@ -153,16 +168,20 @@ usb_hci_protocol_ops_t xhci_hci_protocol = {
     .configure_hub = xhci_config_hub,
     .hub_device_added = xhci_hub_device_added,
     .hub_device_removed = xhci_hub_device_removed,
+    .hub_device_reset = xhci_hub_device_reset,
     .reset_endpoint = xhci_reset_ep,
+    .reset_device = xhci_reset_device,
     .get_max_transfer_size = xhci_get_max_transfer_size,
     .cancel_all = xhci_cancel_all,
-    .get_bti = xhci_get_bti,
     .get_request_size = xhci_get_request_size,
 };
 
-void xhci_request_queue(xhci_t* xhci, usb_request_t* req) {
+void xhci_request_queue(xhci_t* xhci, usb_request_t* req,
+                        const usb_request_complete_t* complete_cb) {
     zx_status_t status;
 
+    xhci_usb_request_internal_t* req_int = USB_REQ_TO_XHCI_INTERNAL(req);
+    req_int->complete_cb = *complete_cb;
     if (req->header.length > xhci_get_max_transfer_size(xhci->zxdev, req->header.device_id,
                                                         req->header.ep_address)) {
         status = ZX_ERR_INVALID_ARGS;
@@ -171,7 +190,7 @@ void xhci_request_queue(xhci_t* xhci, usb_request_t* req) {
     }
 
     if (status != ZX_OK && status != ZX_ERR_BUFFER_TOO_SMALL) {
-        usb_request_complete(req, status, 0);
+        usb_request_complete(req, status, 0, complete_cb);
     }
 }
 
@@ -350,14 +369,7 @@ static zx_status_t usb_xhci_bind_pci(zx_device_t* parent, pci_protocol_t* pci) {
      * eXtensible Host Controller Interface revision 1.1, section 5, xhci
      * should only use BARs 0 and 1. 0 for 32 bit addressing, and 0+1 for 64 bit addressing.
      */
-    zx_pci_bar_t bar;
-    status = pci_get_bar(pci, 0u, &bar);
-    if (status != ZX_OK) {
-        zxlogf(ERROR, "usb_xhci_bind could not find bar\n");
-        goto error_return;
-    }
-    ZX_ASSERT(bar.type == ZX_PCI_BAR_TYPE_MMIO);
-    status = mmio_buffer_init(&xhci->mmio, 0, bar.size, bar.handle, ZX_CACHE_POLICY_UNCACHED);
+    status = pci_map_bar_buffer(pci, 0u, ZX_CACHE_POLICY_UNCACHED, &xhci->mmio);
     if (status != ZX_OK) {
         zxlogf(ERROR, "usb_xhci_bind could not map bar\n");
         goto error_return;
@@ -449,7 +461,7 @@ static zx_status_t usb_xhci_bind_pdev(zx_device_t* parent, pdev_protocol_t* pdev
         goto error_return;
     }
 
-    status = pdev_map_mmio_buffer2(pdev, PDEV_MMIO_INDEX, ZX_CACHE_POLICY_UNCACHED_DEVICE,
+    status = pdev_map_mmio_buffer(pdev, PDEV_MMIO_INDEX, ZX_CACHE_POLICY_UNCACHED_DEVICE,
                                   &xhci->mmio);
     if (status != ZX_OK) {
         zxlogf(ERROR, "usb_xhci_bind_pdev: pdev_map_mmio failed\n");
@@ -497,3 +509,27 @@ zx_status_t usb_xhci_bind(void* ctx, zx_device_t* parent) {
 
     return status;
 }
+
+static zx_driver_ops_t xhci_driver_ops = [](){
+    zx_driver_ops_t ops;
+    ops.version = DRIVER_OPS_VERSION;
+    ops.bind = usb_xhci_bind;
+    return ops;
+}();
+
+// clang-format off
+ZIRCON_DRIVER_BEGIN(usb_xhci, xhci_driver_ops, "zircon", "0.1", 9)
+    // PCI binding support
+    BI_GOTO_IF(NE, BIND_PROTOCOL, ZX_PROTOCOL_PCI, 0),
+    BI_ABORT_IF(NE, BIND_PCI_CLASS, 0x0C),
+    BI_ABORT_IF(NE, BIND_PCI_SUBCLASS, 0x03),
+    BI_MATCH_IF(EQ, BIND_PCI_INTERFACE, 0x30),
+
+    // platform bus binding support
+    BI_LABEL(0),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_VID, PDEV_VID_GENERIC),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_PID, PDEV_PID_GENERIC),
+    BI_MATCH_IF(EQ, BIND_PLATFORM_DEV_DID, PDEV_DID_USB_XHCI),
+
+    BI_ABORT(),
+ZIRCON_DRIVER_END(usb_xhci)

@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#pragma once
+#ifndef TRACE_READER_READER_H_
+#define TRACE_READER_READER_H_
 
 #include <trace-reader/records.h>
 
@@ -12,10 +13,11 @@
 #include <fbl/macros.h>
 #include <fbl/string.h>
 #include <fbl/string_piece.h>
-#include <fbl/type_support.h>
 #include <fbl/unique_ptr.h>
 
 #include <zircon/assert.h>
+
+#include <utility>
 
 namespace trace {
 
@@ -111,7 +113,7 @@ private:
                                   fbl::unique_ptr<StringTableEntry>> {
         StringTableEntry(trace_string_index_t index,
                          fbl::String string)
-            : index(index), string(fbl::move(string)) {}
+            : index(index), string(std::move(string)) {}
 
         trace_string_index_t const index;
         fbl::String const string;
@@ -187,3 +189,5 @@ private:
 };
 
 } // namespace trace
+
+#endif  // TRACE_READER_READER_H_

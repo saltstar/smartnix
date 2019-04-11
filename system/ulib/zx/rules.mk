@@ -11,17 +11,19 @@ MODULE_TYPE := userlib
 MODULE_COMPILEFLAGS += -fvisibility=hidden
 
 MODULE_SRCS += \
+    $(LOCAL_DIR)/bti.cpp \
     $(LOCAL_DIR)/channel.cpp \
     $(LOCAL_DIR)/debuglog.cpp \
     $(LOCAL_DIR)/event.cpp \
     $(LOCAL_DIR)/eventpair.cpp \
     $(LOCAL_DIR)/fifo.cpp \
     $(LOCAL_DIR)/guest.cpp \
+    $(LOCAL_DIR)/iommu.cpp \
     $(LOCAL_DIR)/interrupt.cpp \
     $(LOCAL_DIR)/job.cpp \
-    $(LOCAL_DIR)/log.cpp \
     $(LOCAL_DIR)/port.cpp \
     $(LOCAL_DIR)/process.cpp \
+    $(LOCAL_DIR)/profile.cpp \
     $(LOCAL_DIR)/resource.cpp \
     $(LOCAL_DIR)/socket.cpp \
     $(LOCAL_DIR)/thread.cpp \

@@ -9,16 +9,16 @@
 
 namespace {
 
-// The number of possible handles in the arena.
+// The number of outstanding (live) handles in the arena.
 constexpr size_t kMaxHandleCount = 256 * 1024u;
 
 // Warning level: high_handle_count() is called when
 // there are this many outstanding handles.
 constexpr size_t kHighHandleCount = (kMaxHandleCount * 7) / 8;
 
-KCOUNTER(handle_count_new, "kernel.handles.new");
+KCOUNTER(handle_count_made, "kernel.handles.made");
 KCOUNTER(handle_count_duped, "kernel.handles.duped");
-KCOUNTER(handle_count_freed, "kernel.handles.freed");
+KCOUNTER(handle_count_live, "kernel.handles.live");
 
 // Masks for building a Handle's base_value, which ProcessDispatcher
 // uses to create zx_handle_t values.
@@ -112,8 +112,9 @@ HandleOwner Handle::Make(fbl::RefPtr<Dispatcher> dispatcher,
     void* addr = Alloc(dispatcher, "new", &base_value);
     if (unlikely(!addr))
         return nullptr;
-    kcounter_add(handle_count_new, 1);
-    return HandleOwner(new (addr) Handle(fbl::move(dispatcher),
+    kcounter_add(handle_count_made, 1);
+    kcounter_add(handle_count_live, 1);
+    return HandleOwner(new (addr) Handle(ktl::move(dispatcher),
                                          rights, base_value));
 }
 
@@ -121,7 +122,7 @@ HandleOwner Handle::Make(fbl::RefPtr<Dispatcher> dispatcher,
 Handle::Handle(fbl::RefPtr<Dispatcher> dispatcher, zx_rights_t rights,
                uint32_t base_value)
     : process_id_(0u),
-      dispatcher_(fbl::move(dispatcher)),
+      dispatcher_(ktl::move(dispatcher)),
       rights_(rights),
       base_value_(base_value) {
 }
@@ -132,6 +133,7 @@ HandleOwner Handle::Dup(Handle* source, zx_rights_t rights) {
     if (unlikely(!addr))
         return nullptr;
     kcounter_add(handle_count_duped, 1);
+    kcounter_add(handle_count_live, 1);
     return HandleOwner(new (addr) Handle(source, rights, base_value));
 }
 
@@ -189,7 +191,7 @@ void Handle::Delete() {
 
     // If |disp| is the last reference then the dispatcher object
     // gets destroyed here.
-    kcounter_add(handle_count_freed, 1);
+    kcounter_add(handle_count_live, -1);
 }
 
 Handle* Handle::FromU32(uint32_t value) TA_NO_THREAD_SAFETY_ANALYSIS {

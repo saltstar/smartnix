@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // Buffer layout.
 // This is an internal header between trace-engine and trace-provider.
@@ -127,6 +130,6 @@ static_assert(sizeof(trace_buffer_header) == 128, "");
 //
 // This function is not thread-safe relative to the collected data, and
 // assumes tracing is stopped or at least paused.
-__EXPORT void trace_context_snapshot_buffer_header(
+void trace_context_snapshot_buffer_header(
     trace_prolonged_context_t* context,
     ::trace::internal::trace_buffer_header* header);

@@ -1,10 +1,13 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
 #include <ddk/binding.h>
 #include <ddk/device.h>
-#include <ddk/protocol/intel-hda-codec.h>
-#include <ddk/protocol/intel-hda-dsp.h>
+#include <ddk/protocol/intelhda/codec.h>
+#include <ddk/protocol/intelhda/dsp.h>
 #include <fbl/mutex.h>
 #include <lib/fzl/vmo-mapper.h>
 

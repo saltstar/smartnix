@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2018 The Fuchsia Authors
+#
+# Use of this source code is governed by a MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT
+
 readonly SCRIPT_DIR="$(cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd)"
 readonly ZIRCON_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly PREBUILTS_DIR="$(cd "${ZIRCON_ROOT}/prebuilt" && pwd)"
@@ -203,7 +209,11 @@ for_each_package() {
     */${PLATFORM})
       package="${package%/*}"
       # Subdirectories are packed in .zip files.
-      download_file="${package}.zip"
+      if [[ "$package" == third_party/* ]]; then
+        download_file="${package#*/}.zip"
+      else
+        download_file="${package}.zip"
+      fi
       single_file=false
       package_suffix="/${PLATFORM}"
       ;;

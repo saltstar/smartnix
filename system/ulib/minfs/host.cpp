@@ -7,13 +7,13 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <fbl/limits.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_ptr.h>
 #include <fs/vfs.h>
@@ -21,6 +21,8 @@
 #include <minfs/host.h>
 #include <minfs/minfs.h>
 #include <zircon/assert.h>
+
+#include <utility>
 
 #include "minfs-private.h"
 
@@ -105,49 +107,49 @@ struct fakeFs {
 int emu_mkfs(const char* path) {
     fbl::unique_fd fd(open(path, O_RDWR));
     if (!fd) {
-        fprintf(stderr, "error: could not open path %s\n", path);
+        FS_TRACE_ERROR("error: could not open path %s\n", path);
         return -1;
     }
 
     struct stat s;
     if (fstat(fd.get(), &s) < 0) {
-        fprintf(stderr, "error: minfs could not find end of file/device\n");
+        FS_TRACE_ERROR("error: minfs could not find end of file/device\n");
         return -1;
     }
 
     off_t size = s.st_size / minfs::kMinfsBlockSize;
 
     fbl::unique_ptr<minfs::Bcache> bc;
-    if (minfs::Bcache::Create(&bc, fbl::move(fd), (uint32_t) size) < 0) {
-        fprintf(stderr, "error: cannot create block cache\n");
+    if (minfs::Bcache::Create(&bc, std::move(fd), (uint32_t) size) < 0) {
+        FS_TRACE_ERROR("error: cannot create block cache\n");
         return -1;
     }
 
-    return Mkfs(fbl::move(bc));
+    return Mkfs(std::move(bc));
 }
 
 int emu_mount(const char* path) {
     fbl::unique_fd fd(open(path, O_RDWR));
     if (!fd) {
-        fprintf(stderr, "error: could not open path %s\n", path);
+        FS_TRACE_ERROR("error: could not open path %s\n", path);
         return -1;
     }
 
     struct stat s;
     if (fstat(fd.get(), &s) < 0) {
-        fprintf(stderr, "error: minfs could not find end of file/device\n");
+        FS_TRACE_ERROR("error: minfs could not find end of file/device\n");
         return 0;
     }
 
     off_t size = s.st_size / minfs::kMinfsBlockSize;
 
     fbl::unique_ptr<minfs::Bcache> bc;
-    if (minfs::Bcache::Create(&bc, fbl::move(fd), (uint32_t) size) < 0) {
-        fprintf(stderr, "error: cannot create block cache\n");
+    if (minfs::Bcache::Create(&bc, std::move(fd), (uint32_t) size) < 0) {
+        FS_TRACE_ERROR("error: cannot create block cache\n");
         return -1;
     }
 
-    int r = minfs::Mount(fbl::move(bc), &fakeFs.fake_root);
+    int r = minfs::Mount(std::move(bc), &fakeFs.fake_root);
     if (r == 0) {
         fakeFs.fake_vfs.reset(fakeFs.fake_root->fs_);
     }
@@ -155,7 +157,7 @@ int emu_mount(const char* path) {
 }
 
 int emu_mount_bcache(fbl::unique_ptr<minfs::Bcache> bc) {
-    int r = minfs::Mount(fbl::move(bc), &fakeFs.fake_root) == ZX_OK ? 0 : -1;
+    int r = minfs::Mount(std::move(bc), &fakeFs.fake_root) == ZX_OK ? 0 : -1;
     if (r == 0) {
         fakeFs.fake_vfs.reset(fakeFs.fake_root->fs_);
     }
@@ -254,7 +256,7 @@ ssize_t emu_write(int fd, const void* buf, size_t count) {
     zx_status_t status = f->vn->Write(buf, count, f->off, &actual);
     if (status == ZX_OK) {
         f->off += actual;
-        ZX_DEBUG_ASSERT(actual <= fbl::numeric_limits<ssize_t>::max());
+        ZX_DEBUG_ASSERT(actual <= std::numeric_limits<ssize_t>::max());
         return static_cast<ssize_t>(actual);
     }
 
@@ -270,7 +272,7 @@ ssize_t emu_pwrite(int fd, const void* buf, size_t count, off_t off) {
     size_t actual;
     zx_status_t status = f->vn->Write(buf, count, off, &actual);
     if (status == ZX_OK) {
-        ZX_DEBUG_ASSERT(actual <= fbl::numeric_limits<ssize_t>::max());
+        ZX_DEBUG_ASSERT(actual <= std::numeric_limits<ssize_t>::max());
         return static_cast<ssize_t>(actual);
     }
 
@@ -287,7 +289,7 @@ ssize_t emu_read(int fd, void* buf, size_t count) {
     zx_status_t status = f->vn->Read(buf, count, f->off, &actual);
     if (status == ZX_OK) {
         f->off += actual;
-        ZX_DEBUG_ASSERT(actual <= fbl::numeric_limits<ssize_t>::max());
+        ZX_DEBUG_ASSERT(actual <= std::numeric_limits<ssize_t>::max());
         return static_cast<ssize_t>(actual);
     }
     ZX_DEBUG_ASSERT(status < 0);
@@ -302,7 +304,7 @@ ssize_t emu_pread(int fd, void* buf, size_t count, off_t off) {
     size_t actual;
     zx_status_t status = f->vn->Read(buf, count, off, &actual);
     if (status == ZX_OK) {
-        ZX_DEBUG_ASSERT(actual <= fbl::numeric_limits<ssize_t>::max());
+        ZX_DEBUG_ASSERT(actual <= std::numeric_limits<ssize_t>::max());
         return static_cast<ssize_t>(actual);
     }
     ZX_DEBUG_ASSERT(status < 0);

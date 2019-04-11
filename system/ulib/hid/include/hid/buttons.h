@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -29,5 +32,6 @@ typedef struct buttons_input_rpt {
 } __PACKED buttons_input_rpt_t;
 
 size_t get_buttons_report_desc(const uint8_t** buf);
+void fill_button_in_report(uint8_t id, bool value, buttons_input_rpt_t* rpt);
 
 __END_CDECLS

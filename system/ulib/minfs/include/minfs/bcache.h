@@ -27,6 +27,8 @@
 #include <fs/vnode.h>
 #include <minfs/format.h>
 
+#include <atomic>
+
 namespace minfs {
 
 class Bcache : public fs::TransactionHandler {
@@ -78,7 +80,7 @@ public:
 
 #ifdef __Fuchsia__
     zx_status_t GetDevicePath(size_t buffer_len, char* out_name, size_t* out_len);
-    zx_status_t AttachVmo(zx_handle_t vmo, vmoid_t* out) const;
+    zx_status_t AttachVmo(const zx::vmo& vmo, vmoid_t* out) const;
 
     zx_status_t FVMQuery(fvm_info_t* info) const {
         ssize_t r = ioctl_block_fvm_query(fd_.get(), info);
@@ -137,7 +139,7 @@ private:
 #ifdef __Fuchsia__
     block_client::Client fifo_client_{}; // Fast path to interact with block device
     block_info_t info_{};
-    fbl::atomic<groupid_t> next_group_ = {};
+    std::atomic<groupid_t> next_group_ = {};
 #else
     off_t offset_{};
 #endif

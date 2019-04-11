@@ -1,7 +1,12 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "qemu-stream.h"
 
 #include <fbl/vector.h>
+
+#include <utility>
 
 namespace audio {
 namespace intel_hda {
@@ -60,7 +65,7 @@ zx_status_t QemuStream::OnActivateLocked() {
     if (!ac.check())
         return ZX_ERR_NO_MEMORY;
 
-    SetSupportedFormatsLocked(fbl::move(supported_formats));
+    SetSupportedFormatsLocked(std::move(supported_formats));
 
     return DisableConverterLocked();
 }

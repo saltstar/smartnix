@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <iostream>
 #include "banjo/flat_ast.h"
@@ -6,6 +9,7 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <deque>
 #include <regex>
 #include <sstream>
 
@@ -69,7 +73,6 @@ private:
 };
 
 struct MethodScope {
-    Scope<uint32_t> ordinals;
     Scope<StringView> names;
     Scope<const Interface*> interfaces;
 };
@@ -744,13 +747,6 @@ bool Library::ConsumeInterfaceDeclaration(
     std::vector<Interface::Method> methods;
     for (auto& method : interface_declaration->methods) {
         auto attributes = std::move(method->attributes);
-        auto ordinal_literal = std::move(method->ordinal);
-        uint32_t value;
-        if (!ParseOrdinal<decltype(value)>(ordinal_literal.get(), &value))
-            return Fail(ordinal_literal->location(), "Unable to parse ordinal");
-        if (value == 0u)
-            return Fail(ordinal_literal->location(), "Banjo ordinals cannot be 0");
-        Ordinal ordinal(std::move(ordinal_literal), value);
 
         SourceLocation method_name = method->identifier->location();
 
@@ -781,7 +777,6 @@ bool Library::ConsumeInterfaceDeclaration(
         assert(maybe_request != nullptr || maybe_response != nullptr);
 
         methods.emplace_back(std::move(attributes),
-                             std::move(ordinal),
                              std::move(method_name), std::move(maybe_request),
                              std::move(maybe_response));
     }
@@ -1083,9 +1078,8 @@ Decl* Library::LookupDeclByType(const Type* type, LookupOption option) const {
         case flat::Type::Kind::kPrimitive:
             return nullptr;
         case flat::Type::Kind::kVector: {
-            return nullptr;
-            //type = static_cast<const flat::VectorType*>(type)->element_type.get();
-            //continue;
+            type = static_cast<const flat::VectorType*>(type)->element_type.get();
+            continue;
         }
         case flat::Type::Kind::kArray: {
             type = static_cast<const flat::ArrayType*>(type)->element_type.get();
@@ -1226,14 +1220,16 @@ bool Library::SortDeclarations() {
         std::set<Decl*> deps;
         if (!DeclDependencies(decl, &deps))
             return false;
-        degrees[decl] += deps.size();
         for (Decl* dep : deps) {
-            inverse_dependencies[dep].push_back(decl);
+            if (dep != decl) {
+                degrees[decl] +=1;
+                inverse_dependencies[dep].push_back(decl);
+            }
         }
     }
 
     // Start with all decls that have no incoming edges.
-    std::vector<Decl*> decls_without_deps;
+    std::deque<Decl*> decls_without_deps;
     for (const auto& decl_and_degree : degrees) {
         if (decl_and_degree.second == 0u) {
             decls_without_deps.push_back(decl_and_degree.first);
@@ -1242,8 +1238,8 @@ bool Library::SortDeclarations() {
 
     while (!decls_without_deps.empty()) {
         // Pull one out of the queue.
-        auto decl = decls_without_deps.back();
-        decls_without_deps.pop_back();
+        auto decl = decls_without_deps.front();
+        decls_without_deps.pop_front();
         assert(degrees[decl] == 0u);
         declaration_order_.push_back(decl);
 
@@ -1254,8 +1250,9 @@ bool Library::SortDeclarations() {
             uint32_t& degree = degrees[inverse_dep];
             assert(degree != 0u);
             degree -= 1;
-            if (degree == 0u)
+            if (degree == 0u) {
                 decls_without_deps.push_back(inverse_dep);
+            }
         }
     }
 
@@ -1331,13 +1328,8 @@ bool Library::CompileInterface(Interface* interface_declaration) {
             auto name_result = method_scope.names.Insert(method.name.data(), method.name);
             if (!name_result.ok())
                 return Fail(method.name,
-                            "Multiple methods with the same name in an interface; last occurance was at " +
+                            "Multiple methods with the same name in an interface; last occurrence was at " +
                                 name_result.previous_occurance().position());
-            auto ordinal_result = method_scope.ordinals.Insert(method.ordinal.Value(), method.name);
-            if (!ordinal_result.ok())
-                return Fail(method.name,
-                            "Mulitple methods with the same ordinal in an interface; last occurance was at " +
-                                ordinal_result.previous_occurance().position());
 
             // Add a pointer to this method to the interface_declarations list.
             interface_declaration->all_methods.push_back(&method);

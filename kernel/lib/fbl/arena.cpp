@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include <err.h>
+#include <new>
 #include <stdio.h>
 #include <string.h>
 #include <trace.h>
@@ -10,7 +11,6 @@
 #include <vm/vm.h>
 #include <vm/vm_aspace.h>
 #include <vm/vm_object_paged.h>
-#include <zxcpp/new.h>
 #include <fbl/auto_call.h>
 
 #define LOCAL_TRACE 0
@@ -178,7 +178,7 @@ void* Arena::Pool::Pop() {
                     name_, committed_, nc, st);
             // Try to clean up any committed pages, but don't require
             // that it succeeds.
-            mapping_->DecommitRange(offset, len, /* decommitted */ nullptr);
+            mapping_->DecommitRange(offset, len);
             return nullptr;
         }
         committed_ = nc;
@@ -209,7 +209,7 @@ void Arena::Pool::Push(void* p) {
         const size_t offset = reinterpret_cast<vaddr_t>(nc) - mapping_->base();
         const size_t len = committed_ - nc;
         // If this fails or decommits less than we asked for, oh well.
-        mapping_->DecommitRange(offset, len, /* decommitted */ nullptr);
+        mapping_->DecommitRange(offset, len);
         committed_ = nc;
     }
 }

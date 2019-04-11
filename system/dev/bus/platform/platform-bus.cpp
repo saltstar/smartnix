@@ -25,6 +25,8 @@
 #include <zircon/process.h>
 #include <zircon/syscalls/iommu.h>
 
+#include <utility>
+
 namespace platform_bus {
 
 zx_status_t PlatformBus::Proxy(
@@ -47,11 +49,11 @@ zx_status_t PlatformBus::Proxy(
 }
 
 zx_status_t PlatformBus::IommuGetBti(uint32_t iommu_index, uint32_t bti_id,
-                                     zx_handle_t* out_handle) {
+                                     zx::bti* out_bti) {
     if (iommu_index != 0) {
         return ZX_ERR_OUT_OF_RANGE;
     }
-    return zx_bti_create(iommu_handle_.get(), 0, bti_id, out_handle);
+    return zx::bti::create(iommu_handle_, 0, bti_id, out_bti);
 }
 
 zx_status_t PlatformBus::PBusRegisterProtocol(uint32_t proto_id, const void* protocol,
@@ -66,7 +68,7 @@ zx_status_t PlatformBus::PBusRegisterProtocol(uint32_t proto_id, const void* pro
         if (proxy_cb->callback != nullptr) {
             return ZX_ERR_INVALID_ARGS;
         }
-        gpio_ = ddk::GpioImplProtocolProxy(static_cast<const gpio_impl_protocol_t*>(protocol));
+        gpio_ = ddk::GpioImplProtocolClient(static_cast<const gpio_impl_protocol_t*>(protocol));
         break;
     }
     case ZX_PROTOCOL_I2C_IMPL: {
@@ -79,21 +81,21 @@ zx_status_t PlatformBus::PBusRegisterProtocol(uint32_t proto_id, const void* pro
             return status;
         }
 
-        i2c_ = ddk::I2cImplProtocolProxy(proto);
+        i2c_ = ddk::I2cImplProtocolClient(proto);
         break;
     }
     case ZX_PROTOCOL_CLK: {
         if (proxy_cb->callback != nullptr) {
             return ZX_ERR_INVALID_ARGS;
         }
-        clk_ = ddk::ClkProtocolProxy(static_cast<const clk_protocol_t*>(protocol));
+        clk_ = ddk::ClkProtocolClient(static_cast<const clk_protocol_t*>(protocol));
         break;
     }
     case ZX_PROTOCOL_IOMMU: {
         if (proxy_cb->callback != nullptr) {
             return ZX_ERR_INVALID_ARGS;
         }
-        iommu_ = ddk::IommuProtocolProxy(static_cast<const iommu_protocol_t*>(protocol));
+        iommu_ = ddk::IommuProtocolClient(static_cast<const iommu_protocol_t*>(protocol));
         break;
     }
     default: {
@@ -115,7 +117,7 @@ zx_status_t PlatformBus::PBusRegisterProtocol(uint32_t proto_id, const void* pro
             return ZX_ERR_NO_MEMORY;
         }
 
-        proto_proxys_.insert(fbl::move(proxy));
+        proto_proxys_.insert(std::move(proxy));
         sync_completion_signal(&proto_completion_);
         return ZX_OK;
     }
@@ -194,17 +196,13 @@ zx_status_t PlatformBus::PBusProtocolDeviceAdd(uint32_t proto_id, const pbus_dev
     return ZX_OK;
 }
 
-const char* PlatformBus::PBusGetBoardName() {
-    return board_info_.board_name;
+zx_status_t PlatformBus::PBusGetBoardInfo(pdev_board_info_t* out_info) {
+    memcpy(out_info, &board_info_, sizeof(board_info_));
+    return ZX_OK;
 }
 
 zx_status_t PlatformBus::PBusSetBoardInfo(const pbus_board_info_t* info) {
     board_info_.board_revision = info->board_revision;
-    return ZX_OK;
-}
-
-zx_status_t PlatformBus::GetBoardInfo(pdev_board_info_t* out_info) {
-    memcpy(out_info, &board_info_, sizeof(board_info_));
     return ZX_OK;
 }
 
@@ -213,7 +211,7 @@ zx_status_t PlatformBus::DdkGetProtocol(uint32_t proto_id, void* out) {
     case ZX_PROTOCOL_PBUS: {
         auto proto = static_cast<pbus_protocol_t*>(out);
         proto->ctx = this;
-        proto->ops = &ops_;
+        proto->ops = &pbus_protocol_ops_;
         return ZX_OK;
     }
     case ZX_PROTOCOL_GPIO_IMPL:
@@ -339,6 +337,9 @@ zx_status_t PlatformBus::ReadZbi(zx::vmo zbi) {
             board_info_.board_revision = 0;
             got_platform_id = true;
 
+            zxlogf(INFO, "platform bus: VID: %u PID: %u board: \"%s\"\n", platform_id.vid,
+                   platform_id.pid, platform_id.board_name);
+
             // Publish board name to sysinfo driver
             status = device_publish_metadata(parent(), "/dev/misc/sysinfo",
                                              DEVICE_METADATA_BOARD_NAME, platform_id.board_name,
@@ -436,7 +437,7 @@ zx_status_t PlatformBus::I2cInit(const i2c_impl_protocol_t* i2c) {
             return status;
         }
 
-        i2c_buses_.push_back(fbl::move(i2c_bus));
+        i2c_buses_.push_back(std::move(i2c_bus));
     }
 
     return ZX_OK;
@@ -480,7 +481,7 @@ zx_status_t PlatformBus::Create(zx_device_t* parent, const char* name, zx::vmo z
         return ZX_ERR_NO_MEMORY;
     }
 
-    status = bus->Init(fbl::move(zbi));
+    status = bus->Init(std::move(zbi));
     if (status != ZX_OK) {
         return status;
     }
@@ -496,7 +497,7 @@ PlatformBus::PlatformBus(zx_device_t* parent)
 }
 
 zx_status_t PlatformBus::Init(zx::vmo zbi) {
-    auto status = ReadZbi(fbl::move(zbi));
+    auto status = ReadZbi(std::move(zbi));
     if (status != ZX_OK) {
         return status;
     }
@@ -504,10 +505,13 @@ zx_status_t PlatformBus::Init(zx::vmo zbi) {
     // Set up a dummy IOMMU protocol to use in the case where our board driver does not
     // set a real one.
     zx_iommu_desc_dummy_t desc;
-    status = zx_iommu_create(get_root_resource(), ZX_IOMMU_TYPE_DUMMY, &desc, sizeof(desc),
-                             iommu_handle_.reset_and_get_address());
-    if (status != ZX_OK) {
-        return status;
+    zx::unowned_resource root_resource(get_root_resource());
+    if (root_resource->is_valid()) {
+      status = zx::iommu::create(*root_resource, ZX_IOMMU_TYPE_DUMMY, &desc, sizeof(desc),
+                                 &iommu_handle_);
+      if (status != ZX_OK) {
+          return status;
+      }
     }
 
     // Then we attach the platform-bus device below it.
@@ -519,10 +523,22 @@ zx_status_t PlatformBus::Init(zx::vmo zbi) {
     return DdkAdd("platform", 0, props, fbl::count_of(props));
 }
 
-} // namespace platform_bus
-
 zx_status_t platform_bus_create(void* ctx, zx_device_t* parent, const char* name,
                                 const char* args, zx_handle_t zbi_vmo_handle) {
     zx::vmo zbi(zbi_vmo_handle);
-    return platform_bus::PlatformBus::Create(parent, name, fbl::move(zbi));
+    return platform_bus::PlatformBus::Create(parent, name, std::move(zbi));
 }
+
+static zx_driver_ops_t driver_ops = [](){
+    zx_driver_ops_t ops;
+    ops.version = DRIVER_OPS_VERSION;
+    ops.create = platform_bus_create;
+    return ops;
+}();
+
+} // namespace platform_bus
+
+ZIRCON_DRIVER_BEGIN(platform_bus, platform_bus::driver_ops, "zircon", "0.1", 1)
+    // devmgr loads us directly, so we need no binding information here
+    BI_ABORT_IF_AUTOBIND,
+ZIRCON_DRIVER_END(platform_bus)

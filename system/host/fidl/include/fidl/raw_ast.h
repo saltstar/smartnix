@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_RAW_AST_H_
 #define ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_RAW_AST_H_
@@ -228,7 +231,6 @@ public:
         kString,
         kHandle,
         kRequestHandle,
-        kPrimitive,
         kIdentifier,
     };
 
@@ -298,16 +300,6 @@ public:
     types::Nullability nullability;
 };
 
-class PrimitiveType : public Type {
-public:
-    explicit PrimitiveType(SourceElement const& element, types::PrimitiveSubtype subtype)
-        : Type(element.start_, element.end_, Kind::kPrimitive), subtype(subtype) {}
-
-    void Accept(TreeVisitor& visitor);
-
-    types::PrimitiveSubtype subtype;
-};
-
 class IdentifierType : public Type {
 public:
     IdentifierType(SourceElement const& element, std::unique_ptr<CompoundIdentifier> identifier, types::Nullability nullability)
@@ -321,8 +313,8 @@ public:
 
 class Using : public SourceElement {
 public:
-    Using(SourceElement const& element, std::unique_ptr<CompoundIdentifier> using_path, std::unique_ptr<Identifier> maybe_alias, std::unique_ptr<PrimitiveType> maybe_primitive)
-        : SourceElement(element), using_path(std::move(using_path)), maybe_alias(std::move(maybe_alias)), maybe_primitive(std::move(maybe_primitive)) {}
+    Using(SourceElement const& element, std::unique_ptr<CompoundIdentifier> using_path, std::unique_ptr<Identifier> maybe_alias, std::unique_ptr<IdentifierType> maybe_type)
+        : SourceElement(element), using_path(std::move(using_path)), maybe_alias(std::move(maybe_alias)), maybe_type(std::move(maybe_type)) {}
 
     void Accept(TreeVisitor& visitor);
 
@@ -330,7 +322,7 @@ public:
     std::unique_ptr<Identifier> maybe_alias;
     // TODO(pascal): We should be more explicit for type aliases such as
     // `using foo = int8;` and use a special purpose AST element.
-    std::unique_ptr<PrimitiveType> maybe_primitive;
+    std::unique_ptr<IdentifierType> maybe_type;
 };
 
 class ConstDeclaration : public SourceElement {
@@ -364,7 +356,7 @@ class EnumDeclaration : public SourceElement {
 public:
     EnumDeclaration(SourceElement const& element, std::unique_ptr<AttributeList> attributes,
                     std::unique_ptr<Identifier> identifier,
-                    std::unique_ptr<PrimitiveType> maybe_subtype,
+                    std::unique_ptr<IdentifierType> maybe_subtype,
                     std::vector<std::unique_ptr<EnumMember>> members)
         : SourceElement(element), attributes(std::move(attributes)), identifier(std::move(identifier)),
           maybe_subtype(std::move(maybe_subtype)), members(std::move(members)) {}
@@ -373,7 +365,7 @@ public:
 
     std::unique_ptr<AttributeList> attributes;
     std::unique_ptr<Identifier> identifier;
-    std::unique_ptr<PrimitiveType> maybe_subtype;
+    std::unique_ptr<IdentifierType> maybe_subtype;
     std::vector<std::unique_ptr<EnumMember>> members;
 };
 
@@ -404,10 +396,12 @@ public:
                     std::unique_ptr<Ordinal> ordinal,
                     std::unique_ptr<Identifier> identifier,
                     std::unique_ptr<ParameterList> maybe_request,
-                    std::unique_ptr<ParameterList> maybe_response)
+                    std::unique_ptr<ParameterList> maybe_response,
+                    std::unique_ptr<Type> maybe_error)
         : SourceElement(element), attributes(std::move(attributes)),
           ordinal(std::move(ordinal)), identifier(std::move(identifier)),
-          maybe_request(std::move(maybe_request)), maybe_response(std::move(maybe_response)) {}
+          maybe_request(std::move(maybe_request)), maybe_response(std::move(maybe_response)),
+          maybe_error(std::move(maybe_error)) { }
 
     void Accept(TreeVisitor& visitor);
 
@@ -416,6 +410,7 @@ public:
     std::unique_ptr<Identifier> identifier;
     std::unique_ptr<ParameterList> maybe_request;
     std::unique_ptr<ParameterList> maybe_response;
+    std::unique_ptr<Type> maybe_error;
 };
 
 class InterfaceDeclaration : public SourceElement {
@@ -541,6 +536,34 @@ public:
     std::vector<std::unique_ptr<UnionMember>> members;
 };
 
+class XUnionMember : public SourceElement {
+public:
+    XUnionMember(SourceElement const& element, std::unique_ptr<Type> type, std::unique_ptr<Identifier> identifier,
+                 std::unique_ptr<AttributeList> attributes)
+        : SourceElement(element), type(std::move(type)), identifier(std::move(identifier)), attributes(std::move(attributes)) {}
+
+    void Accept(TreeVisitor& visitor);
+
+    std::unique_ptr<Type> type;
+    std::unique_ptr<Identifier> identifier;
+    std::unique_ptr<AttributeList> attributes;
+};
+
+class XUnionDeclaration : public SourceElement {
+public:
+    XUnionDeclaration(SourceElement const& element, std::unique_ptr<AttributeList> attributes,
+                      std::unique_ptr<Identifier> identifier,
+                      std::vector<std::unique_ptr<XUnionMember>> members)
+        : SourceElement(element), attributes(std::move(attributes)), identifier(std::move(identifier)),
+          members(std::move(members)) {}
+
+    void Accept(TreeVisitor& visitor);
+
+    std::unique_ptr<AttributeList> attributes;
+    std::unique_ptr<Identifier> identifier;
+    std::vector<std::unique_ptr<XUnionMember>> members;
+};
+
 class File : public SourceElement {
 public:
     File(SourceElement const& element, Token end,
@@ -552,7 +575,8 @@ public:
          std::vector<std::unique_ptr<InterfaceDeclaration>> interface_declaration_list,
          std::vector<std::unique_ptr<StructDeclaration>> struct_declaration_list,
          std::vector<std::unique_ptr<TableDeclaration>> table_declaration_list,
-         std::vector<std::unique_ptr<UnionDeclaration>> union_declaration_list)
+         std::vector<std::unique_ptr<UnionDeclaration>> union_declaration_list,
+         std::vector<std::unique_ptr<XUnionDeclaration>> xunion_declaration_list)
         : SourceElement(element),
           attributes(std::move(attributes)),
           library_name(std::move(library_name)),
@@ -563,6 +587,7 @@ public:
           struct_declaration_list(std::move(struct_declaration_list)),
           table_declaration_list(std::move(table_declaration_list)),
           union_declaration_list(std::move(union_declaration_list)),
+          xunion_declaration_list(std::move(xunion_declaration_list)),
           end_(end) {}
 
     void Accept(TreeVisitor& visitor);
@@ -576,6 +601,7 @@ public:
     std::vector<std::unique_ptr<StructDeclaration>> struct_declaration_list;
     std::vector<std::unique_ptr<TableDeclaration>> table_declaration_list;
     std::vector<std::unique_ptr<UnionDeclaration>> union_declaration_list;
+    std::vector<std::unique_ptr<XUnionDeclaration>> xunion_declaration_list;
     Token end_;
 };
 

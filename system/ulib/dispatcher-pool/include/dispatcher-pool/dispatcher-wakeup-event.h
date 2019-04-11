@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -21,7 +24,7 @@ namespace dispatcher {
 // event becomes signaled at least once.  Returning an error from the process
 // handler will cause the event to automatically become deactivated.
 //
-// :: Activtation ::
+// :: Activation ::
 //
 // Activation simply requires a user to provide a valid ExecutionDomain and a
 // valid ProcessHandler.  The event handle itself will allocated internally.

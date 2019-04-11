@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <ddk/debug.h>
 #include <ddk/device.h>
@@ -92,7 +95,7 @@ zx_status_t a113_audio_device_init(a113_audio_device_t* audio_device,
     }
 
     // Map EE_AUDIO registers to our address space.
-    status = pdev_map_mmio_buffer2(&audio_device->pdev, 0 /* EE_AUDIO */,
+    status = pdev_map_mmio_buffer(&audio_device->pdev, 0 /* EE_AUDIO */,
                                   ZX_CACHE_POLICY_UNCACHED_DEVICE,
                                   &audio_device->ee_audio_mmio);
     if (status != ZX_OK) {
@@ -110,7 +113,7 @@ zx_status_t a113_audio_device_init(a113_audio_device_t* audio_device,
     a113_ee_audio_write(audio_device, EE_AUDIO_CLK_GATE_EN, 0x000fffff);
 
     // Map the PDM registers to our address space.
-    status = pdev_map_mmio_buffer2(&audio_device->pdev, 1 /* PDM */,
+    status = pdev_map_mmio_buffer(&audio_device->pdev, 1 /* PDM */,
                                   ZX_CACHE_POLICY_UNCACHED_DEVICE,
                                   &audio_device->pdm_mmio);
     if (status != ZX_OK) {

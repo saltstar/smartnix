@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // This file contains the implementations of the Accept methods for the AST
 // nodes.  Generally, all they do is invoke the appropriate TreeVisitor method
@@ -21,8 +24,8 @@ SourceElementMark::~SourceElementMark() {
 
 void CompoundIdentifier::Accept(TreeVisitor& visitor) {
     SourceElementMark sem(visitor, *this);
-    for (auto i = components.begin(); i != components.end(); ++i) {
-        visitor.OnIdentifier(*i);
+    for (auto& i : components) {
+        visitor.OnIdentifier(i);
     }
 }
 
@@ -62,8 +65,8 @@ void Attribute::Accept(TreeVisitor& visitor) {
 
 void AttributeList::Accept(TreeVisitor& visitor) {
     SourceElementMark sem(visitor, *this);
-    for (auto i = attributes.begin(); i != attributes.end(); ++i) {
-        visitor.OnAttribute(*i);
+    for (auto& i : attributes) {
+        visitor.OnAttribute(i);
     }
 }
 
@@ -103,11 +106,6 @@ void RequestHandleType::Accept(TreeVisitor& visitor) {
     visitor.OnNullability(nullability);
 }
 
-void PrimitiveType::Accept(TreeVisitor& visitor) {
-    SourceElementMark sem(visitor, *this);
-    visitor.OnPrimitiveSubtype(subtype);
-}
-
 void IdentifierType::Accept(TreeVisitor& visitor) {
     SourceElementMark sem(visitor, *this);
     visitor.OnCompoundIdentifier(identifier);
@@ -120,8 +118,8 @@ void Using::Accept(TreeVisitor& visitor) {
     if (maybe_alias != nullptr) {
         visitor.OnIdentifier(maybe_alias);
     }
-    if (maybe_primitive != nullptr) {
-        visitor.OnPrimitiveType(maybe_primitive);
+    if (maybe_type != nullptr) {
+        visitor.OnIdentifierType(maybe_type);
     }
 }
 
@@ -151,7 +149,7 @@ void EnumDeclaration::Accept(TreeVisitor& visitor) {
     }
     visitor.OnIdentifier(identifier);
     if (maybe_subtype != nullptr) {
-        visitor.OnPrimitiveType(maybe_subtype);
+        visitor.OnIdentifierType(maybe_subtype);
     }
     for (auto member = members.begin(); member != members.end(); ++member) {
         visitor.OnEnumMember(*member);
@@ -176,7 +174,9 @@ void InterfaceMethod::Accept(TreeVisitor& visitor) {
     if (attributes != nullptr) {
         visitor.OnAttributeList(attributes);
     }
-    visitor.OnOrdinal(*ordinal);
+    if (ordinal != nullptr) {
+        visitor.OnOrdinal(*ordinal);
+    }
     visitor.OnIdentifier(identifier);
     if (maybe_request != nullptr) {
         visitor.OnParameterList(maybe_request);
@@ -231,11 +231,13 @@ void StructDeclaration::Accept(TreeVisitor& visitor) {
 
 void TableMember::Accept(TreeVisitor& visitor) {
     SourceElementMark sem(visitor, *this);
-    visitor.OnOrdinal(*ordinal);
     if (maybe_used != nullptr) {
         if (maybe_used->attributes != nullptr) {
             visitor.OnAttributeList(maybe_used->attributes);
         }
+    }
+    visitor.OnOrdinal(*ordinal);
+    if (maybe_used != nullptr) {
         visitor.OnType(maybe_used->type);
         visitor.OnIdentifier(maybe_used->identifier);
         if (maybe_used->maybe_default_value != nullptr) {
@@ -279,43 +281,53 @@ void UnionDeclaration::Accept(TreeVisitor& visitor) {
     }
 }
 
+void XUnionMember::Accept(TreeVisitor& visitor) {
+    SourceElementMark sem(visitor, *this);
+    if (attributes != nullptr) {
+        visitor.OnAttributeList(attributes);
+    }
+
+    visitor.OnType(type);
+    visitor.OnIdentifier(identifier);
+}
+
+void XUnionDeclaration::Accept(TreeVisitor& visitor) {
+    SourceElementMark sem(visitor, *this);
+    if (attributes != nullptr) {
+        visitor.OnAttributeList(attributes);
+    }
+    visitor.OnIdentifier(identifier);
+    for (auto& member : members) {
+        visitor.OnXUnionMember(member);
+    }
+}
+
 void File::Accept(TreeVisitor& visitor) {
     SourceElementMark sem(visitor, *this);
     visitor.OnCompoundIdentifier(library_name);
-    for (auto i = using_list.begin();
-         i != using_list.end();
-         ++i) {
-        visitor.OnUsing(*i);
+    for (auto& i : using_list) {
+        visitor.OnUsing(i);
     }
-    for (auto i = const_declaration_list.begin();
-         i != const_declaration_list.end();
-         ++i) {
-        visitor.OnConstDeclaration(*i);
+    for (auto& i : const_declaration_list) {
+        visitor.OnConstDeclaration(i);
     }
-    for (auto i = enum_declaration_list.begin();
-         i != enum_declaration_list.end();
-         ++i) {
-        visitor.OnEnumDeclaration(*i);
+    for (auto& i : enum_declaration_list) {
+        visitor.OnEnumDeclaration(i);
     }
-    for (auto i = interface_declaration_list.begin();
-         i != interface_declaration_list.end();
-         ++i) {
-        visitor.OnInterfaceDeclaration(*i);
+    for (auto& i : interface_declaration_list) {
+        visitor.OnInterfaceDeclaration(i);
     }
-    for (auto i = struct_declaration_list.begin();
-         i != struct_declaration_list.end();
-         ++i) {
-        visitor.OnStructDeclaration(*i);
+    for (auto& i : struct_declaration_list) {
+        visitor.OnStructDeclaration(i);
     }
-    for (auto i = table_declaration_list.begin();
-         i != table_declaration_list.end();
-         ++i) {
-        visitor.OnTableDeclaration(*i);
+    for (auto& i : table_declaration_list) {
+        visitor.OnTableDeclaration(i);
     }
-    for (auto i = union_declaration_list.begin();
-         i != union_declaration_list.end();
-         ++i) {
-        visitor.OnUnionDeclaration(*i);
+    for (auto& i : union_declaration_list) {
+        visitor.OnUnionDeclaration(i);
+    }
+    for (auto& i : xunion_declaration_list) {
+        visitor.OnXUnionDeclaration(i);
     }
 }
 

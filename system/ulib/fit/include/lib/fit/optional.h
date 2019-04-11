@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef LIB_FIT_OPTIONAL_H_
 #define LIB_FIT_OPTIONAL_H_
@@ -82,7 +85,7 @@ public:
     constexpr optional(nullopt_t)
         : has_value_(false) {}
 
-    explicit constexpr optional(T value)
+    constexpr optional(T value)
         : has_value_(true), value_(std::move(value)) {}
 
     optional(const optional& other)

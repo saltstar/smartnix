@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <zircon/syscalls/object.h>
 #include <zircon/time.h>
@@ -5,6 +8,8 @@
 
 #include <fbl/algorithm.h>
 #include <intel-hda/utils/utils.h>
+
+#include <utility>
 
 namespace audio {
 namespace intel_hda {
@@ -36,7 +41,7 @@ zx_status_t WaitCondition(zx_duration_t timeout,
 fbl::RefPtr<RefCountedBti> RefCountedBti::Create(zx::bti initiator) {
     fbl::AllocChecker ac;
 
-    auto ret = fbl::AdoptRef(new (&ac) RefCountedBti(fbl::move(initiator)));
+    auto ret = fbl::AdoptRef(new (&ac) RefCountedBti(std::move(initiator)));
     if (!ac.check()) {
         return nullptr;
     }
@@ -152,7 +157,7 @@ zx_status_t MakeFormatRangeList(const SampleCaps& sample_caps,
     // try to do so.
     for (const auto& family : FRAME_RATE_LUTS) {
         bool active_range = false;
-        uint32_t min_rate, max_rate;
+        uint32_t min_rate = 0, max_rate = 0;
 
         for (size_t i = 0; i < family.lut_size; ++i) {
             const auto& entry = family.lut[i];

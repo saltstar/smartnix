@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -24,7 +27,7 @@ namespace dispatcher {
 // the process handler will cause the Interrupt to automatically become deactivated.
 // Returning ZX_OK will cause the Interrupt to become re-armed.
 //
-// :: Activtation ::
+// :: Activation ::
 //
 // Activation requires a user to provide a valid ExecutionDomain, a
 // zx::interrupt,  and a valid ProcessHandler.  The Interrupt object takes ownership

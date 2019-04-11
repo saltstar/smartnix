@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef LIB_ZXIO_TYPES_H_
 #define LIB_ZXIO_TYPES_H_
@@ -9,7 +12,7 @@ __BEGIN_CDECLS
 
 typedef uint32_t zxio_signals_t;
 
-// These values match the cooresponding values in zircon/types.h
+// These values match the corresponding values in zircon/types.h
 #define ZXIO_SIGNAL_NONE     ((zxio_signals_t)0u)
 #define ZXIO_READABLE        ((zxio_signals_t)1u << 0)
 #define ZXIO_WRITABLE        ((zxio_signals_t)1u << 1)

@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <err.h>
 #include <hypervisor/guest_physical_address_space.h>
+#include <hypervisor/interrupt_tracker.h>
 #include <lib/unittest/unittest.h>
 #include <vm/pmm.h>
 #include <vm/vm.h>
@@ -35,18 +36,14 @@ static zx_status_t create_vmo(size_t vmo_size, fbl::RefPtr<VmObject>* vmo) {
 }
 
 static zx_status_t commit_vmo(fbl::RefPtr<VmObject> vmo) {
-    uint64_t committed = 0;
-    zx_status_t status = vmo->CommitRange(0, vmo->size(), &committed);
+    zx_status_t status = vmo->CommitRange(0, vmo->size());
     if (status != ZX_OK) {
         return status;
-    }
-    if (committed != vmo->size()) {
-        return ZX_ERR_BAD_STATE;
     }
     return ZX_OK;
 }
 
-static zx_status_t create_gpas(fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace>* gpas) {
+static zx_status_t create_gpas(ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace>* gpas) {
 #if ARCH_ARM64
     return hypervisor::GuestPhysicalAddressSpace::Create(1 /* vmid */, gpas);
 #elif ARCH_X86
@@ -75,7 +72,7 @@ static bool guest_physical_address_space_unmap_range() {
     }
 
     // Setup.
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     zx_status_t status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     fbl::RefPtr<VmObject> vmo;
@@ -105,7 +102,7 @@ static bool guest_physical_address_space_unmap_range_outside_of_mapping() {
     }
 
     // Setup.
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     zx_status_t status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     fbl::RefPtr<VmObject> vmo;
@@ -129,7 +126,7 @@ static bool guest_physical_address_space_unmap_range_multiple_mappings() {
     }
 
     // Setup.
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     zx_status_t status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
 
@@ -174,7 +171,7 @@ static bool guest_physical_address_space_unmap_range_sub_region() {
     }
 
     // Setup.
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     zx_status_t status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     fbl::RefPtr<VmAddressRegion> root_vmar = gpas->RootVmar();
@@ -241,7 +238,7 @@ static bool guest_physical_address_space_get_page() {
     }
 
     // Setup.
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     zx_status_t status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     fbl::RefPtr<VmObject> vmo;
@@ -256,7 +253,7 @@ static bool guest_physical_address_space_get_page() {
 
     // Read expected physical address from the VMO.
     zx_paddr_t vmo_paddr = 0;
-    status = vmo->Lookup(0, PAGE_SIZE, 0, get_paddr, &vmo_paddr);
+    status = vmo->Lookup(0, PAGE_SIZE, get_paddr, &vmo_paddr);
     EXPECT_EQ(ZX_OK, status, "Failed to lookup physical address of VMO\n");
     EXPECT_NE(0u, vmo_paddr, "Failed to lookup physical address of VMO\n");
 
@@ -301,7 +298,7 @@ static bool guest_physical_address_space_get_page_complex() {
     fbl::RefPtr<VmObject> vmo1;
     zx_status_t status = create_vmo(ROOT_VMO_SIZE, &vmo1);
     EXPECT_EQ(ZX_OK, status, "Failed to create VMO\n");
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     fbl::RefPtr<VmAddressRegion> root_vmar = gpas->RootVmar();
@@ -333,7 +330,7 @@ static bool guest_physical_address_space_get_page_complex() {
 
     // Read expected physical address from the VMO.
     zx_paddr_t vmo_paddr = 0;
-    status = vmo2->Lookup(0, PAGE_SIZE, 0, get_paddr, &vmo_paddr);
+    status = vmo2->Lookup(0, PAGE_SIZE, get_paddr, &vmo_paddr);
     EXPECT_EQ(ZX_OK, status, "Failed to lookup physical address of VMO\n");
     EXPECT_NE(0u, vmo_paddr, "Failed to lookup physical address of VMO\n");
 
@@ -354,7 +351,7 @@ static bool guest_physical_address_space_get_page_not_present() {
     }
 
     // Setup.
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     zx_status_t status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     fbl::RefPtr<VmObject> vmo;
@@ -384,7 +381,7 @@ static bool guest_physical_address_space_page_fault() {
     }
 
     // Setup.
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     zx_status_t status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     fbl::RefPtr<VmObject> vmo;
@@ -418,7 +415,7 @@ static bool guest_physical_address_space_map_interrupt_controller() {
     }
 
     // Setup.
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     zx_status_t status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     fbl::RefPtr<VmObject> vmo;
@@ -457,7 +454,7 @@ static bool guest_physical_address_space_uncached() {
     status = vmo->SetMappingCachePolicy(ZX_CACHE_POLICY_UNCACHED);
     EXPECT_EQ(ZX_OK, status, "Failed to set cache policy\n");
 
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     status = create_mapping(gpas->RootVmar(), vmo, 0);
@@ -480,7 +477,7 @@ static bool guest_physical_address_space_uncached_device() {
     status = vmo->SetMappingCachePolicy(ZX_CACHE_POLICY_UNCACHED_DEVICE);
     EXPECT_EQ(ZX_OK, status, "Failed to set cache policy\n");
 
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     status = create_mapping(gpas->RootVmar(), vmo, 0);
@@ -503,11 +500,81 @@ static bool guest_physical_address_space_write_combining() {
     status = vmo->SetMappingCachePolicy(ZX_CACHE_POLICY_WRITE_COMBINING);
     EXPECT_EQ(ZX_OK, status, "Failed to set cache policy\n");
 
-    fbl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
+    ktl::unique_ptr<hypervisor::GuestPhysicalAddressSpace> gpas;
     status = create_gpas(&gpas);
     EXPECT_EQ(ZX_OK, status, "Failed to create GuestPhysicalAddressSpace\n");
     status = create_mapping(gpas->RootVmar(), vmo, 0);
     EXPECT_EQ(ZX_OK, status, "Failed to create mapping\n");
+
+    END_TEST;
+}
+
+static bool interrupt_bitmap() {
+    BEGIN_TEST;
+
+    hypervisor::InterruptBitmap<8> bitmap;
+
+    uint32_t vector = UINT32_MAX;
+    ASSERT_EQ(ZX_OK, bitmap.Init(), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(0), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(1), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Scan(&vector), "");
+    EXPECT_EQ(UINT32_MAX, vector, "");
+
+    // Index 0.
+    vector = UINT32_MAX;
+    bitmap.Set(0u, hypervisor::InterruptType::VIRTUAL);
+    EXPECT_EQ(hypervisor::InterruptType::VIRTUAL, bitmap.Get(0), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(1), "");
+    EXPECT_EQ(hypervisor::InterruptType::VIRTUAL, bitmap.Scan(&vector), "");
+    EXPECT_EQ(0u, vector, "");
+
+    vector = UINT32_MAX;
+    bitmap.Set(0u, hypervisor::InterruptType::PHYSICAL);
+    EXPECT_EQ(hypervisor::InterruptType::PHYSICAL, bitmap.Get(0u), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(1u), "");
+    EXPECT_EQ(hypervisor::InterruptType::PHYSICAL, bitmap.Scan(&vector), "");
+    EXPECT_EQ(0u, vector, "");
+
+    vector = UINT32_MAX;
+    bitmap.Set(0u, hypervisor::InterruptType::INACTIVE);
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(0u), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(1u), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Scan(&vector), "");
+    EXPECT_EQ(UINT32_MAX, vector, "");
+
+    // Index 1.
+    vector = UINT32_MAX;
+    bitmap.Set(1u, hypervisor::InterruptType::VIRTUAL);
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(0u), "");
+    EXPECT_EQ(hypervisor::InterruptType::VIRTUAL, bitmap.Get(1u), "");
+    EXPECT_EQ(hypervisor::InterruptType::VIRTUAL, bitmap.Scan(&vector), "");
+    EXPECT_EQ(1u, vector, "");
+
+    vector = UINT32_MAX;
+    bitmap.Set(1u, hypervisor::InterruptType::PHYSICAL);
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(0u), "");
+    EXPECT_EQ(hypervisor::InterruptType::PHYSICAL, bitmap.Get(1u), "");
+    EXPECT_EQ(hypervisor::InterruptType::PHYSICAL, bitmap.Scan(&vector), "");
+    EXPECT_EQ(1u, vector, "");
+
+    vector = UINT32_MAX;
+    bitmap.Set(1u, hypervisor::InterruptType::INACTIVE);
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(0u), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(1u), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Scan(&vector), "");
+    EXPECT_EQ(UINT32_MAX, vector, "");
+
+    // Clear
+    bitmap.Set(0u, hypervisor::InterruptType::VIRTUAL);
+    bitmap.Set(1u, hypervisor::InterruptType::VIRTUAL);
+    bitmap.Set(2u, hypervisor::InterruptType::PHYSICAL);
+    bitmap.Set(3u, hypervisor::InterruptType::PHYSICAL);
+    bitmap.Clear(1u, 3u);
+    EXPECT_EQ(hypervisor::InterruptType::VIRTUAL, bitmap.Get(0u), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(1u), "");
+    EXPECT_EQ(hypervisor::InterruptType::INACTIVE, bitmap.Get(2u), "");
+    EXPECT_EQ(hypervisor::InterruptType::PHYSICAL, bitmap.Get(3u), "");
 
     END_TEST;
 }
@@ -528,4 +595,5 @@ HYPERVISOR_UNITTEST(guest_physical_address_space_map_interrupt_controller)
 HYPERVISOR_UNITTEST(guest_physical_address_space_uncached)
 HYPERVISOR_UNITTEST(guest_physical_address_space_uncached_device)
 HYPERVISOR_UNITTEST(guest_physical_address_space_write_combining)
+HYPERVISOR_UNITTEST(interrupt_bitmap)
 UNITTEST_END_TESTCASE(hypervisor, "hypervisor", "Hypervisor unit tests.");

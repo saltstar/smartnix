@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <algorithm>
 #include <ctime>
@@ -164,6 +167,13 @@ const map<string, Generator&>& get_type_to_generator() {
 bool AbigenGenerator::AddSyscall(Syscall&& syscall) {
     if (!syscall.validate())
         return false;
+
+    syscall.requirements = pending_requirements_;
+    pending_requirements_.clear();
+
+    syscall.top_description = pending_top_description_;
+    pending_top_description_ = TopDescription();
+
     syscall.assign_index(&next_index_);
     calls_.emplace_back(std::move(syscall));
     return true;
@@ -179,6 +189,14 @@ bool AbigenGenerator::Generate(const map<string, string>& type_to_filename) {
 
 bool AbigenGenerator::verbose() const {
     return verbose_;
+}
+
+void AbigenGenerator::AppendRequirement(Requirement&& req) {
+    pending_requirements_.emplace_back(req);
+}
+
+void AbigenGenerator::SetTopDescription(TopDescription&& td) {
+    pending_top_description_ = std::move(td);
 }
 
 bool AbigenGenerator::generate_one(

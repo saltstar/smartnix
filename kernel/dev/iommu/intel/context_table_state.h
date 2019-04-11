@@ -3,7 +3,7 @@
 
 #include <fbl/intrusive_double_list.h>
 #include <fbl/macros.h>
-#include <fbl/unique_ptr.h>
+#include <ktl/unique_ptr.h>
 
 #include "hw.h"
 #include "iommu_page.h"
@@ -13,7 +13,7 @@ namespace intel_iommu {
 class DeviceContext;
 class IommuImpl;
 
-class ContextTableState : public fbl::DoublyLinkedListable<fbl::unique_ptr<ContextTableState>> {
+class ContextTableState : public fbl::DoublyLinkedListable<ktl::unique_ptr<ContextTableState>> {
 public:
     ~ContextTableState();
 
@@ -24,7 +24,7 @@ public:
     // If |extended| is false, this represents a reg::ContextTable.
     static zx_status_t Create(uint8_t bus, bool extended, bool upper,
                               IommuImpl* parent, volatile ds::RootEntrySubentry* root_entry,
-                              fbl::unique_ptr<ContextTableState>* table);
+                              ktl::unique_ptr<ContextTableState>* table);
 
     // Check if this ContextTableState is for the given BDF
     bool includes_bdf(ds::Bdf bdf) const {
@@ -70,7 +70,7 @@ private:
     const IommuPage page_;
 
     // List of device configurations beneath this ContextTable.
-    fbl::DoublyLinkedList<fbl::unique_ptr<DeviceContext>> devices_;
+    fbl::DoublyLinkedList<ktl::unique_ptr<DeviceContext>> devices_;
 
     const uint8_t bus_;
     const bool extended_;

@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <fbl/algorithm.h>
 #include <fbl/array.h>
@@ -225,7 +228,7 @@ zx_status_t LaunchTestRun(const char* bin, zx_handle_t h, zx_handle_t* proc) {
     actions[1].h = {.id = PA_USER1, .handle = h};
 
     char err_msg[FDIO_SPAWN_ERR_MSG_MAX_LENGTH];
-    zx_status_t status = fdio_spawn_etc(ZX_HANDLE_INVALID, FDIO_SPAWN_CLONE_LDSVC, bin, argv,
+    zx_status_t status = fdio_spawn_etc(ZX_HANDLE_INVALID, FDIO_SPAWN_DEFAULT_LDSVC, bin, argv,
                                         nullptr, fbl::count_of(actions), actions, proc, err_msg);
 
     if (status != ZX_OK)

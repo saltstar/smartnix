@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <ddk/device.h>
 #include <ddk/driver.h>
@@ -35,7 +38,7 @@ static void inline update_test_report(bool success, test_report_t* report) {
     }
 }
 
-zx_status_t ddktl_test_func(void* cookie, const void* arg, size_t arglen, test_report_t* report) {
+zx_status_t ddktl_test_func(void* cookie, test_report_t* report) {
     auto dev = static_cast<zx_device_t*>(cookie);
 
     test_protocol_t proto;
@@ -45,7 +48,8 @@ zx_status_t ddktl_test_func(void* cookie, const void* arg, size_t arglen, test_r
         return status;
     }
 
-    zx_handle_t output = proto.ops->get_output_socket(proto.ctx);
+    zx_handle_t output;
+    proto.ops->get_output_socket(proto.ctx, &output);
     if (output != ZX_HANDLE_INVALID) {
         unittest_set_output_function(ddktl_test_output_func, &output);
     }
@@ -53,6 +57,8 @@ zx_status_t ddktl_test_func(void* cookie, const void* arg, size_t arglen, test_r
     memset(report, 0, sizeof(*report));
     update_test_report(unittest_run_one_test(test_case_ddktl_device, TEST_ALL), report);
     update_test_report(unittest_run_one_test(test_case_ddktl_ethernet_device, TEST_ALL), report);
+    unittest_restore_output_function();
+    zx_handle_close(output);
     return report->n_failed == 0 ? ZX_OK : ZX_ERR_INTERNAL;
 }
 

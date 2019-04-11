@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef LIB_SYNC_INTERNAL_CONDITION_TEMPLATE_H_
 #define LIB_SYNC_INTERNAL_CONDITION_TEMPLATE_H_
@@ -70,7 +73,7 @@ static inline void wait(int* futex, int current_value) {
         }
     }
     while (__atomic_load_n(futex, __ATOMIC_SEQ_CST) == current_value) {
-        _zx_futex_wait(futex, current_value, ZX_TIME_INFINITE);
+        _zx_futex_wait(futex, current_value, ZX_HANDLE_INVALID, ZX_TIME_INFINITE);
     }
 }
 

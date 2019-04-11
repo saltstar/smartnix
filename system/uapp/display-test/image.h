@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -47,7 +50,7 @@ public:
     uint32_t stride() { return stride_; }
     zx_pixel_format_t format() { return format_; }
 
-    void GetConfig(fuchsia_display_ImageConfig* config_out);
+    void GetConfig(fuchsia_hardware_display_ImageConfig* config_out);
     bool Import(zx_handle_t dc_handle, image_import_t* import_out);
 
 private:

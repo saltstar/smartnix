@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 // This file includes host-side functionality for accessing Blobfs.
 
@@ -19,7 +22,6 @@
 #include <fbl/ref_ptr.h>
 #include <fbl/string.h>
 #include <fbl/unique_fd.h>
-#include <fbl/unique_free_ptr.h>
 #include <fbl/vector.h>
 #include <zircon/types.h>
 
@@ -30,7 +32,11 @@
 #include <stdint.h>
 
 #include <blobfs/common.h>
+#include <blobfs/iterator/allocated-extent-iterator.h>
+#include <blobfs/iterator/extent-iterator.h>
 #include <blobfs/format.h>
+
+class FileSizeRecorder;
 
 namespace blobfs {
 
@@ -128,7 +134,7 @@ private:
     Inode* inode_;
 };
 
-class Blobfs : public fbl::RefCounted<Blobfs> {
+class Blobfs : public fbl::RefCounted<Blobfs>, public NodeFinder {
 public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Blobfs);
 
@@ -152,6 +158,24 @@ public:
     zx_status_t WriteNode(fbl::unique_ptr<InodeBlock> ino_block);
     zx_status_t WriteInfo();
 
+    // Access the |node_index|-th inode
+    Inode* GetNode(uint32_t node_index) final;
+
+    AllocatedExtentIterator GetExtents(uint32_t node_index) {
+        return AllocatedExtentIterator(this, node_index);
+    }
+
+    // TODO(smklein): Consider deduplicating the host and target allocation systems.
+    bool CheckBlocksAllocated(uint64_t start_block, uint64_t end_block,
+                              uint64_t* first_unset = nullptr) const {
+        size_t unset_bit;
+        bool allocated = block_map_.Get(start_block, end_block, &unset_bit);
+        if (!allocated && first_unset != nullptr) {
+            *first_unset = static_cast<uint64_t>(unset_bit);
+        }
+        return allocated;
+    }
+
 private:
     struct BlockCache {
         size_t bno;
@@ -164,9 +188,6 @@ private:
            const fbl::Array<size_t>& extent_lengths);
     zx_status_t LoadBitmap();
 
-    // Access the |index|th inode
-    Inode* GetNode(size_t index);
-
     // Read data from block |bno| into the block cache.
     // If the block cache already contains data from the specified bno, nothing happens.
     // Cannot read while a dirty block is pending.
@@ -177,7 +198,7 @@ private:
 
     zx_status_t ResetCache();
 
-    zx_status_t VerifyBlob(size_t node_index);
+    zx_status_t VerifyBlob(uint32_t node_index);
 
     RawBitmap block_map_{};
 
@@ -213,10 +234,10 @@ zx_status_t blobfs_preprocess(int data_fd, bool compress, MerkleInfo* out_info);
 
 // blobfs_add_blob may be called by multiple threads to gain concurrent
 // merkle tree generation. No other methods are thread safe.
-zx_status_t blobfs_add_blob(Blobfs* bs, int data_fd);
+zx_status_t blobfs_add_blob(Blobfs* bs, FileSizeRecorder* size_recorder, int data_fd);
 
 // Identical to blobfs_add_blob, but uses a precomputed Merkle Tree and digest.
-zx_status_t blobfs_add_blob_with_merkle(Blobfs* bs, int data_fd, const MerkleInfo& info);
+zx_status_t blobfs_add_blob_with_merkle(Blobfs* bs, FileSizeRecorder* size_recorder, int data_fd, const MerkleInfo& info);
 
 zx_status_t blobfs_fsck(fbl::unique_fd fd, off_t start, off_t end,
                         const fbl::Vector<size_t>& extent_lengths);

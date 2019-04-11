@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -16,8 +19,9 @@
 #include <fs-management/fvm.h>
 #include <fs-management/mount.h>
 #include <fs-management/ramdisk.h>
-#include <fvm/fvm-lz4.h>
+#include <fuchsia/hardware/skipblock/c/fidl.h>
 #include <fvm/fvm-sparse.h>
+#include <fvm/sparse-reader.h>
 #include <lib/cksum.h>
 #include <lib/fzl/fdio.h>
 #include <lib/fzl/resizeable-vmo-mapper.h>
@@ -27,10 +31,11 @@
 #include <zircon/boot/image.h>
 #include <zircon/device/block.h>
 #include <zircon/device/device.h>
-#include <zircon/skipblock/c/fidl.h>
 #include <zircon/status.h>
 #include <zircon/syscalls.h>
 #include <zxcrypt/volume.h>
+
+#include <utility>
 
 #include "fvm/fvm-sparse.h"
 #include "fvm/fvm.h"
@@ -57,6 +62,10 @@ static Partition PartitionType(const Command command) {
         return Partition::kZirconB;
     case Command::kInstallZirconR:
         return Partition::kZirconR;
+    case Command::kInstallVbMetaA:
+        return Partition::kVbMetaA;
+    case Command::kInstallVbMetaB:
+        return Partition::kVbMetaB;
     case Command::kInstallFvm:
         return Partition::kFuchsiaVolumeManager;
     default:
@@ -93,7 +102,6 @@ struct PartitionInfo {
 
     fvm::partition_descriptor_t* pd;
     fbl::unique_fd new_part;
-    fbl::unique_fd old_part; // Or '-1' if this is a new partition
 };
 
 inline fvm::extent_descriptor_t* GetExtent(fvm::partition_descriptor_t* pd, size_t extent) {
@@ -120,7 +128,7 @@ zx_status_t RegisterFastBlockIo(const fbl::unique_fd& fd, const zx::vmo& vmo,
         ERROR("Couldn't attach VMO\n");
         return ZX_ERR_IO;
     }
-    return block_client::Client::Create(fbl::move(fifo), client_out);
+    return block_client::Client::Create(std::move(fifo), client_out);
 }
 
 // Stream an FVM partition to disk.
@@ -285,7 +293,7 @@ zx_status_t WriteVmoToSkipBlock(const zx::vmo& vmo, size_t vmo_size,
         return status;
     }
 
-    zircon_skipblock_ReadWriteOperation operation = {
+    fuchsia_hardware_skipblock_ReadWriteOperation operation = {
         .vmo = dup.release(),
         .vmo_offset = 0,
         .block = 0,
@@ -293,7 +301,8 @@ zx_status_t WriteVmoToSkipBlock(const zx::vmo& vmo, size_t vmo_size,
     };
     bool bad_block_grown;
 
-    zircon_skipblock_SkipBlockWrite(caller.borrow_channel(), &operation, &status, &bad_block_grown);
+    fuchsia_hardware_skipblock_SkipBlockWrite(caller.borrow_channel(), &operation, &status,
+                                              &bad_block_grown);
     if (status != ZX_OK) {
         ERROR("Error writing partition data: %s\n", zx_status_get_string(status));
         return status;
@@ -471,7 +480,7 @@ zx_status_t ZxcryptCreate(PartitionInfo* part) {
     memset(tmp, 0, key.len());
 
     fbl::unique_ptr<zxcrypt::Volume> volume;
-    if ((status = zxcrypt::Volume::Create(fbl::move(part->new_part), key, &volume)) != ZX_OK ||
+    if ((status = zxcrypt::Volume::Create(std::move(part->new_part), key, &volume)) != ZX_OK ||
         (status = volume->Open(zx::sec(3), &part->new_part)) != ZX_OK) {
         ERROR("Could not create zxcrypt volume\n");
         return status;
@@ -538,14 +547,46 @@ void RecommendWipe(const char* problem) {
     Warn(problem, "Please run 'install-disk-image wipe' to wipe your partitions");
 }
 
+// Deletes all partitions within the FVM with a type GUID matching |type_guid|
+// until there are none left.
+zx_status_t WipeAllFvmPartitionsWithGUID(const fbl::unique_fd& fvm_fd, const uint8_t type_guid[]) {
+    fbl::unique_fd old_part;
+    while ((old_part.reset(open_partition(nullptr, type_guid, ZX_MSEC(500), nullptr))), old_part) {
+        bool is_vpartition;
+        if (FvmIsVirtualPartition(old_part, &is_vpartition) != ZX_OK) {
+            ERROR("Couldn't confirm old vpartition type\n");
+            return ZX_ERR_IO;
+        }
+        if (FvmPartitionIsChild(fvm_fd, old_part) != ZX_OK) {
+            RecommendWipe("Streaming a partition type which also exists outside the target FVM");
+            return ZX_ERR_BAD_STATE;
+        }
+        if (!is_vpartition) {
+            RecommendWipe("Streaming a partition type which also exists in a GPT");
+            return ZX_ERR_BAD_STATE;
+        }
+
+        // We're paving a partition that already exists within the FVM: let's
+        // destroy it before we pave anew.
+        ssize_t r = ioctl_block_fvm_destroy_partition(old_part.get());
+        if (r < 0) {
+            ERROR("Couldn't destroy partition: %ld\n", r);
+            return static_cast<zx_status_t>(r);
+        }
+    }
+
+    return ZX_OK;
+}
+
 // Calculate the amount of space necessary for the incoming partitions,
-// validating the header along the way.
+// validating the header along the way. Additionally, deletes any old partitions
+// which match the type GUID of the provided partition.
 //
 // Parses the information from the |reader| into |parts|.
-zx_status_t ValidatePartitions(const fbl::unique_fd& fvm_fd,
-                               const fbl::unique_ptr<fvm::SparseReader>& reader,
-                               const fbl::Array<PartitionInfo>& parts,
-                               size_t* out_requested_slices) {
+zx_status_t PreProcessPartitions(const fbl::unique_fd& fvm_fd,
+                                 const fbl::unique_ptr<fvm::SparseReader>& reader,
+                                 const fbl::Array<PartitionInfo>& parts,
+                                 size_t* out_requested_slices) {
     fvm::partition_descriptor_t* part = reader->Partitions();
     fvm::sparse_image_t* hdr = reader->Image();
 
@@ -559,21 +600,10 @@ zx_status_t ValidatePartitions(const fbl::unique_fd& fvm_fd,
             return ZX_ERR_IO;
         }
 
-        parts[p].old_part.reset(open_partition(nullptr, parts[p].pd->type, ZX_SEC(2), nullptr));
-        if (parts[p].old_part) {
-            bool is_vpartition;
-            if (FvmIsVirtualPartition(parts[p].old_part, &is_vpartition) != ZX_OK) {
-                ERROR("Couldn't confirm old vpartition type\n");
-                return ZX_ERR_IO;
-            }
-            if (FvmPartitionIsChild(fvm_fd, parts[p].old_part) != ZX_OK) {
-                RecommendWipe("Streaming a partition type which also exists outside FVM");
-                return ZX_ERR_BAD_STATE;
-            }
-            if (!is_vpartition) {
-                RecommendWipe("Streaming a partition type which also exists in a GPT");
-                return ZX_ERR_BAD_STATE;
-            }
+        zx_status_t status = WipeAllFvmPartitionsWithGUID(fvm_fd, parts[p].pd->type);
+        if (status != ZX_OK) {
+            ERROR("Failure wiping old partitions matching this GUID\n");
+            return status;
         }
 
         fvm::extent_descriptor_t* ext = GetExtent(parts[p].pd, 0);
@@ -681,7 +711,7 @@ zx_status_t AllocatePartitions(const fbl::unique_fd& fvm_fd,
 zx_status_t FvmStreamPartitions(fbl::unique_fd partition_fd, fbl::unique_fd src_fd) {
     fbl::unique_ptr<fvm::SparseReader> reader;
     zx_status_t status;
-    if ((status = fvm::SparseReader::Create(fbl::move(src_fd), &reader)) != ZX_OK) {
+    if ((status = fvm::SparseReader::Create(std::move(src_fd), &reader)) != ZX_OK) {
         return status;
     }
 
@@ -696,7 +726,7 @@ zx_status_t FvmStreamPartitions(fbl::unique_fd partition_fd, fbl::unique_fd src_
     fvm::sparse_image_t* hdr = reader->Image();
     // Acquire an fd to the FVM, either by finding one that already
     // exists, or formatting a new one.
-    fbl::unique_fd fvm_fd(FvmPartitionFormat(fbl::move(partition_fd2), hdr->slice_size,
+    fbl::unique_fd fvm_fd(FvmPartitionFormat(std::move(partition_fd2), hdr->slice_size,
                                              BindOption::TryBind));
     if (!fvm_fd) {
         ERROR("Couldn't find FVM partition\n");
@@ -707,8 +737,10 @@ zx_status_t FvmStreamPartitions(fbl::unique_fd partition_fd, fbl::unique_fd src_
                                     hdr->partition_count);
 
     // Parse the incoming image and calculate its size.
+    //
+    // Additionally, delete the old versions of any new partitions.
     size_t requested_slices = 0;
-    if ((status = ValidatePartitions(fvm_fd, reader, parts, &requested_slices)) != ZX_OK) {
+    if ((status = PreProcessPartitions(fvm_fd, reader, parts, &requested_slices)) != ZX_OK) {
         ERROR("Failed to validate partitions: %s\n", zx_status_get_string(status));
         return status;
     }
@@ -733,13 +765,7 @@ zx_status_t FvmStreamPartitions(fbl::unique_fd partition_fd, fbl::unique_fd src_
     if (free_slices < requested_slices) {
         Warn("Not enough space to non-destructively pave",
              "Automatically reinitializing FVM; Expect data loss");
-        // Shut down the connections to the old partitions; they will
-        // become defunct when the FVM is re-initialized.
-        for (size_t p = 0; p < parts.size(); p++) {
-            parts[p].old_part.reset();
-        }
-
-        fvm_fd = FvmPartitionFormat(fbl::move(partition_fd), hdr->slice_size,
+        fvm_fd = FvmPartitionFormat(std::move(partition_fd), hdr->slice_size,
                                     BindOption::Reformat);
         if (!fvm_fd) {
             ERROR("Couldn't reformat FVM partition.\n");
@@ -807,17 +833,9 @@ zx_status_t FvmStreamPartitions(fbl::unique_fd partition_fd, fbl::unique_fd src_
 
     for (size_t p = 0; p < parts.size(); p++) {
         // Upgrade the old partition (currently active) to the new partition (currently
-        // inactive), so when the new partition becomes active, the old
-        // partition is destroyed.
+        // inactive) so the new partition persists.
         upgrade_req_t upgrade;
         memset(&upgrade, 0, sizeof(upgrade));
-        if (parts[p].old_part) {
-            if (ioctl_block_get_partition_guid(parts[p].old_part.get(), &upgrade.old_guid,
-                                               GUID_LEN) < 0) {
-                ERROR("Failed to get unique GUID of old partition\n");
-                return ZX_ERR_BAD_STATE;
-            }
-        }
         if (ioctl_block_get_partition_guid(parts[p].new_part.get(), &upgrade.new_guid,
                                            GUID_LEN) < 0) {
             ERROR("Failed to get unique GUID of new partition\n");
@@ -827,17 +845,6 @@ zx_status_t FvmStreamPartitions(fbl::unique_fd partition_fd, fbl::unique_fd src_
         if (ioctl_block_fvm_upgrade(fvm_fd.get(), &upgrade) < 0) {
             ERROR("Failed to upgrade partition\n");
             return ZX_ERR_IO;
-        }
-
-        if (parts[p].old_part) {
-            // This would fail if the old part was on GPT, not FVM. However,
-            // we checked earlier and verified that parts[p].old_part, if it exists,
-            // is a vpartition.
-            ssize_t r = ioctl_block_fvm_destroy_partition(parts[p].old_part.get());
-            if (r < 0) {
-                ERROR("Couldn't destroy partition: %ld\n", r);
-                return static_cast<zx_status_t>(r);
-            }
         }
     }
 
@@ -876,7 +883,7 @@ zx_status_t PartitionPave(fbl::unique_ptr<DevicePartitioner> partitioner,
             }
         }
         LOG("Streaming partitions...\n");
-        if ((status = FvmStreamPartitions(fbl::move(partition_fd), fbl::move(payload_fd))) != ZX_OK) {
+        if ((status = FvmStreamPartitions(std::move(partition_fd), std::move(payload_fd))) != ZX_OK) {
             ERROR("Failed to stream partitions: %s\n", zx_status_get_string(status));
             return status;
         }
@@ -908,7 +915,7 @@ zx_status_t PartitionPave(fbl::unique_ptr<DevicePartitioner> partitioner,
         return status;
     }
     if (partitioner->UseSkipBlockInterface()) {
-        fzl::FdioCaller caller(fbl::move(partition_fd));
+        fzl::FdioCaller caller(std::move(partition_fd));
         status = WriteVmoToSkipBlock(mapper.vmo(), payload_size, caller, block_size_bytes);
         partition_fd = caller.release();
     } else {
@@ -946,25 +953,27 @@ zx_status_t RealMain(Flags flags) {
     case Command::kWipe:
         return device_partitioner->WipePartitions();
     case Command::kInstallFvm:
-        break;
+    case Command::kInstallVbMetaA:
+    case Command::kInstallVbMetaB:
+       break;
     case Command::kInstallBootloader:
         if (flags.arch == Arch::X64 && !flags.force) {
             LOG("SKIPPING BOOTLOADER install on x64 device, pass --force if desired.\n");
-            Drain(fbl::move(flags.payload_fd));
+            Drain(std::move(flags.payload_fd));
             return ZX_OK;
         }
         break;
     case Command::kInstallEfi:
         if ((is_cros_device || flags.arch == Arch::ARM64) && !flags.force) {
             LOG("SKIPPING EFI install on ARM64/CROS device, pass --force if desired.\n");
-            Drain(fbl::move(flags.payload_fd));
+            Drain(std::move(flags.payload_fd));
             return ZX_OK;
         }
         break;
     case Command::kInstallKernc:
         if (!is_cros_device && !flags.force) {
             LOG("SKIPPING KERNC install on non-CROS device, pass --force if desired.\n");
-            Drain(fbl::move(flags.payload_fd));
+            Drain(std::move(flags.payload_fd));
             return ZX_OK;
         }
         break;
@@ -973,18 +982,18 @@ zx_status_t RealMain(Flags flags) {
     case Command::kInstallZirconR:
         if (is_cros_device && !flags.force) {
             LOG("SKIPPING Zircon-{A/B/R} install on CROS device, pass --force if desired.\n");
-            Drain(fbl::move(flags.payload_fd));
+            Drain(std::move(flags.payload_fd));
             return ZX_OK;
         }
         break;
     case Command::kInstallDataFile:
-        return DataFilePave(fbl::move(device_partitioner), fbl::move(flags.payload_fd), flags.path);
+        return DataFilePave(std::move(device_partitioner), std::move(flags.payload_fd), flags.path);
 
     default:
         ERROR("Unsupported command.");
         return ZX_ERR_NOT_SUPPORTED;
     }
-    return PartitionPave(fbl::move(device_partitioner), fbl::move(flags.payload_fd),
+    return PartitionPave(std::move(device_partitioner), std::move(flags.payload_fd),
                          PartitionType(flags.cmd), flags.arch);
 }
 
@@ -1000,7 +1009,7 @@ zx_status_t DataFilePave(fbl::unique_ptr<DevicePartitioner> partitioner,
     fbl::unique_fd part_fd(open_partition(nullptr, data_guid, ZX_SEC(1), path));
     if (!part_fd) {
         ERROR("DATA partition not found in FVM\n");
-        Drain(fbl::move(payload_fd));
+        Drain(std::move(payload_fd));
         return ZX_ERR_NOT_FOUND;
     }
 
@@ -1039,7 +1048,7 @@ zx_status_t DataFilePave(fbl::unique_ptr<DevicePartitioner> partitioner,
     if ((status = mount(open(minfs_path, O_RDWR), mount_path, DISK_FORMAT_MINFS,
                         &opts, launch_logs_async)) != ZX_OK) {
         ERROR("mount error: %s\n", zx_status_get_string(status));
-        Drain(fbl::move(payload_fd));
+        Drain(std::move(payload_fd));
         return status;
     }
 
@@ -1069,14 +1078,14 @@ zx_status_t DataFilePave(fbl::unique_ptr<DevicePartitioner> partitioner,
         if (!kfd) {
             umount(mount_path);
             ERROR("open %s error: %s\n", data_path, strerror(errno));
-            Drain(fbl::move(payload_fd));
+            Drain(std::move(payload_fd));
             return ZX_ERR_IO;
         }
         while ((n = read(payload_fd.get(), &buf, sizeof(buf))) > 0) {
             if (write(kfd.get(), &buf, n) != n) {
                 umount(mount_path);
                 ERROR("write %s error: %s\n", data_path, strerror(errno));
-                Drain(fbl::move(payload_fd));
+                Drain(std::move(payload_fd));
                 return ZX_ERR_IO;
             }
         }

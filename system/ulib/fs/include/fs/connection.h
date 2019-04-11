@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -19,6 +22,13 @@
 namespace fs {
 
 constexpr zx_signals_t kLocalTeardownSignal = ZX_USER_SIGNAL_1;
+
+// A one-way message which may be emitted by the server without an
+// accompanying request. Optionally used as a part of the Open handshake.
+struct OnOpenMsg {
+    fuchsia_io_NodeOnOpenEvent primary;
+    fuchsia_io_NodeInfo extra;
+};
 
 // Connection represents an open connection to a Vnode (the server-side
 // component of a file descriptor).  The Vnode's methods will be invoked
@@ -84,7 +94,7 @@ public:
     zx_status_t FileTruncate(uint64_t length, fidl_txn_t* txn);
     zx_status_t FileGetFlags(fidl_txn_t* txn);
     zx_status_t FileSetFlags(uint32_t flags, fidl_txn_t* txn);
-    zx_status_t FileGetVmo(uint32_t flags, fidl_txn_t* txn);
+    zx_status_t FileGetBuffer(uint32_t flags, fidl_txn_t* txn);
 
     // Directory Operations.
     zx_status_t DirectoryOpen(uint32_t flags, uint32_t mode, const char* path_data,
@@ -116,7 +126,7 @@ protected:
     // Takes ownership of the FIDL message's handles.
     // The default implementation just closes these handles.
     //
-    // This implementation may be overriden to support additional non-VFS
+    // This implementation may be overridden to support additional non-VFS
     // FIDL protocols.
     virtual zx_status_t HandleFsSpecificMessage(fidl_msg_t* msg, fidl_txn_t* txn);
 
@@ -143,7 +153,6 @@ private:
     //
     // By default, handles the Node, File, Directory and DirectoryAdmin
     // protocols, dispatching to |HandleFsSpecificMessage| if the ordinal is not recognized.
-    static zx_status_t HandleMessageThunk(fidl_msg_t* msg, fidl_txn_t* txn, void* cookie);
     zx_status_t HandleMessage(fidl_msg_t* msg, fidl_txn_t* txn);
 
     bool is_open() const { return wait_.object() != ZX_HANDLE_INVALID; }

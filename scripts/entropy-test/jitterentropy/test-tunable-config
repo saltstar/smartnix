@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Copyright 2017 The Fuchsia Authors
+#
+# Use of this source code is governed by a MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT
+
 # Test the tunable configuration parameters for jitterentropy.
 #
 # The parameters in question are LFSR loop count (kernel.jitterentropy.ll), memory access loop count

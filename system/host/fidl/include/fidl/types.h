@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_TYPES_H_
 #define ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_TYPES_H_
@@ -33,6 +36,8 @@ enum struct HandleSubtype : zx_obj_type_t {
     kFifo = ZX_OBJ_TYPE_FIFO,
     kGuest = ZX_OBJ_TYPE_GUEST,
     kTimer = ZX_OBJ_TYPE_TIMER,
+    kBti = ZX_OBJ_TYPE_BTI,
+    kProfile = ZX_OBJ_TYPE_PROFILE,
 };
 
 enum struct PrimitiveSubtype {

@@ -19,6 +19,8 @@ MODULE_STATIC_LIBS := \
     system/ulib/async.cpp \
     system/ulib/async-loop \
     system/ulib/async-loop.cpp \
+    system/ulib/blobfs \
+    system/ulib/bitmap \
     system/ulib/digest \
     system/ulib/fbl \
     system/ulib/fvm \
@@ -34,6 +36,9 @@ MODULE_STATIC_LIBS := \
     system/ulib/trace-provider \
     system/ulib/zx \
     system/ulib/zxcpp \
+    third_party/ulib/cksum \
+    third_party/ulib/lz4 \
+    third_party/ulib/uboringssl \
 
 MODULE_LIBS := \
     system/ulib/async.default \
@@ -45,7 +50,9 @@ MODULE_LIBS := \
     system/ulib/zircon \
 
 MODULE_FIDL_LIBS := \
+    system/fidl/fuchsia-hardware-ramdisk \
     system/fidl/fuchsia-io \
+    system/fidl/fuchsia-mem \
 
 MODULE_COMPILEFLAGS := \
     -Isystem/ulib/fs-test/include \

@@ -22,4 +22,9 @@ MODULE_LIBS := \
     system/ulib/zircon \
     system/ulib/c
 
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-usb \
+    system/banjo/ddk-protocol-usb-composite \
+    system/banjo/ddk-protocol-usb-request \
+
 include make/module.mk

@@ -12,7 +12,6 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/aml-pcie-clk.cpp \
     $(LOCAL_DIR)/aml-pcie-device.cpp \
     $(LOCAL_DIR)/aml-pcie.cpp \
-    $(LOCAL_DIR)/binding.c \
 
 MODULE_STATIC_LIBS := \
     system/dev/pci/designware \
@@ -29,6 +28,11 @@ MODULE_LIBS := \
     system/ulib/c \
     system/ulib/driver \
     system/ulib/zircon \
+
+MODULE_BANJO_LIBS := \
+    system/banjo/ddk-protocol-clk \
+    system/banjo/ddk-protocol-gpio \
+    system/banjo/ddk-protocol-platform-device \
 
 MODULE_HEADER_DEPS := system/dev/lib/amlogic
 

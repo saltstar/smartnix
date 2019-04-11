@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -6,6 +9,8 @@
 #include <fbl/ref_counted.h>
 #include <lib/fzl/vmar-manager.h>
 #include <lib/zx/vmo.h>
+
+#include <utility>
 
 namespace fzl {
 
@@ -81,7 +86,7 @@ protected:
                             fbl::RefPtr<VmarManager> vmar_manager);
 
     void MoveFromOther(VmoMapper* other) {
-        vmar_manager_ = fbl::move(other->vmar_manager_);
+        vmar_manager_ = std::move(other->vmar_manager_);
 
         start_ = other->start_;
         other->start_ = 0;

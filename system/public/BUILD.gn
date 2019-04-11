@@ -1,3 +1,6 @@
+# Copyright 2017 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
 # If not building for Fuchsia (e.g., linux, macos) then binaries need to get
 # zircon headers directly from source. Otherwise they come from sysroot.

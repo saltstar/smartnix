@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_TYPES_H_
 #define ZIRCON_TYPES_H_
@@ -8,6 +11,7 @@
 #include <zircon/compiler.h>
 #include <zircon/errors.h>
 #include <zircon/limits.h>
+#include <zircon/rights.h>
 
 #ifndef __cplusplus
 #ifndef _KERNEL
@@ -103,7 +107,7 @@ typedef uint32_t zx_signals_t;
 #define ZX_USER_SIGNAL_6            ((zx_signals_t)1u << 30)
 #define ZX_USER_SIGNAL_7            ((zx_signals_t)1u << 31)
 
-// Cancelation (handle was closed while waiting with it)
+// Cancellation (handle was closed while waiting with it)
 #define ZX_SIGNAL_HANDLE_CLOSED     __ZX_OBJECT_HANDLE_CLOSED
 
 // Event
@@ -167,6 +171,9 @@ typedef uint32_t zx_signals_t;
 #define ZX_VMO_ZERO_CHILDREN        __ZX_OBJECT_SIGNALED
 
 // global kernel object id.
+// Note: kernel object ids use 63 bits, with the most significant bit being zero.
+// The remaining values (msb==1) are for use by programs and tools that wish to
+// create koids for artificial objects.
 typedef uint64_t zx_koid_t;
 #define ZX_KOID_INVALID ((uint64_t) 0)
 #define ZX_KOID_KERNEL  ((uint64_t) 1)
@@ -195,44 +202,6 @@ typedef struct zx_wait_item {
     zx_signals_t waitfor;
     zx_signals_t pending;
 } zx_wait_item_t;
-
-typedef uint32_t zx_rights_t;
-#define ZX_RIGHT_NONE             ((zx_rights_t)0u)
-#define ZX_RIGHT_DUPLICATE        ((zx_rights_t)1u << 0)
-#define ZX_RIGHT_TRANSFER         ((zx_rights_t)1u << 1)
-#define ZX_RIGHT_READ             ((zx_rights_t)1u << 2)
-#define ZX_RIGHT_WRITE            ((zx_rights_t)1u << 3)
-#define ZX_RIGHT_EXECUTE          ((zx_rights_t)1u << 4)
-#define ZX_RIGHT_MAP              ((zx_rights_t)1u << 5)
-#define ZX_RIGHT_GET_PROPERTY     ((zx_rights_t)1u << 6)
-#define ZX_RIGHT_SET_PROPERTY     ((zx_rights_t)1u << 7)
-#define ZX_RIGHT_ENUMERATE        ((zx_rights_t)1u << 8)
-#define ZX_RIGHT_DESTROY          ((zx_rights_t)1u << 9)
-#define ZX_RIGHT_SET_POLICY       ((zx_rights_t)1u << 10)
-#define ZX_RIGHT_GET_POLICY       ((zx_rights_t)1u << 11)
-#define ZX_RIGHT_SIGNAL           ((zx_rights_t)1u << 12)
-#define ZX_RIGHT_SIGNAL_PEER      ((zx_rights_t)1u << 13)
-#define ZX_RIGHT_WAIT             ((zx_rights_t)1u << 14)
-#define ZX_RIGHT_INSPECT          ((zx_rights_t)1u << 15)
-#define ZX_RIGHT_MANAGE_JOB       ((zx_rights_t)1u << 16)
-#define ZX_RIGHT_MANAGE_PROCESS   ((zx_rights_t)1u << 17)
-#define ZX_RIGHT_MANAGE_THREAD    ((zx_rights_t)1u << 18)
-#define ZX_RIGHT_APPLY_PROFILE    ((zx_rights_t)1u << 19)
-#define ZX_RIGHT_SAME_RIGHTS      ((zx_rights_t)1u << 31)
-
-// Convenient names for commonly grouped rights
-#define ZX_RIGHTS_BASIC \
-    (ZX_RIGHT_TRANSFER | ZX_RIGHT_DUPLICATE |\
-     ZX_RIGHT_WAIT | ZX_RIGHT_INSPECT)
-
-#define ZX_RIGHTS_IO \
-    (ZX_RIGHT_READ | ZX_RIGHT_WRITE)
-
-#define ZX_RIGHTS_PROPERTY \
-    (ZX_RIGHT_GET_PROPERTY | ZX_RIGHT_SET_PROPERTY)
-
-#define ZX_RIGHTS_POLICY \
-    (ZX_RIGHT_GET_POLICY | ZX_RIGHT_SET_POLICY)
 
 // VM Object creation options
 #define ZX_VMO_NON_RESIZABLE             ((uint32_t)1u)
@@ -314,12 +283,12 @@ typedef uint64_t zx_off_t;
 #define ZX_CHANNEL_MAX_MSG_HANDLES          ((uint32_t)64u)
 
 // Socket options and limits.
-// These options can be passed to zx_socket_write()
+// These options can be passed to zx_socket_shutdown().
 #define ZX_SOCKET_SHUTDOWN_WRITE            ((uint32_t)1u << 0)
 #define ZX_SOCKET_SHUTDOWN_READ             ((uint32_t)1u << 1)
 #define ZX_SOCKET_SHUTDOWN_MASK             (ZX_SOCKET_SHUTDOWN_WRITE | ZX_SOCKET_SHUTDOWN_READ)
 
-// These can be passed to zx_socket_create()
+// These can be passed to zx_socket_create().
 #define ZX_SOCKET_STREAM                    ((uint32_t)0u)
 #define ZX_SOCKET_DATAGRAM                  ((uint32_t)1u << 0)
 #define ZX_SOCKET_HAS_CONTROL               ((uint32_t)1u << 1)
@@ -328,6 +297,9 @@ typedef uint64_t zx_off_t;
 
 // These can be passed to zx_socket_read() and zx_socket_write().
 #define ZX_SOCKET_CONTROL                   ((uint32_t)1u << 2)
+
+// These can be passed to zx_socket_read().
+#define ZX_SOCKET_PEEK                      ((uint32_t)1u << 3)
 
 // Flags which can be used to to control cache policy for APIs which map memory.
 #define ZX_CACHE_POLICY_CACHED              ((uint32_t)0u)
@@ -379,7 +351,8 @@ typedef uint32_t zx_obj_type_t;
 #define ZX_OBJ_TYPE_PROFILE         ((zx_obj_type_t)25u)
 #define ZX_OBJ_TYPE_PMT             ((zx_obj_type_t)26u)
 #define ZX_OBJ_TYPE_SUSPEND_TOKEN   ((zx_obj_type_t)27u)
-#define ZX_OBJ_TYPE_LAST            ((zx_obj_type_t)28u)
+#define ZX_OBJ_TYPE_PAGER           ((zx_obj_type_t)28u)
+#define ZX_OBJ_TYPE_LAST            ((zx_obj_type_t)29u)
 
 typedef struct zx_handle_info {
     zx_handle_t handle;

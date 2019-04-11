@@ -1,12 +1,16 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <audio-proto-utils/format-utils.h>
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/protocol/platform-device-lib.h>
 #include <fbl/algorithm.h>
-#include <fbl/limits.h>
-#include <zircon/device/audio.h>
 #include <lib/zx/vmar.h>
+#include <limits>
+#include <utility>
+#include <zircon/device/audio.h>
 
 #include "a113-pdm.h"
 #include "dispatcher-pool/dispatcher-thread-pool.h"
@@ -27,7 +31,7 @@ zx_status_t GaussPdmInputStream::Create(zx_device_t* parent) {
     }
 
     auto stream =
-        fbl::AdoptRef(new GaussPdmInputStream(parent, fbl::move(domain)));
+        fbl::AdoptRef(new GaussPdmInputStream(parent, std::move(domain)));
 
     zx_status_t res = stream->Bind("pdm-audio-driver", parent);
     if (res == ZX_OK) {
@@ -163,11 +167,11 @@ zx_status_t GaussPdmInputStream::DdkIoctl(uint32_t op, const void* in_buf,
     zx::channel client_endpoint;
     zx_status_t res =
         channel->Activate(&client_endpoint, default_domain_,
-                          fbl::move(phandler), fbl::move(chandler));
+                          std::move(phandler), std::move(chandler));
     if (res == ZX_OK) {
         if (privileged) {
             ZX_DEBUG_ASSERT(stream_channel_ == nullptr);
-            stream_channel_ = fbl::move(channel);
+            stream_channel_ = std::move(channel);
         }
 
         *(reinterpret_cast<zx_handle_t*>(out_buf)) = client_endpoint.release();
@@ -290,7 +294,7 @@ zx_status_t GaussPdmInputStream::OnGetStreamFormats(
     uint16_t formats_sent = 0;
     audio_proto::StreamGetFmtsResp resp = { };
 
-    if (supported_formats_.size() > fbl::numeric_limits<uint16_t>::max()) {
+    if (supported_formats_.size() > std::numeric_limits<uint16_t>::max()) {
         zxlogf(ERROR, "Too many formats (%zu) to send during "
                       "AUDIO_STREAM_CMD_GET_FORMATS request!\n",
                supported_formats_.size());
@@ -399,7 +403,7 @@ GaussPdmInputStream::OnSetStreamFormat(dispatcher::Channel* channel,
 
             resp.result =
                 rb_channel_->Activate(&client_rb_channel, default_domain_,
-                                      fbl::move(phandler), fbl::move(chandler));
+                                      std::move(phandler), std::move(chandler));
             if (resp.result != ZX_OK) {
                 rb_channel_.reset();
             }
@@ -420,7 +424,7 @@ finished:
             rb_channel_.reset();
         }
     }
-    return channel->Write(&resp, sizeof(resp), fbl::move(client_rb_channel));
+    return channel->Write(&resp, sizeof(resp), std::move(client_rb_channel));
 }
 
 int GaussPdmInputStream::IrqThread() {
@@ -672,7 +676,7 @@ GaussPdmInputStream::OnGetBuffer(dispatcher::Channel* channel,
     }
 
     ZX_DEBUG_ASSERT((ring_buffer_size_.load() / frame_size_) <=
-                    fbl::numeric_limits<decltype(resp.num_ring_buffer_frames)>::max());
+                    std::numeric_limits<decltype(resp.num_ring_buffer_frames)>::max());
     resp.num_ring_buffer_frames =
         static_cast<decltype(resp.num_ring_buffer_frames)>(ring_buffer_size_.load() / frame_size_);
 
@@ -680,7 +684,7 @@ finished:
     zx_status_t res;
     if (resp.result == ZX_OK) {
         ZX_DEBUG_ASSERT(client_rb_handle.is_valid());
-        res = channel->Write(&resp, sizeof(resp), fbl::move(client_rb_handle));
+        res = channel->Write(&resp, sizeof(resp), std::move(client_rb_handle));
     } else {
         res = channel->Write(&resp, sizeof(resp));
     }

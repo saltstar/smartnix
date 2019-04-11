@@ -4,9 +4,10 @@
 
 #include <fs/pseudo-file.h>
 
-#include <fbl/initializer_list.h>
 #include <fbl/vector.h>
+#include <initializer_list>
 #include <unittest/unittest.h>
+#include <zircon/device/vfs.h>
 
 #define EXPECT_FSTR_EQ(expected, actual)                                \
     EXPECT_BYTES_EQ(reinterpret_cast<const uint8_t*>(expected.c_str()), \
@@ -25,7 +26,7 @@ zx_status_t DummyWriter(fbl::StringPiece input) {
 
 class VectorReader {
 public:
-    VectorReader(fbl::initializer_list<fbl::String> strings)
+    VectorReader(std::initializer_list<fbl::String> strings)
         : strings_(strings) {}
 
     fs::PseudoFile::ReadHandler GetHandler() {

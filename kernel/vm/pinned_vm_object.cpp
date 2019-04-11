@@ -1,6 +1,7 @@
 
 #include "vm/pinned_vm_object.h"
 
+#include <ktl/move.h>
 #include <trace.h>
 
 #include "vm/vm.h"
@@ -15,7 +16,7 @@ zx_status_t PinnedVmObject::Create(fbl::RefPtr<VmObject> vmo, size_t offset, siz
     DEBUG_ASSERT(out_pinned_vmo != nullptr);
 
     if (vmo->is_paged()) {
-        zx_status_t status = vmo->CommitRange(offset, size, nullptr);
+        zx_status_t status = vmo->CommitRange(offset, size);
         if (status != ZX_OK) {
             LTRACEF("vmo->CommitRange failed: %d\n", status);
             return status;
@@ -27,7 +28,7 @@ zx_status_t PinnedVmObject::Create(fbl::RefPtr<VmObject> vmo, size_t offset, siz
         }
     }
 
-    out_pinned_vmo->vmo_ = fbl::move(vmo);
+    out_pinned_vmo->vmo_ = ktl::move(vmo);
     out_pinned_vmo->offset_ = offset;
     out_pinned_vmo->size_ = size;
 

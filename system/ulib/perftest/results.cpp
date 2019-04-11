@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <perftest/results.h>
 
@@ -7,6 +10,8 @@
 
 #include <fbl/algorithm.h>
 #include <zircon/assert.h>
+
+#include <utility>
 
 namespace perftest {
 namespace {
@@ -137,7 +142,7 @@ TestCaseResults* ResultsSet::AddTestCase(const fbl::String& test_suite,
                                          const fbl::String& label,
                                          const fbl::String& unit) {
     TestCaseResults test_case(test_suite, label, unit);
-    results_.push_back(fbl::move(test_case));
+    results_.push_back(std::move(test_case));
     return &results_[results_.size() - 1];
 }
 

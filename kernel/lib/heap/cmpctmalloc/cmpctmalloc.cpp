@@ -12,10 +12,11 @@
 #include <kernel/mutex.h>
 #include <kernel/spinlock.h>
 #include <kernel/thread.h>
-#include <vm/vm.h>
+#include <lib/counters.h>
 #include <lib/heap.h>
 #include <platform.h>
 #include <trace.h>
+#include <vm/vm.h>
 
 // Malloc implementation tuned for space.
 //
@@ -895,7 +896,6 @@ void* cmpct_alloc(size_t size) {
     if (size == 0u) {
         return NULL;
     }
-
     // Large allocations are no longer allowed. See ZX-1318 for details.
     if (size > (HEAP_LARGE_ALLOC_BYTES - sizeof(header_t))) {
         return NULL;
@@ -1111,9 +1111,6 @@ static ssize_t heap_grow(size_t size) {
 
 void cmpct_init(void) {
     LTRACE_ENTRY;
-
-    // Create a mutex.
-    mutex_init(&theheap.lock);
 
     // Initialize the free list.
     for (int i = 0; i < NUMBER_OF_BUCKETS; i++) {

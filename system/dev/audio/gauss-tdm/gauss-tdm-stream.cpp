@@ -1,12 +1,16 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <audio-proto-utils/format-utils.h>
 #include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/protocol/platform-device-lib.h>
-#include <fbl/limits.h>
-#include <string.h>
-#include <zircon/device/audio.h>
 #include <lib/zx/vmar.h>
+#include <limits>
+#include <string.h>
+#include <utility>
+#include <zircon/device/audio.h>
 
 #include "dispatcher-pool/dispatcher-thread-pool.h"
 #include "tas57xx.h"
@@ -26,7 +30,7 @@ zx_status_t TdmOutputStream::Create(zx_device_t* parent) {
         return ZX_ERR_NO_MEMORY;
     }
     auto stream = fbl::AdoptRef(
-        new TdmOutputStream(parent, fbl::move(domain)));
+        new TdmOutputStream(parent, std::move(domain)));
 
     zx_status_t res = device_get_protocol(parent, ZX_PROTOCOL_PDEV, &stream->pdev_);
     if (res != ZX_OK) {
@@ -39,7 +43,7 @@ zx_status_t TdmOutputStream::Create(zx_device_t* parent) {
     }
 
     mmio_buffer_t mmio;
-    res = pdev_map_mmio_buffer2(&stream->pdev_, 0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    res = pdev_map_mmio_buffer(&stream->pdev_, 0, ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
 
     if (res != ZX_OK) {
         zxlogf(ERROR, "tdm-output-driver: failed to map mmio.\n");
@@ -84,7 +88,7 @@ zx_status_t TdmOutputStream::Create(zx_device_t* parent) {
                 return tdm->ProcessRingNotification();
             });
 
-    stream->notify_timer_->Activate(stream->default_domain_, fbl::move(thandler));
+    stream->notify_timer_->Activate(stream->default_domain_, std::move(thandler));
 
     res = stream->Bind("tdm-output-driver");
     // if successful, we need to leak the stream reference since it holds this object
@@ -223,8 +227,8 @@ zx_status_t TdmOutputStream::DdkIoctl(uint32_t op,
     zx::channel client_endpoint;
     zx_status_t res = channel->Activate(&client_endpoint,
                                         default_domain_,
-                                        fbl::move(phandler),
-                                        fbl::move(chandler));
+                                        std::move(phandler),
+                                        std::move(chandler));
     if (res == ZX_OK) {
         if (privileged) {
             ZX_DEBUG_ASSERT(stream_channel_ == nullptr);
@@ -343,7 +347,7 @@ zx_status_t TdmOutputStream::OnGetStreamFormatsLocked(
     uint16_t formats_sent = 0;
     audio_proto::StreamGetFmtsResp resp = { };
 
-    if (supported_formats_.size() > fbl::numeric_limits<uint16_t>::max()) {
+    if (supported_formats_.size() > std::numeric_limits<uint16_t>::max()) {
         zxlogf(ERROR,
                 "Too many formats (%zu) to send during AUDIO_STREAM_CMD_GET_FORMATS request!\n",
                supported_formats_.size());
@@ -450,8 +454,8 @@ zx_status_t TdmOutputStream::OnSetStreamFormatLocked(dispatcher::Channel* channe
 
         resp.result = rb_channel_->Activate(&client_rb_channel,
                                             default_domain_,
-                                            fbl::move(phandler),
-                                            fbl::move(chandler));
+                                            std::move(phandler),
+                                            std::move(chandler));
         if (resp.result != ZX_OK) {
             rb_channel_.reset();
         }
@@ -461,7 +465,7 @@ finished:
     if (resp.result == ZX_OK) {
         // TODO(johngro): Report the actual external delay.
         resp.external_delay_nsec = 0;
-        return channel->Write(&resp, sizeof(resp), fbl::move(client_rb_channel));
+        return channel->Write(&resp, sizeof(resp), std::move(client_rb_channel));
     } else {
         return channel->Write(&resp, sizeof(resp));
     }
@@ -652,7 +656,7 @@ finished:
     zx_status_t res;
     if (resp.result == ZX_OK) {
         ZX_DEBUG_ASSERT(client_rb_handle.is_valid());
-        res = channel->Write(&resp, sizeof(resp), fbl::move(client_rb_handle));
+        res = channel->Write(&resp, sizeof(resp), std::move(client_rb_handle));
     } else {
         res = channel->Write(&resp, sizeof(resp));
     }

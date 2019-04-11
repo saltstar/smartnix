@@ -1,6 +1,10 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <unistd.h>
 
+#include <new>
 #include <stdbool.h>
 #include <string.h>
 
@@ -10,13 +14,11 @@
 #include <fbl/alloc_checker.h>
 #include <fbl/auto_call.h>
 #include <fbl/auto_lock.h>
-#include <fbl/limits.h>
-#include <fbl/new.h>
 #include <fbl/ref_ptr.h>
+#include <lib/zx/fifo.h>
 #include <zircon/compiler.h>
 #include <zircon/device/block.h>
 #include <zircon/syscalls.h>
-#include <lib/zx/fifo.h>
 
 #include "server.h"
 

@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <errno.h>
 #include <stdio.h>
@@ -247,6 +250,7 @@ void Write(std::ostringstream output, std::fstream file) {
 // TODO(pascallouis): remove forward declaration, this was only introduced to
 // reduce diff size while breaking things up.
 int compile(fidl::ErrorReporter* error_reporter,
+            fidl::flat::Typespace* typespace,
             std::string library_name,
             std::map<Behavior, std::fstream> outputs,
             std::vector<fidl::SourceManager> source_managers);
@@ -331,7 +335,9 @@ int main(int argc, char* argv[]) {
 
     // Ready. Set. Go.
     fidl::ErrorReporter error_reporter;
+    auto typespace = fidl::flat::Typespace::RootTypes();
     auto status = compile(&error_reporter,
+                          &typespace,
                           library_name,
                           std::move(outputs),
                           std::move(source_managers));
@@ -340,6 +346,7 @@ int main(int argc, char* argv[]) {
 }
 
 int compile(fidl::ErrorReporter* error_reporter,
+            fidl::flat::Typespace* typespace,
             std::string library_name,
             std::map<Behavior, std::fstream> outputs,
             std::vector<fidl::SourceManager> source_managers) {
@@ -349,7 +356,7 @@ int compile(fidl::ErrorReporter* error_reporter,
         if (source_manager.sources().empty()) {
             continue;
         }
-        auto library = std::make_unique<fidl::flat::Library>(&all_libraries, error_reporter);
+        auto library = std::make_unique<fidl::flat::Library>(&all_libraries, error_reporter, typespace);
         for (const auto& source_file : source_manager.sources()) {
             if (!Parse(*source_file, error_reporter, library.get())) {
                 return 1;

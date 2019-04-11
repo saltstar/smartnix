@@ -8,10 +8,10 @@
 
 #include <ddktl/device.h>
 #include <ddktl/mmio.h>
-#include <ddktl/protocol/i2c-impl.h>
+#include <ddktl/protocol/i2cimpl.h>
 
-#include <fbl/atomic.h>
-#include <fbl/optional.h>
+
+#include <optional>
 
 namespace imx_i2c {
 
@@ -19,7 +19,7 @@ class ImxI2cDevice;
 using DeviceType = ddk::Device<ImxI2cDevice, ddk::Unbindable>;
 
 class ImxI2cDevice : public DeviceType,
-                     public ddk::I2cImplProtocol<ImxI2cDevice> {
+                     public ddk::I2cImplProtocol<ImxI2cDevice, ddk::base_protocol> {
 public:
     ImxI2cDevice(zx_device_t* parent, int dev_cnt)
         : DeviceType(parent), dev_cnt_(dev_cnt) {}
@@ -53,7 +53,7 @@ private:
     }
     const uint32_t dev_cnt_;
     thrd_t thread_;
-    fbl::optional<ddk::MmioBuffer> mmio_;
+    std::optional<ddk::MmioBuffer> mmio_;
 
     void Reset();
     zx_status_t Read(uint8_t addr, void* buf, size_t len, bool stop);

@@ -1,3 +1,6 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -17,6 +20,8 @@
 
 #include "sdmmc.h"
 #include "sdio.h"
+
+static const uint32_t bcm_manufacturer_id = 0x02d0;
 
 zx_status_t sdio_rw_byte(void *ctx, bool write, uint8_t fn_idx, uint32_t addr,
                          uint8_t write_byte, uint8_t *read_byte) {
@@ -757,7 +762,7 @@ zx_status_t sdmmc_probe_sdio(sdmmc_device_t* dev) {
 
     uint32_t ocr;
     if ((st = sdio_send_op_cond(dev, 0, &ocr)) != ZX_OK) {
-        zxlogf(ERROR, "sdmmc_probe_sdio: SDIO_SEND_OP_COND failed, retcode = %d\n", st);
+        zxlogf(TRACE, "sdmmc_probe_sdio: SDIO_SEND_OP_COND failed, retcode = %d\n", st);
         return st;
     }
     //Select voltage 3.3 V. Also request for 1.8V. Section 3.2 SDIO spec
@@ -804,6 +809,12 @@ zx_status_t sdmmc_probe_sdio(sdmmc_device_t* dev) {
             zxlogf(INFO, "Failed to switch voltage to 1.8V\n");
             return st;
         }
+    }
+
+    // BCM43458 includes function 0 in its OCR register. This violates the SDIO specification and
+    // the assumptions made here. Check the manufacturer ID to account for this quirk.
+    if (dev->sdio_dev.funcs[0].hw_info.manufacturer_id != bcm_manufacturer_id) {
+        dev->sdio_dev.hw_info.num_funcs++;
     }
 
     //TODO(ravoorir):Re-enable ultra high speed when wifi stack is more stable.

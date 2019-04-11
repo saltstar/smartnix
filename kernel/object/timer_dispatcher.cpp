@@ -55,7 +55,7 @@ zx_status_t TimerDispatcher::Create(uint32_t options,
 TimerDispatcher::TimerDispatcher(slack_mode slack_mode)
     : slack_mode_(slack_mode),
       timer_dpc_({LIST_INITIAL_CLEARED_VALUE, &dpc_callback, this}),
-      deadline_(0u), slack_(0u), cancel_pending_(false),
+      deadline_(0u), slack_amount_(0u), cancel_pending_(false),
       timer_(TIMER_INITIAL_VALUE(timer_)) {
 }
 
@@ -75,7 +75,7 @@ void TimerDispatcher::on_zero_handles() {
         timer_cancel(&timer_);
 }
 
-zx_status_t TimerDispatcher::Set(zx_time_t deadline, zx_duration_t slack) {
+zx_status_t TimerDispatcher::Set(zx_time_t deadline, zx_duration_t slack_amount) {
     canary_.Assert();
 
     Guard<fbl::Mutex> guard{get_lock()};
@@ -90,17 +90,17 @@ zx_status_t TimerDispatcher::Set(zx_time_t deadline, zx_duration_t slack) {
     }
 
     deadline_ = deadline;
-    slack_ = slack;
+    slack_amount_ = slack_amount;
 
-    // If we're imminently awaiting a timer callback due to a prior cancelation request,
-    // let the callback take care of restarting the timer too so everthing happens in the
+    // If we're imminently awaiting a timer callback due to a prior cancellation request,
+    // let the callback take care of restarting the timer too so everything happens in the
     // right sequence.
     if (cancel_pending_)
         return ZX_OK;
 
     // We need to ref-up because the timer and the dpc don't understand
     // refcounted objects. The Release() is called either in OnTimerFired()
-    // or in the complicated cancelation path above.
+    // or in the complicated cancellation path above.
     AddRef();
 
     // We must ensure that the timer callback (running in interrupt context,
@@ -121,8 +121,9 @@ zx_status_t TimerDispatcher::Cancel() {
 void TimerDispatcher::SetTimerLocked(bool cancel_first) {
     if (cancel_first)
         timer_cancel(&timer_);
-    timer_set(&timer_, deadline_, slack_mode_, slack_,
-        &timer_irq_callback, &timer_dpc_);
+    const TimerSlack slack{slack_amount_, slack_mode_};
+    const Deadline slackDeadline(deadline_, slack);
+    timer_set(&timer_, slackDeadline, &timer_irq_callback, &timer_dpc_);
 }
 
 bool TimerDispatcher::CancelTimerLocked() {
@@ -133,7 +134,7 @@ bool TimerDispatcher::CancelTimerLocked() {
     if (!deadline_)
         return false; // didn't call timer_cancel
     deadline_ = 0u;
-    slack_ = 0;
+    slack_amount_ = 0;
 
     // If we're already waiting for the timer to be canceled, then we don't need
     // to cancel it again.

@@ -1,5 +1,15 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
+
+// Zircon statuses are signed 32 bit integers. The space of values is
+// divided as follows:
+// - The zero value is for the OK status.
+// - Negative values are defined by the system, in this file.
+// - Positive values are reserved for protocol-specific error values,
+//   and will never be defined by the system.
 
 #define ZX_OK (0)
 

@@ -1,3 +1,6 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #pragma once
 
@@ -40,7 +43,6 @@
 // 0x12 unused
 #define IOCTL_FAMILY_BLOCK          0x13
 #define IOCTL_FAMILY_I2C            0x14
-#define IOCTL_FAMILY_TPM            0x15
 #define IOCTL_FAMILY_USB_DEVICE     0x16
 #define IOCTL_FAMILY_HID            0x17
 // 0x18 unused
@@ -49,7 +51,7 @@
 #define IOCTL_FAMILY_KTRACE         0x1B
 #define IOCTL_FAMILY_BT_HCI         0x1C
 #define IOCTL_FAMILY_SYSINFO        0x1D
-#define IOCTL_FAMILY_GPU            0x1E
+// 0x1E unused
 #define IOCTL_FAMILY_RTC            0x1F  // ioctls for RTC
 #define IOCTL_FAMILY_ETH            0x20
 #define IOCTL_FAMILY_INSNTRACE      0x21  // ioctls for instruction tracing

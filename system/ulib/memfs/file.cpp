@@ -1,3 +1,6 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <inttypes.h>
 #include <fcntl.h>
@@ -8,7 +11,6 @@
 
 #include <fbl/algorithm.h>
 #include <fbl/alloc_checker.h>
-#include <fbl/atomic.h>
 #include <fbl/ref_ptr.h>
 #include <fbl/unique_ptr.h>
 #include <lib/fdio/vfs.h>
@@ -90,7 +92,7 @@ zx_status_t VnodeFile::Append(const void* data, size_t len, size_t* out_end,
     return status;
 }
 
-zx_status_t VnodeFile::GetVmo(int flags, zx_handle_t* out) {
+zx_status_t VnodeFile::GetVmo(int flags, zx_handle_t* out_vmo, size_t* out_size) {
     zx_status_t status;
     if (!vmo_.is_valid()) {
         // First access to the file? Allocate it.
@@ -101,27 +103,29 @@ zx_status_t VnodeFile::GetVmo(int flags, zx_handle_t* out) {
 
     // Let clients map and set the names of their VMOs.
     zx_rights_t rights = ZX_RIGHTS_BASIC | ZX_RIGHT_MAP | ZX_RIGHTS_PROPERTY;
-    rights |= (flags & FDIO_MMAP_FLAG_READ) ? ZX_RIGHT_READ : 0;
-    rights |= (flags & FDIO_MMAP_FLAG_WRITE) ? ZX_RIGHT_WRITE : 0;
-    rights |= (flags & FDIO_MMAP_FLAG_EXEC) ? ZX_RIGHT_EXECUTE : 0;
-    zx::vmo out_vmo;
-    if (flags & FDIO_MMAP_FLAG_PRIVATE) {
+    rights |= (flags & fuchsia_io_VMO_FLAG_READ) ? ZX_RIGHT_READ : 0;
+    rights |= (flags & fuchsia_io_VMO_FLAG_WRITE) ? ZX_RIGHT_WRITE : 0;
+    rights |= (flags & fuchsia_io_VMO_FLAG_EXEC) ? ZX_RIGHT_EXECUTE : 0;
+    zx::vmo result;
+    if (flags & fuchsia_io_VMO_FLAG_PRIVATE) {
         if ((status = vmo_.clone(ZX_VMO_CLONE_COPY_ON_WRITE, 0, length_,
-                                 &out_vmo)) != ZX_OK) {
+                                 &result)) != ZX_OK) {
             return status;
         }
 
-        if ((status = out_vmo.replace(rights, &out_vmo)) != ZX_OK) {
+        if ((status = result.replace(rights, &result)) != ZX_OK) {
             return status;
         }
-        *out = out_vmo.release();
+        *out_vmo = result.release();
+        *out_size = length_;
         return ZX_OK;
     }
 
-    if ((status = vmo_.duplicate(rights, &out_vmo)) != ZX_OK) {
+    if ((status = vmo_.duplicate(rights, &result)) != ZX_OK) {
         return status;
     }
-    *out = out_vmo.release();
+    *out_vmo = result.release();
+    *out_size = length_;
     return ZX_OK;
 }
 
@@ -138,9 +142,8 @@ zx_status_t VnodeFile::Getattr(vnattr_t* attr) {
     return ZX_OK;
 }
 
-zx_status_t VnodeFile::GetHandles(uint32_t flags, zx_handle_t* hnd, uint32_t* type,
-                                  zxrio_node_info_t* extra) {
-    *type = fuchsia_io_NodeInfoTag_file;
+zx_status_t VnodeFile::GetNodeInfo(uint32_t flags, fuchsia_io_NodeInfo* info) {
+    info->tag = fuchsia_io_NodeInfoTag_file;
     return ZX_OK;
 }
 

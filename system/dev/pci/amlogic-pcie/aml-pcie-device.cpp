@@ -13,6 +13,9 @@
 #include <lib/zx/bti.h>
 #include <zircon/driver/binding.h>
 
+#include <optional>
+#include <utility>
+
 #include "aml-pcie-clk.h"
 #include "aml-pcie.h"
 
@@ -66,31 +69,31 @@ zx_status_t AmlPcieDevice::InitMmios() {
     pdev_get_bti(&pdev_, 0, pin_bti.reset_and_get_address());
 
     mmio_buffer_t mmio;
-    st = pdev_map_mmio_buffer2(&pdev_, kElbMmio,
-                               ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    st = pdev_map_mmio_buffer(&pdev_, kElbMmio,
+                              ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
     if (st != ZX_OK) {
         zxlogf(ERROR, "aml_pcie: failed to map dbi mmio, st = %d\n", st);
         return st;
     }
     dbi_ = ddk::MmioBuffer(mmio);
 
-    fbl::optional<ddk::MmioPinnedBuffer> mmio_pinned;
+    std::optional<ddk::MmioPinnedBuffer> mmio_pinned;
     st = dbi_->Pin(pin_bti, &mmio_pinned);
     if (st != ZX_OK) {
         zxlogf(ERROR, "aml_pcie: failed to pin DBI, st = %d\n", st);
         return st;
     }
-    dbi_pinned_ = fbl::move(*mmio_pinned);
+    dbi_pinned_ = *std::move(mmio_pinned);
 
-    st = pdev_map_mmio_buffer2(&pdev_, kCfgMmio,
-                               ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
+    st = pdev_map_mmio_buffer(&pdev_, kCfgMmio,
+                              ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
     if (st != ZX_OK) {
         zxlogf(ERROR, "aml_pcie: failed to map cfg mmio, st = %d\n", st);
         return st;
     }
     cfg_ = ddk::MmioBuffer(mmio);
 
-    st = pdev_map_mmio_buffer2(&pdev_, kRstMmio,
+    st = pdev_map_mmio_buffer(&pdev_, kRstMmio,
                                ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
     if (st != ZX_OK) {
         zxlogf(ERROR, "aml_pcie: failed to map rst mmio, st = %d\n", st);
@@ -98,7 +101,7 @@ zx_status_t AmlPcieDevice::InitMmios() {
     }
     rst_ = ddk::MmioBuffer(mmio);
 
-    st = pdev_map_mmio_buffer2(&pdev_, kPllMmio,
+    st = pdev_map_mmio_buffer(&pdev_, kPllMmio,
                                ZX_CACHE_POLICY_UNCACHED_DEVICE, &mmio);
     if (st != ZX_OK) {
         zxlogf(ERROR, "aml_pcie: failed to map pll mmio, st = %d\n", st);
@@ -181,9 +184,9 @@ zx_status_t AmlPcieDevice::Init() {
     if (st != ZX_OK) return st;
 
     pcie_ = fbl::make_unique<AmlPcie>(
-        fbl::move(*dbi_),
-        fbl::move(*cfg_),
-        fbl::move(*rst_),
+        *std::move(dbi_),
+        *std::move(cfg_),
+        *std::move(rst_),
         1   // Single Lane PCIe
     );
 
@@ -290,7 +293,7 @@ zx_status_t AmlPcieDevice::Init() {
 }  // namespace aml
 }  // namespace pcie
 
-extern "C" zx_status_t aml_pcie_bind(void* ctx, zx_device_t* device, void** cookie) {
+extern "C" zx_status_t aml_pcie_bind(void* ctx, zx_device_t* device) {
     fbl::AllocChecker ac;
     pcie::aml::AmlPcieDevice* dev = new (&ac) pcie::aml::AmlPcieDevice(device);
 
@@ -309,3 +312,20 @@ extern "C" zx_status_t aml_pcie_bind(void* ctx, zx_device_t* device, void** cook
 
     return st;
 }
+
+
+static zx_driver_ops_t aml_pcie_driver_ops = []() {
+    zx_driver_ops_t ops = {};
+    ops.version = DRIVER_OPS_VERSION;
+    ops.bind = aml_pcie_bind;
+    return ops;
+}();
+
+// clang-format off
+// Bind to ANY Amlogic SoC with a DWC PCIe controller.
+ZIRCON_DRIVER_BEGIN(aml_pcie, aml_pcie_driver_ops, "zircon", "0.1", 4)
+    BI_ABORT_IF(NE, BIND_PROTOCOL, ZX_PROTOCOL_PDEV),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_VID, PDEV_VID_AMLOGIC),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_PID, PDEV_PID_GENERIC),
+    BI_MATCH_IF(EQ, BIND_PLATFORM_DEV_DID, PDEV_DID_DW_PCIE),
+ZIRCON_DRIVER_END(aml_pcie)

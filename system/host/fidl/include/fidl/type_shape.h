@@ -1,8 +1,11 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_TYPE_SHAPE_H_
 #define ZIRCON_SYSTEM_HOST_FIDL_INCLUDE_FIDL_TYPE_SHAPE_H_
 
-#include <stddef.h>
+#include <cstdint>
 
 class TypeShape {
 public:
@@ -36,7 +39,7 @@ public:
         : FieldShape(TypeShape()) {}
 
     TypeShape& Typeshape() { return typeshape_; }
-    TypeShape Typeshape() const { return typeshape_; }
+    const TypeShape& Typeshape() const { return typeshape_; }
 
     uint32_t Size() const { return typeshape_.Size(); }
     uint32_t Alignment() const { return typeshape_.Alignment(); }
