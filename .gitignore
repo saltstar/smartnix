@@ -10,6 +10,7 @@
 *.opts
 *.bin
 .fuse*
+more_and_more.txt
 tags
 
 prebuilt
